@@ -1,4 +1,4 @@
-import { createHash, createPublicKey, sign, verify } from 'node:crypto';
+import { createHash, createPublicKey, randomBytes, sign, verify } from 'node:crypto';
 
 const ID = /^[a-f0-9]{64}$/;
 const MAX_LIFETIME_MS = 30 * 24 * 60 * 60_000;
@@ -28,14 +28,9 @@ export function createPeerIntroductionVoucher({ issuerIdentity, subjectNodeId, i
   const issuerNodeId = nodeIdFromKey(issuerIdentity.publicKeyPem);
   if (issuerNodeId !== issuerIdentity.nodeId) throw new TypeError('Issuer identity key mismatch');
   const value = { version:1, subjectNodeId, issuerNodeId, issuedAt, expiresAt,
-    nonce: nonce ?? (awaitlessRandomNonce()), issuerPublicKeyPem: issuerIdentity.publicKeyPem };
+    nonce: nonce ?? randomBytes(16).toString('hex'), issuerPublicKeyPem: issuerIdentity.publicKeyPem };
   return Object.freeze({ ...value, signature: sign(null, Buffer.from(canonical(value)), issuerIdentity.privateKey).toString('base64') });
 }
-function awaitlessRandomNonce() {
-  // Use the platform cryptographic RNG; never Math.random for voucher nonces.
-  return createHash('sha256').update(String(process.hrtime.bigint())).update(String(Date.now())).digest('hex').slice(0,32);
-}
-
 /** Require independently pre-trusted introducers; duplicate vouchers from one issuer count only once. */
 export function verifyPeerIntroductionVouchers({ subjectNodeId, vouchers, trustedIssuerNodeIds, threshold = 2, now = Date.now(), maxVouchers = 64 } = {}) {
   if (!ID.test(subjectNodeId ?? '') || !Array.isArray(vouchers) || !Array.isArray(trustedIssuerNodeIds) ||
