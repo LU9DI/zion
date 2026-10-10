@@ -2,18 +2,18 @@
 
 ## Purpose
 
-This release repairs documentation gaps found during continuity auditing of the v0.33.31 package. It preserves the source tree, restores audit reports available in the local evidence directory, reconstructs omitted changelog entries from existing reports/packages, and creates a separate preservation bundle with release archives and test logs.
+This release repairs gaps found during continuity auditing of the v0.33.31 package. It preserves the source tree, restores audit reports already available in the local evidence directory, reconstructs omitted changelog entries from existing reports/packages, and creates a separate preservation bundle with release archives and test logs.
 
 ## Evidence basis
 
-- Base source tree: release v0.33.31.
-- Restored audit files: `AUDIT_V0.33.20.md` and `AUDIT_V0.33.30.md`, copied from preserved local evidence.
+- Base source tree: `zion_work_03331` / release `v0.33.31`.
+- Restored audit files: `AUDIT_V0.33.20.md` and `AUDIT_V0.33.30.md`, copied from the preserved local evidence directory.
 - Changelog additions for v0.33.25–v0.33.31 are summaries derived from preserved audit reports and package artifacts, not a reconstruction of deleted chat messages.
-- Previous ZIPs and available `.sha256` files are retained in the local preservation bundle.
+- Previous ZIPs and available `.sha256` files are retained in the preservation bundle.
 
 ## Explicit limits
 
-This process cannot prove that every requirement discussed in a deleted conversation was implemented. It cannot recover conversation-only decisions that were never committed to source, tests, or documentation. No GitHub deployment or production rollout is implied by this local recovery release. The current GitHub publication is incomplete until the source tree and preservation artifacts are uploaded.
+This process cannot prove that every requirement discussed in a deleted conversation was implemented. It cannot recover conversation-only decisions that were never committed to source, tests, or documentation. No GitHub deployment or production rollout is implied by this local recovery release.
 
 ## Verification commands
 
@@ -26,4 +26,4 @@ npm run demo
 npm run client:demo
 ```
 
-The local preservation bundle also contains available release archives, audit reports, test logs, and a SHA-256 manifest.
+The preservation bundle also contains the logs that were available at the time of packaging and a SHA-256 manifest for every included file.

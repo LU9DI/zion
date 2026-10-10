@@ -1,0 +1,17 @@
+[package]
+name = "rea-storage-core"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+description = "Experimental Rust storage core for REA Cloud"
+
+[lib]
+name = "rea_storage_core"
+path = "src/lib.rs"
+
+[dependencies]
+sha2 = "0.10"
+
+[[bin]]
+name = "rea-storage-cli"
+path = "src/bin/rea-storage-cli.rs"

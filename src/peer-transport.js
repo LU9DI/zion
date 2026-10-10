@@ -1,0 +1,207 @@
+import { createServer, createConnection } from 'node:net';
+import { randomBytes } from 'node:crypto';
+import { signPeerMessage, verifyPeerMessage, ReplayGuard, PeerRateLimiter } from './peer-security.js';
+import { calculateNetworkId, validateGenesisDocument } from './protocol-genesis.js';
+import { validateProtocolOperation } from './protocol-operation-validator.js';
+
+const MAX_FRAME_BYTES = 256 * 1024;
+const MAX_QUEUED_FRAMES_PER_SOCKET = 64;
+const DEFAULT_TYPES = new Set(['PING', 'PONG', 'STORE_CHUNK', 'GET_CHUNK', 'CHUNK_DATA', 'MANIFEST', 'STORE_REQUEST', 'STORE_RECEIPT', 'STORE_REJECTED']);
+
+/**
+ * Minimal authenticated newline-framed TCP transport.
+ * Defaults to loopback; remote binding must be an explicit operator decision.
+ * Payload handlers must validate every operation and enforce local storage/resource policy.
+ */
+export class PeerTransport {
+  constructor({ identity, host = '127.0.0.1', port = 0, maxConnections = 64,
+    maxFrameBytes = MAX_FRAME_BYTES, allowedTypes = DEFAULT_TYPES, trustedPeerIds = null,
+    onMessage = async () => {}, replayGuard = new ReplayGuard(),
+    rateLimiter = new PeerRateLimiter({ capacity: 64, refillPerSecond: 20 }), transferScheduler = null,
+    protocolGenesis = null, networkMode = 'legacy', integrityGuard = null, now = () => Date.now() } = {}) {
+    if (!identity?.privateKey || typeof identity.nodeId !== 'string') throw new TypeError('A node identity is required');
+    if (typeof host !== 'string' || !host || !Number.isInteger(port) || port < 0 || port > 65535) throw new RangeError('Invalid bind address');
+    if (!Number.isSafeInteger(maxConnections) || maxConnections < 1 || !Number.isSafeInteger(maxFrameBytes) || maxFrameBytes < 256) throw new RangeError('Invalid transport limits');
+    if (typeof onMessage !== 'function') throw new TypeError('onMessage must be a function');
+    if (!['legacy', 'official'].includes(networkMode)) throw new TypeError('networkMode must be legacy or official');
+    if (networkMode === 'official' && protocolGenesis === null) throw new Error('Official Zion network mode requires a reviewed protocol genesis');
+    const loopbackHosts = new Set(['127.0.0.1', '::1', 'localhost']);
+    if (trustedPeerIds !== null && (!Array.isArray(trustedPeerIds) || trustedPeerIds.some(id => typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)))) throw new TypeError('trustedPeerIds must be null or an array of SHA-256 node IDs');
+    if (!loopbackHosts.has(host) && (!trustedPeerIds || trustedPeerIds.length === 0)) throw new Error('Non-loopback binding requires an explicit trustedPeerIds allowlist');
+    this.identity = identity; this.host = host; this.port = port; this.maxConnections = maxConnections;
+    this.networkMode = networkMode;
+    this.genesis = protocolGenesis === null ? null : validateGenesisDocument(protocolGenesis);
+    if (this.genesis && maxFrameBytes > this.genesis.limits.maxFrameBytes) throw new RangeError('Transport frame limit exceeds protocol genesis');
+    if (networkMode === 'official' && (!integrityGuard || typeof integrityGuard.checkHealthy !== 'function' || typeof integrityGuard.assertHealthy !== 'function')) throw new Error('Official Zion mode requires a verified IntegrityGuard');
+    this.integrityGuard = integrityGuard;
+    this.maxFrameBytes = maxFrameBytes; this.maxMessageBytes = this.genesis?.limits.maxMessageBytes ?? maxFrameBytes; this.allowedTypes = new Set(allowedTypes); this.trustedPeerIds = trustedPeerIds === null ? null : new Set(trustedPeerIds); this.onMessage = onMessage;
+    this.replayGuard = replayGuard; this.rateLimiter = rateLimiter; this.transferScheduler = transferScheduler; this.now = now;
+    this.networkId = this.genesis ? calculateNetworkId(this.genesis) : null;
+    this.connections = new Set(); this.server = null; this.started = false;
+    this.removeQuarantineListener = this.networkMode === 'official' && typeof integrityGuard.addQuarantineListener === 'function'
+      ? integrityGuard.addQuarantineListener(report => this.#isolateForIntegrityFailure(report?.reason ?? 'integrity-quarantine'))
+      : null;
+    if (this.networkMode === 'official' && integrityGuard.status?.quarantined) {
+      this.#isolateForIntegrityFailure(integrityGuard.status.reason ?? 'integrity-quarantine');
+    }
+  }
+
+  async listen() {
+    if (this.started) throw new Error('Transport already started');
+    if (this.networkMode === 'official') await this.integrityGuard.checkHealthy();
+    this.server = createServer(socket => this.#accept(socket));
+    this.server.maxConnections = this.maxConnections;
+    await new Promise((resolve, reject) => {
+      const onError = error => { this.server.off('listening', onListening); reject(error); };
+      const onListening = () => { this.server.off('error', onError); resolve(); };
+      this.server.once('error', onError); this.server.once('listening', onListening);
+      this.server.listen({ host: this.host, port: this.port, backlog: this.maxConnections });
+    });
+    this.started = true;
+    const address = this.server.address();
+    return Object.freeze({ host: address.address, port: address.port });
+  }
+
+  #accept(socket) {
+    if (this.connections.size >= this.maxConnections) { socket.destroy(); return; }
+    this.#attach(socket);
+  }
+
+  #attach(socket) {
+    this.connections.add(socket);
+    const session = { localNonce: randomBytes(32).toString('hex'), remoteNonce: null, authenticated: !this.genesis };
+    socket.__zionSession = session;
+    socket.setTimeout(15_000, () => socket.destroy());
+    socket.setNoDelay(true);
+    let pending = Buffer.alloc(0);
+    let queuedFrames = 0;
+    let processing = Promise.resolve();
+    socket.on('data', chunk => {
+      if (socket.destroyed) return;
+      pending = Buffer.concat([pending, chunk]);
+      if (pending.length > this.maxFrameBytes && !pending.includes(0x0a)) { socket.destroy(); return; }
+      let newline;
+      while ((newline = pending.indexOf(0x0a)) !== -1) {
+        const frame = pending.subarray(0, newline);
+        pending = pending.subarray(newline + 1);
+        if (!frame.length || frame.length > this.maxFrameBytes) { socket.destroy(); return; }
+        if (queuedFrames >= MAX_QUEUED_FRAMES_PER_SOCKET) { socket.destroy(); return; }
+        queuedFrames++;
+        // Serialize handler execution and cap queued work per socket. Without this, a
+        // fast peer can create an unbounded number of concurrent async handler calls.
+        processing = processing
+          .then(() => socket.destroyed ? undefined : this.#processFrame(socket, frame))
+          .catch(() => socket.destroy())
+          .finally(() => { queuedFrames--; });
+        if (socket.destroyed) return;
+      }
+      if (pending.length > this.maxFrameBytes) socket.destroy();
+    });
+    socket.on('error', () => {});
+    socket.on('close', () => this.connections.delete(socket));
+    if (this.genesis) this.#sendHandshake(socket, { type: 'ZION_HANDSHAKE', networkId: this.networkId, protocolMajor: this.genesis.protocolMajor, nonce: session.localNonce });
+  }
+
+  /** Open an authenticated-message TCP connection and attach the inbound frame parser. */
+  async connect(host, port) {
+    if (typeof host !== 'string' || !host || !Number.isInteger(port) || port < 1 || port > 65535) throw new TypeError('Invalid peer address');
+    if (this.connections.size >= this.maxConnections) throw new Error('Connection capacity reached');
+    const socket = createConnection({ host, port });
+    await new Promise((resolve, reject) => {
+      const onError = error => { socket.off('connect', onConnect); reject(error); };
+      const onConnect = () => { socket.off('error', onError); resolve(); };
+      socket.once('error', onError); socket.once('connect', onConnect);
+    });
+    if (this.connections.size >= this.maxConnections) { socket.destroy(); throw new Error('Connection capacity reached'); }
+    this.#attach(socket);
+    return socket;
+  }
+
+  #sendHandshake(socket, payload) {
+    const signed = signPeerMessage(this.identity, payload, { now: this.now() });
+    const frame = Buffer.from(`${JSON.stringify(signed)}\n`);
+    if (frame.length > this.maxFrameBytes) { socket.destroy(); return; }
+    socket.write(frame);
+  }
+
+  async #processFrame(socket, frame) {
+    if (this.networkMode === 'official') await this.integrityGuard.checkHealthy();
+    let message;
+    try { message = JSON.parse(frame.toString('utf8')); }
+    catch { socket.destroy(); return; }
+    const checked = verifyPeerMessage(message, { now: this.now(), maxBytes: this.maxFrameBytes });
+    if (!checked.ok || (this.trustedPeerIds && !this.trustedPeerIds.has(checked.nodeId))) { socket.destroy(); return; }
+    // Admission control applies to handshake frames as well as application traffic.
+    if (!this.rateLimiter.allow(checked.nodeId) || !this.replayGuard.accept(message, this.now())) { socket.destroy(); return; }
+    let payloadBytes;
+    try { payloadBytes = Buffer.byteLength(JSON.stringify(checked.payload), 'utf8'); }
+    catch { socket.destroy(); return; }
+    if (payloadBytes > this.maxMessageBytes || !checked.payload || typeof checked.payload !== 'object' || Array.isArray(checked.payload)) { socket.destroy(); return; }
+    if (this.genesis && !socket.__zionSession?.authenticated) {
+      const session = socket.__zionSession; const payload = checked.payload;
+      if (payload?.type === 'ZION_HANDSHAKE' && payload.networkId === this.networkId &&
+          payload.protocolMajor === this.genesis.protocolMajor && typeof payload.nonce === 'string' && /^[a-f0-9]{64}$/.test(payload.nonce) &&
+          payload.nonce !== session.localNonce && (!session.remoteNonce || session.remoteNonce === payload.nonce)) {
+        session.remoteNonce = payload.nonce;
+        this.#sendHandshake(socket, { type: 'ZION_HANDSHAKE_ACK', networkId: this.networkId, protocolMajor: this.genesis.protocolMajor, nonce: session.localNonce, echo: session.remoteNonce });
+        return;
+      }
+      if (payload?.type === 'ZION_HANDSHAKE_ACK' && payload.networkId === this.networkId &&
+          payload.protocolMajor === this.genesis.protocolMajor && payload.echo === session.localNonce &&
+          typeof payload.nonce === 'string' && payload.nonce === session.remoteNonce) {
+        session.authenticated = true;
+        return;
+      }
+      socket.destroy(); return;
+    }
+    if (this.genesis && (checked.payload?.type === 'ZION_HANDSHAKE' || checked.payload?.type === 'ZION_HANDSHAKE_ACK')) { socket.destroy(); return; }
+    if (!this.allowedTypes.has(checked.payload?.type)) { socket.destroy(); return; }
+    if (this.networkMode === 'official') {
+      const operation = validateProtocolOperation(checked.payload, { genesis: this.genesis, now: this.now() });
+      if (!operation.ok) { socket.destroy(); return; }
+    }
+    try {
+      await this.onMessage(Object.freeze({ nodeId: checked.nodeId, payload: checked.payload, envelope: message }), socket);
+    } catch {
+      // Fail closed on handler errors; do not leak internal error details to peers.
+      socket.destroy();
+    }
+  }
+
+  send(socket, payload) {
+    if (this.networkMode === 'official') this.integrityGuard.assertHealthy();
+    if (!socket || socket.destroyed || !socket.writable) throw new Error('Peer socket is not writable');
+    if (this.genesis && !socket.__zionSession?.authenticated) throw new Error('Protocol handshake has not completed');
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload) || typeof payload.type !== 'string' || !this.allowedTypes.has(payload.type)) throw new TypeError('Unsupported protocol message type');
+    if (Buffer.byteLength(JSON.stringify(payload), 'utf8') > this.maxMessageBytes) throw new RangeError('Protocol message exceeds configured genesis limit');
+    if (this.networkMode === 'official') {
+      const operation = validateProtocolOperation(payload, { genesis: this.genesis, now: this.now() });
+      if (!operation.ok) throw new TypeError(`Invalid official protocol operation: ${operation.reason}`);
+    }
+    const signed = signPeerMessage(this.identity, payload, { now: this.now() });
+    const frame = Buffer.from(`${JSON.stringify(signed)}\n`);
+    if (frame.length > this.maxFrameBytes) throw new RangeError('Protocol frame too large');
+    if (this.transferScheduler) return this.transferScheduler.enqueue(socket, frame);
+    return socket.write(frame);
+  }
+
+  #isolateForIntegrityFailure(_reason) {
+    // Stop accepting peers first, then terminate established sessions. Do not rely on
+    // the next send/receive operation to notice quarantine.
+    for (const socket of this.connections) socket.destroy();
+    this.connections.clear();
+    if (this.server?.listening) {
+      try { this.server.close(() => {}); } catch { /* quarantine remains fail-closed */ }
+    }
+    this.started = false;
+  }
+
+  async close() {
+    this.removeQuarantineListener?.();
+    this.removeQuarantineListener = null;
+    for (const socket of this.connections) socket.destroy();
+    this.connections.clear();
+    if (this.server?.listening) await new Promise((resolve, reject) => this.server.close(error => error ? reject(error) : resolve()));
+    this.started = false;
+  }
+}

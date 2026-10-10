@@ -1,0 +1,269 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { connect } from 'node:net';
+import { once } from 'node:events';
+import { createNodeIdentity } from '../src/peer-security.js';
+import { PeerTransport } from '../src/peer-transport.js';
+
+function waitFor(predicate, timeoutMs = 1500) {
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const tick = () => {
+      if (predicate()) return resolve();
+      if (Date.now() - started > timeoutMs) return reject(new Error('Timed out waiting for peer message'));
+      setTimeout(tick, 5);
+    };
+    tick();
+  });
+}
+
+test('transport accepts a valid signed peer message and exposes authenticated identity', async t => {
+  let received;
+  const server = new PeerTransport({ identity: createNodeIdentity(), onMessage: async message => { received = message; } });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({ identity: createNodeIdentity() });
+  const socket = connect(address.port, '127.0.0.1');
+  t.after(() => socket.destroy());
+  await once(socket, 'connect');
+  client.send(socket, { type: 'PING', nonce: 'test' });
+  await waitFor(() => Boolean(received));
+  assert.equal(received.nodeId, client.identity.nodeId);
+  assert.deepEqual(received.payload, { type: 'PING', nonce: 'test' });
+});
+
+test('transport rejects unsupported message types before sending', async t => {
+  const client = new PeerTransport({ identity: createNodeIdentity() });
+  const socket = { destroyed: false, writable: true, write() { throw new Error('should not write'); } };
+  assert.throws(() => client.send(socket, { type: 'RUN_REMOTE_CODE' }), /Unsupported protocol message type/);
+});
+
+test('transport defaults to loopback and bounds frames', async t => {
+  const server = new PeerTransport({ identity: createNodeIdentity(), maxFrameBytes: 512 });
+  assert.equal(server.host, '127.0.0.1');
+  assert.equal(server.maxFrameBytes, 512);
+  await server.listen();
+  await server.close();
+});
+
+test('transport serializes async handlers and bounds queued frames per socket', async t => {
+  let release;
+  let entered = 0;
+  let concurrent = 0;
+  let maxConcurrent = 0;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const server = new PeerTransport({
+    identity: createNodeIdentity(),
+    onMessage: async () => {
+      entered++;
+      concurrent++;
+      maxConcurrent = Math.max(maxConcurrent, concurrent);
+      if (entered === 1) await blocked;
+      concurrent--;
+    }
+  });
+  const address = await server.listen();
+  t.after(async () => { release(); await server.close(); });
+  const client = new PeerTransport({ identity: createNodeIdentity() });
+  const socket = connect(address.port, '127.0.0.1');
+  t.after(() => socket.destroy());
+  await once(socket, 'connect');
+  for (let i = 0; i < 70; i++) client.send(socket, { type: 'PING', nonce: String(i) });
+  await waitFor(() => socket.destroyed || entered > 0);
+  assert.equal(maxConcurrent, 1);
+  assert.equal(socket.destroyed, true, 'socket is closed when its per-connection work queue overflows');
+});
+
+
+test('transport applies rate limiting before replay-cache admission', async t => {
+  const replayGuard = {
+    accepted: 0,
+    accept() { this.accepted++; return true; }
+  };
+  const rateLimiter = { allow() { return false; } };
+  const server = new PeerTransport({ identity: createNodeIdentity(), replayGuard, rateLimiter });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({ identity: createNodeIdentity() });
+  const socket = connect(address.port, '127.0.0.1');
+  t.after(() => socket.destroy());
+  await once(socket, 'connect');
+  client.send(socket, { type: 'PING', nonce: 'rate-limited' });
+  await waitFor(() => socket.destroyed);
+  assert.equal(replayGuard.accepted, 0, 'rate-limited messages must not consume replay-cache entries');
+});
+
+
+test('non-loopback binding requires an explicit trusted peer allowlist', () => {
+  assert.throws(() => new PeerTransport({ identity: createNodeIdentity(), host: '0.0.0.0' }), /trustedPeerIds allowlist/);
+  assert.throws(() => new PeerTransport({ identity: createNodeIdentity(), host: '0.0.0.0', trustedPeerIds: ['bad-id'] }), /trustedPeerIds/);
+  assert.doesNotThrow(() => new PeerTransport({ identity: createNodeIdentity(), host: '0.0.0.0', trustedPeerIds: ['a'.repeat(64)] }));
+});
+
+test('transport rejects a correctly signed message from an identity outside the trust allowlist', async t => {
+  const untrustedIdentity = createNodeIdentity();
+  const server = new PeerTransport({ identity: createNodeIdentity(), trustedPeerIds: ['a'.repeat(64)] });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({ identity: untrustedIdentity });
+  const socket = connect(address.port, '127.0.0.1');
+  t.after(() => socket.destroy());
+  await once(socket, 'connect');
+  client.send(socket, { type: 'PING', nonce: 'untrusted-peer' });
+  await waitFor(() => socket.destroyed);
+});
+
+test('transport routes outbound signed frames through adaptive bandwidth scheduler when configured', async t => {
+  const { AdaptiveBandwidthPolicy } = await import('../src/adaptive-bandwidth-policy.js');
+  const { AdaptiveTransferScheduler } = await import('../src/adaptive-transfer-scheduler.js');
+  let received;
+  const server = new PeerTransport({ identity: createNodeIdentity(), onMessage: async message => { received = message; } });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const policy = new AdaptiveBandwidthPolicy({ maxUploadKiBps: 20, activeUploadFraction: 1, activeDownloadFraction: 1 });
+  const scheduler = new AdaptiveTransferScheduler({ policy, getTelemetry: () => ({ telemetryHealthy: true, userActive: true, networkBusy: 0, measuredUploadKiBps: 20, measuredDownloadKiBps: 20 }) });
+  const client = new PeerTransport({ identity: createNodeIdentity(), transferScheduler: scheduler });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(() => { socket.destroy(); scheduler.close(); });
+  const result = await client.send(socket, { type: 'PING', nonce: 'scheduled' });
+  await waitFor(() => Boolean(received));
+  assert.equal(received.nodeId, client.identity.nodeId);
+  assert.equal(received.payload.nonce, 'scheduled');
+  assert.ok(result.bytes > 0);
+  assert.ok(result.uploadKiBps <= 20);
+});
+
+function testGenesis(name = 'Zion test network') {
+  return {
+    schemaVersion: 1, networkName: name, protocolMajor: 1, genesisTime: 1800000000,
+    serialization: 'canonical-json-v1',
+    crypto: { identity: 'Ed25519', signature: 'Ed25519', hash: 'SHA-256', aead: 'AES-256-GCM' },
+    contentAddress: { algorithm: 'SHA-256', encoding: 'lowercase-hex' },
+    erasureCoding: { algorithm: 'Reed-Solomon', dataShards: 10, parityShards: 20 },
+    limits: { maxFrameBytes: 262144, maxMessageBytes: 262144, maxTtlMs: 600000, maxHops: 16 },
+    replay: { maxClockSkewMs: 120000, nonceBytes: 32, retentionMs: 120000 },
+    rules: { gossipIsDiscoveryOnly: true, localResourceLimitsAreAuthoritative: true, breakingChangesRequireNewNetwork: true }
+  };
+}
+
+test('genesis-enabled peers authenticate a challenge-response handshake before application messages', async t => {
+  let received;
+  const genesis = testGenesis();
+  const server = new PeerTransport({ identity: createNodeIdentity(), protocolGenesis: genesis, onMessage: async message => { received = message; } });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({ identity: createNodeIdentity(), protocolGenesis: genesis });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(() => socket.destroy());
+  await waitFor(() => socket.__zionSession?.authenticated && [...server.connections][0]?.__zionSession?.authenticated);
+  client.send(socket, { type: 'PING', nonce: 'genesis-handshake' });
+  await waitFor(() => Boolean(received));
+  assert.equal(received.payload.nonce, 'genesis-handshake');
+});
+
+test('genesis-enabled peers reject different network IDs before application messages', async t => {
+  const server = new PeerTransport({ identity: createNodeIdentity(), protocolGenesis: testGenesis('Zion A') });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({ identity: createNodeIdentity(), protocolGenesis: testGenesis('Zion B') });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(() => socket.destroy());
+  await waitFor(() => socket.destroyed || [...server.connections].every(peer => peer.destroyed));
+  assert.equal(socket.destroyed, true);
+});
+
+test('genesis-enabled peers cannot send application messages before handshake', async () => {
+  const transport = new PeerTransport({ identity: createNodeIdentity(), protocolGenesis: testGenesis() });
+  const socket = { destroyed: false, writable: true, __zionSession: { authenticated: false }, write() { throw new Error('must not write'); } };
+  assert.throws(() => transport.send(socket, { type: 'PING' }), /handshake has not completed/);
+});
+
+
+test('official network mode requires genesis and applies genesis message limits', async () => {
+  assert.throws(() => new PeerTransport({ identity: createNodeIdentity(), networkMode: 'official' }), /requires a reviewed protocol genesis/);
+  const genesis = testGenesis();
+  assert.throws(() => new PeerTransport({ identity: createNodeIdentity(), networkMode: 'official', protocolGenesis: genesis, maxFrameBytes: genesis.limits.maxFrameBytes + 1 }), /exceeds protocol genesis/);
+  const integrityGuard = { async checkHealthy() {}, assertHealthy() {} };
+  const transport = new PeerTransport({ identity: createNodeIdentity(), networkMode: 'official', protocolGenesis: genesis, integrityGuard });
+  const socket = { destroyed: false, writable: true, __zionSession: { authenticated: true }, write() { return true; } };
+  assert.throws(() => transport.send(socket, { type: 'PING', value: 'x'.repeat(genesis.limits.maxMessageBytes) }), /exceeds configured genesis limit/);
+  await transport.close();
+});
+
+test('official mode rejects malformed application operations before sending', async () => {
+  const integrityGuard = { async checkHealthy() {}, assertHealthy() {} };
+  const transport = new PeerTransport({ identity: createNodeIdentity(), protocolGenesis: testGenesis(), networkMode: 'official', integrityGuard });
+  const socket = { destroyed: false, writable: true, __zionSession: { authenticated: true }, write() { throw new Error('invalid operation must not be sent'); } };
+  assert.throws(() => transport.send(socket, { type: 'PING' }), /Invalid official protocol operation: invalid-ping-nonce/);
+  assert.throws(() => transport.send(socket, { type: 'RUN_CODE', code: 'bad' }), /Unsupported protocol message type/);
+  await transport.close();
+});
+
+test('official transport immediately closes peer sessions and stops listening on integrity quarantine', async t => {
+  const listeners = new Set();
+  const integrityGuard = {
+    status: { verified: true, quarantined: false, reason: null },
+    async checkHealthy() { if (this.status.quarantined) throw Object.assign(new Error('quarantined'), { code: 'ZION_INTEGRITY_QUARANTINED' }); },
+    assertHealthy() { if (this.status.quarantined) throw Object.assign(new Error('quarantined'), { code: 'ZION_INTEGRITY_QUARANTINED' }); },
+    addQuarantineListener(listener) { listeners.add(listener); return () => listeners.delete(listener); }
+  };
+  const transport = new PeerTransport({ identity: createNodeIdentity(), protocolGenesis: testGenesis(), networkMode: 'official', integrityGuard });
+  const address = await transport.listen();
+  const client = new PeerTransport({ identity: createNodeIdentity() });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(async () => { await client.close(); await transport.close(); });
+  await waitFor(() => transport.connections.size === 1);
+  assert.equal(transport.server.listening, true);
+  integrityGuard.status = { verified: false, quarantined: true, reason: 'hash-mismatch:src/peer-transport.js' };
+  for (const listener of listeners) await listener({ reason: integrityGuard.status.reason });
+  await waitFor(() => socket.destroyed && transport.connections.size === 0 && !transport.server.listening);
+  assert.equal(transport.started, false);
+  assert.throws(() => transport.send(socket, { type: 'PING', nonce: 'after-quarantine' }), /ZION_INTEGRITY_QUARANTINED|not writable|quarantined/);
+});
+
+test('three-node isolation quarantines only the compromised node while healthy peers continue communicating', async t => {
+  const makeGuard = () => {
+    const listeners = new Set();
+    return {
+      status: { verified: true, quarantined: false, reason: null },
+      async checkHealthy() {
+        if (this.status.quarantined) throw Object.assign(new Error('quarantined'), { code: 'ZION_INTEGRITY_QUARANTINED' });
+      },
+      assertHealthy() {
+        if (this.status.quarantined) throw Object.assign(new Error('quarantined'), { code: 'ZION_INTEGRITY_QUARANTINED' });
+      },
+      addQuarantineListener(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+      async quarantine(reason) {
+        this.status = { verified: false, quarantined: true, reason };
+        for (const listener of listeners) await listener({ reason });
+      }
+    };
+  };
+  const genesis = testGenesis('Zion three-node isolation');
+  let healthyMessage;
+  const guardA = makeGuard();
+  const guardB = makeGuard();
+  const guardC = makeGuard();
+  const nodeA = new PeerTransport({ identity: createNodeIdentity(), protocolGenesis: genesis, networkMode: 'official', integrityGuard: guardA });
+  const nodeB = new PeerTransport({ identity: createNodeIdentity(), protocolGenesis: genesis, networkMode: 'official', integrityGuard: guardB });
+  const nodeC = new PeerTransport({ identity: createNodeIdentity(), protocolGenesis: genesis, networkMode: 'official', integrityGuard: guardC,
+    onMessage: async message => { if (message.payload.type === 'PING') healthyMessage = message; } });
+  const [addressA, addressB, addressC] = await Promise.all([nodeA.listen(), nodeB.listen(), nodeC.listen()]);
+  t.after(async () => { await Promise.all([nodeA.close(), nodeB.close(), nodeC.close()]); });
+  const aToB = await nodeA.connect('127.0.0.1', addressB.port);
+  const cToB = await nodeC.connect('127.0.0.1', addressB.port);
+  const aToC = await nodeA.connect('127.0.0.1', addressC.port);
+  await waitFor(() => aToB.__zionSession?.authenticated && cToB.__zionSession?.authenticated && aToC.__zionSession?.authenticated &&
+    [...nodeB.connections].length === 2 && [...nodeC.connections].some(socket => socket.__zionSession?.authenticated));
+
+  await guardB.quarantine('hash-mismatch:src/peer-transport.js');
+  await waitFor(() => aToB.destroyed && cToB.destroyed && nodeB.connections.size === 0 && !nodeB.server.listening);
+  assert.equal(aToC.destroyed, false, 'healthy A-C session must not be closed by B quarantine');
+  nodeA.send(aToC, { type: 'PING', nonce: 'healthy-after-isolation' });
+  await waitFor(() => Boolean(healthyMessage));
+  assert.equal(healthyMessage.nodeId, nodeA.identity.nodeId);
+  assert.equal(healthyMessage.payload.nonce, 'healthy-after-isolation');
+  assert.equal(nodeA.started, true);
+  assert.equal(nodeC.started, true);
+  assert.equal(nodeB.started, false);
+});

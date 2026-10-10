@@ -1,30 +1,39 @@
-# Auditoria de continuidade — Zion v0.33.32
+# Auditoria de continuidade e backup — Zion v0.33.32
 
 Data: 2026-10-10
 
 ## Resultado
 
-A v0.33.32 é uma release de recuperação documental baseada na v0.33.31. Não introduz mudanças no runtime compartilhado; atualiza metadados e documentação.
+Foi criado um release local v0.33.32 voltado à recuperação documental e preservação. O código de runtime foi herdado da v0.33.31; o incremento de versão altera package metadata e documentação, sem pretender mudar o comportamento em execução.
 
-## Verificações locais registradas
+## Reparos executados
 
-- `npm test`: 533 aprovados, 0 falhas.
-- `npm run check`: sintaxe aprovada em 166 arquivos JavaScript.
-- `npm run demo`: código de saída 0.
-- `npm run client:demo`: código de saída 0.
-- Testes estruturais dos ZIPs e verificações SHA-256: aprovados no ambiente local.
+- Reintroduzidos `AUDIT_V0.33.20.md` e `AUDIT_V0.33.30.md` no pacote distribuível, a partir dos relatórios preservados em `/mnt/data`.
+- Reconstruídas as entradas do `CHANGELOG.md` para v0.33.25–v0.33.29 e v0.33.31 com base nos relatórios e pacotes disponíveis; incluída v0.33.32 como release documental.
+- Adicionado `CONTINUITY_RECOVERY.md` com a proveniência e limites explícitos.
+- Criado um backup mestre contendo árvore-fonte, release ZIPs históricos disponíveis, checksums adjacentes, relatórios de auditoria e logs `zion_*.log` existentes.
+- Criado `SHA256SUMS.txt` com hash por arquivo no diretório do backup mestre, excluindo apenas o próprio manifesto para evitar autorreferência.
 
-## Inventário e limites
+## Testes reproduzidos
 
-O backup local contém 26 ZIPs de releases entre v0.33.7 e v0.33.32, além da árvore-fonte, relatórios e logs disponíveis. As releases v0.33.1–v0.33.6 não foram encontradas no conjunto inspecionado. Isso não prova que nunca existiram.
+- `npm test`: 533 pass, 0 fail.
+- `npm run check`: 166 arquivos JavaScript verificados.
+- `npm run demo`: exit 0.
+- `npm run client:demo`: exit 0.
+- `unzip -t` do ZIP de release e do backup mestre: sem erros.
+- SHA-256 dos dois ZIPs foi calculado após a criação e conferido novamente.
 
-O backup não contém transcrições completas de conversas apagadas e não pode recuperar alterações que nunca foram materializadas em arquivos preservados.
+## Inventário do backup mestre
 
-## Estado da publicação
+- 26 ZIPs de releases Zion preservados.
+- 23 relatórios de auditoria preservados na pasta `audits`.
+- 56 logs preservados na pasta `logs`.
+- Árvore-fonte v0.33.32 e arquivo ZIP de release incluídos.
 
-Este repositório está sendo inicializado. O commit inicial publica documentação, mas ainda não inclui a árvore-fonte completa nem o ZIP mestre. Não houve deploy de produção. A publicação completa exige enviar e verificar os arquivos restantes.
+## GitHub e deploy
 
-## Auditoria remota adicional (2026-10-10)
-A árvore GitHub foi listada recursivamente: 12 entradas no total, sem a árvore de runtime completa. O repositório ainda não equivale ao ZIP mestre de 388 entradas. O ZIP binário também não está armazenado no GitHub.
+O repositório conectado `LU9DI/zion` foi consultado pela API GitHub e retornou explicitamente `This repository is empty`. Não há conteúdo remoto anterior a comparar e não foi feito push ou deploy. Este resultado é um backup local baixável, não um backup remoto redundante.
 
-SHA-256 recalculado para o ZIP mestre materializado: `e0d7ae6ac2ed68f4dda1f975204df360be6c68ca79be4a86829d25430311f74a`. O sidecar antigo diverge e deve ser tratado como desatualizado.
+## Limites
+
+O backup preserva artefatos disponíveis no ambiente de trabalho, não a transcrição de conversas apagadas. Não é possível provar que todas as ideias discutidas, mas nunca implementadas/documentadas, estejam recuperadas. A suíte de testes é evidência local de regressão, não certificação independente nem prova de durabilidade contra perda de energia em todos os sistemas de arquivos.

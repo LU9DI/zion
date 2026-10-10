@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f8fa">
+  <meta name="description" content="Painel simples para acompanhar arquivos, nós e atividade da nuvem Zion.">
+  <title>Zion Cloud — Seu espaço, sob seu controle</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <a class="brand" href="#inicio" aria-label="Zion Cloud início">
+        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 40 40"><path d="M7 10.5 20 4l13 6.5v19L20 36 7 29.5z"/><path d="M13 14h14L13 26h14"/></svg></span>
+        <span class="brand-copy"><strong>zion</strong><small>cloud</small></span>
+      </a>
+      <div class="workspace-label">SEU ESPAÇO</div>
+      <nav class="main-nav" aria-label="Navegação principal">
+        <button class="nav-item active" data-page="inicio"><span class="nav-icon">⌂</span>Visão geral</button>
+        <button class="nav-item" data-page="arquivos"><span class="nav-icon">▤</span>Meus arquivos</button>
+        <button class="nav-item" data-page="nos"><span class="nav-icon">◉</span>Rede e nós</button>
+        <button class="nav-item" data-page="social"><span class="nav-icon">♡</span>Social e mensagens</button>
+        <button class="nav-item" data-page="notificacoes"><span class="nav-icon">♧</span>Notificações <span class="nav-count hidden" id="notification-nav-count" aria-label="Notificações não visualizadas">0</span></button>
+        <button class="nav-item" data-page="atividade"><span class="nav-icon">◷</span>Atividade</button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="storage-mini">
+          <div class="storage-mini-head"><span>Seu espaço</span><strong id="sidebar-usage">2,4 GB de 10 GB</strong></div>
+          <div class="progress-track"><span style="width:24%" id="sidebar-progress"></span></div>
+          <small>Os limites são seus. Você decide.</small>
+        </div>
+        <button class="nav-item" data-page="configuracoes"><span class="nav-icon">⚙</span>Configurações</button>
+        <div class="profile"><span class="avatar">Z</span><span><strong>Meu Zion</strong><small>Espaço pessoal</small></span><span class="profile-more">•••</span></div>
+      </div>
+    </aside>
+
+    <main class="main-area">
+      <header class="topbar">
+        <button class="mobile-menu" id="mobile-menu" aria-label="Abrir menu">☰</button>
+        <div class="breadcrumbs"><span>Zion Cloud</span><span class="crumb-sep">/</span><strong id="current-crumb">Visão geral</strong></div>
+        <div class="topbar-actions"><span class="demo-indicator"><i></i> Prévia local</span><button class="icon-button" id="help-button" aria-label="Ajuda" title="Ajuda">?</button><span class="avatar avatar-small">Z</span></div>
+      </header>
+
+      <div class="content" id="content">
+        <section class="page active" id="page-inicio" data-title="Visão geral">
+          <div class="welcome-row"><div><p class="eyebrow">SEU ESPAÇO DIGITAL</p><h1>Tudo em seu lugar.</h1><p class="subheading">Seus arquivos, sua rede, suas regras.</p></div><button class="button button-primary" id="upload-top"><span>＋</span> Enviar arquivos</button></div>
+          <div class="notice" role="note"><span class="notice-icon">✦</span><div><strong>Bem-vindo à Zion Cloud</strong><p>Uma forma mais simples de cuidar dos seus arquivos. Você controla o que compartilha e os recursos que usa.</p></div><button class="notice-close" aria-label="Dispensar aviso">×</button></div>
+          <div class="section-heading"><div><h2>Seu espaço hoje</h2><p>Um resumo rápido da sua nuvem.</p></div><span class="updated-label"><i></i> Dados de demonstração</span></div>
+          <div class="stats-grid">
+            <article class="stat-card"><div class="stat-top"><span>Arquivos</span><span class="stat-symbol lavender">▤</span></div><strong class="stat-value" id="file-count">128</strong><span class="stat-foot">Em seu espaço pessoal</span></article>
+            <article class="stat-card"><div class="stat-top"><span>Espaço utilizado</span><span class="stat-symbol blue">▦</span></div><strong class="stat-value">2,4 <small>GB</small></strong><div class="progress-track stat-progress"><span style="width:24%"></span></div><span class="stat-foot">24% do limite de 10 GB</span></article>
+            <article class="stat-card"><div class="stat-top"><span>Nós conectados</span><span class="stat-symbol mint">◉</span></div><strong class="stat-value">3 <small>nós</small></strong><span class="stat-foot"><span class="status-dot"></span> Rede de demonstração</span></article>
+          </div>
+          <div class="dashboard-grid">
+            <section class="panel recent-panel"><div class="panel-heading"><div><h2>Arquivos recentes</h2><p>O que você acessou por último.</p></div><button class="text-button" data-goto="arquivos">Ver todos <span>→</span></button></div><div class="file-list" id="recent-files"></div><div class="panel-footer"><button class="button button-secondary full-width" data-goto="arquivos">Abrir meus arquivos</button></div></section>
+            <section class="panel network-panel"><div class="panel-heading"><div><h2>Sua rede</h2><p>Visão rápida da conexão.</p></div><span class="live-pill"><i></i> Simulada</span></div><div class="network-illustration" aria-hidden="true"><div class="network-line line-a"></div><div class="network-line line-b"></div><div class="network-line line-c"></div><div class="network-core">Z</div><div class="network-node node-a"><span>PC</span></div><div class="network-node node-b"><span>NB</span></div><div class="network-node node-c"><span>☁</span></div></div><div class="network-summary"><div><span class="status-dot"></span><strong>3 nós conectados</strong></div><span class="muted">Nenhum alerta simulado</span></div><button class="button button-secondary full-width" data-goto="nos">Ver detalhes da rede</button></section>
+          </div>
+          <section class="panel activity-panel"><div class="panel-heading"><div><h2>Atividade recente</h2><p>Acompanhe o que acontece no seu espaço.</p></div><button class="text-button" data-goto="atividade">Ver atividade <span>→</span></button></div><div id="recent-activity" class="activity-list"></div></section>
+          <p class="footnote">Esta é uma prévia interativa com dados fictícios. Ainda não está conectada a uma API de nuvem nem armazena arquivos em nós remotos.</p>
+        </section>
+
+        <section class="page" id="page-arquivos" data-title="Meus arquivos">
+          <div class="page-title-row"><div><p class="eyebrow">SEUS DOCUMENTOS</p><h1>Meus arquivos</h1><p class="subheading">Encontre e organize seus arquivos em um só lugar.</p></div><button class="button button-primary" id="upload-files"><span>＋</span> Enviar arquivos</button></div>
+          <div class="toolbar"><label class="search-box"><span>⌕</span><input id="file-search" type="search" placeholder="Buscar arquivos..." aria-label="Buscar arquivos"></label><select id="file-filter" aria-label="Filtrar por tipo"><option value="todos">Todos os tipos</option><option value="documento">Documentos</option><option value="imagem">Imagens</option><option value="video">Vídeos</option><option value="outro">Outros</option></select><button class="icon-button view-toggle" id="view-toggle" title="Alternar visualização" aria-label="Alternar visualização">▦</button></div>
+          <div class="file-table-wrap"><table class="file-table"><thead><tr><th>Nome</th><th>Tipo</th><th>Tamanho</th><th>Última alteração</th><th><span class="sr-only">Ações</span></th></tr></thead><tbody id="all-files"></tbody></table><div id="empty-files" class="empty-state hidden"><span>⌕</span><strong>Nenhum arquivo encontrado</strong><p>Tente outra busca ou envie um novo arquivo.</p></div></div>
+          <div class="footnote">Os arquivos adicionados nesta prévia aparecem apenas nesta sessão do navegador.</div>
+        </section>
+
+        <section class="page" id="page-nos" data-title="Rede e nós">
+          <div class="page-title-row"><div><p class="eyebrow">CONEXÕES</p><h1>Rede e nós</h1><p class="subheading">Veja o estado dos participantes da sua rede.</p></div><span class="live-pill large-pill"><i></i> Prévia simulada</span></div>
+          <div class="notice"><span class="notice-icon">ⓘ</span><div><strong>Você está vendo uma demonstração</strong><p>Os nós abaixo são exemplos visuais, não máquinas reais conectadas à rede Zion.</p></div></div>
+          <div class="node-grid"><article class="node-card"><div class="node-card-top"><span class="node-avatar">⌂</span><span class="status-tag"><i></i> Conectado</span></div><h3>Este dispositivo</h3><p>Seu espaço local</p><div class="node-details"><span>Estado</span><strong>Operacional (simulado)</strong><span>Função</span><strong>Dispositivo pessoal</strong></div></article><article class="node-card"><div class="node-card-top"><span class="node-avatar node-blue">▦</span><span class="status-tag"><i></i> Conectado</span></div><h3>Nó de armazenamento A</h3><p>Participante de exemplo</p><div class="node-details"><span>Estado</span><strong>Operacional (simulado)</strong><span>Função</span><strong>Armazenamento</strong></div></article><article class="node-card"><div class="node-card-top"><span class="node-avatar node-purple">⌁</span><span class="status-tag status-neutral"><i></i> Em espera</span></div><h3>Nó de armazenamento B</h3><p>Participante de exemplo</p><div class="node-details"><span>Estado</span><strong>Em espera (simulado)</strong><span>Função</span><strong>Réplica de exemplo</strong></div></article></div>
+          <section class="panel safety-panel"><div class="panel-heading"><div><h2>Seus controles</h2><p>Decida quando seu dispositivo participa.</p></div><span class="stat-symbol mint">⌘</span></div><div class="setting-row"><div><strong>Contribuir com armazenamento</strong><p>Permite que seu dispositivo participe quando houver integração real.</p></div><label class="switch"><input id="contribute-toggle" type="checkbox"><span></span><em class="sr-only">Ativar contribuição</em></label></div><div class="setting-row"><div><strong>Limite de recursos</strong><p>Prévia: limite local ilustrativo de 20%.</p></div><span class="setting-value">20%</span></div><p class="footnote" id="contribute-message">A opção acima só altera esta demonstração. Nenhum serviço de armazenamento é iniciado.</p></section>
+        </section>
+
+        <section class="page" id="page-social" data-title="Social e mensagens">
+          <div class="page-title-row"><div><p class="eyebrow">SUA REDE SOCIAL</p><h1>Pessoas e mensagens</h1><p class="subheading">Encontre pessoas, siga perfis e converse em um só lugar.</p></div><span class="live-pill large-pill"><i></i> Protótipo local</span></div>
+          <div class="notice"><span class="notice-icon">ⓘ</span><div><strong>Interações em modo de prévia</strong><p>Seguir perfis e enviar mensagens funciona nesta sessão do navegador. Ainda não há entrega entre usuários reais, contas, criptografia ponta a ponta ou sincronização entre dispositivos.</p></div></div>
+          <div class="social-layout">
+            <section class="panel people-panel"><div class="panel-heading"><div><h2>Descobrir pessoas</h2><p>Perfis de demonstração para testar a experiência.</p></div></div><label class="search-box social-search"><span>⌕</span><input id="people-search" type="search" placeholder="Buscar por nome ou @usuário" aria-label="Buscar pessoas"></label><div id="people-list" class="people-list"></div></section>
+            <section class="panel messages-panel"><div class="panel-heading"><div><h2>Mensagens</h2><p>Escolha uma conversa para começar.</p></div><span class="message-count" id="message-count">0</span></div><div class="conversation-list" id="conversation-list"></div><div class="chat-area"><div class="chat-empty" id="chat-empty"><span>✉</span><strong>Suas conversas aparecem aqui</strong><p>Selecione uma pessoa na lista ou comece a seguir alguém.</p></div><div class="chat-thread hidden" id="chat-thread"><div class="chat-person" id="chat-person"></div><div class="chat-messages" id="chat-messages" aria-live="polite"></div><form id="message-form" class="message-form"><label class="sr-only" for="message-input">Escreva uma mensagem</label><input id="message-input" maxlength="2000" autocomplete="off" placeholder="Escreva uma mensagem…" required><button class="button button-primary" type="submit">Enviar</button></form></div></div></section>
+          </div>
+          <p class="footnote">Nenhuma mensagem sai deste navegador nesta versão. A versão conectada precisará de identidade criptográfica, entrega confiável, proteção contra spam e opção de bloquear/denunciar usuários.</p>
+        </section>
+
+        <section class="page" id="page-notificacoes" data-title="Notificações">
+          <div class="page-title-row"><div><p class="eyebrow">AVISOS DA SUA CONTA</p><h1>Notificações</h1><p class="subheading">Acompanhe avisos de inatividade, pausa e capacidade.</p></div><button class="button button-secondary" id="refresh-notifications">Atualizar</button></div>
+          <section class="panel notification-panel">
+            <div class="panel-heading"><div><h2>Central de notificações</h2><p id="notifications-status" role="status" aria-live="polite">Verificando conexão com o serviço…</p></div><label class="notification-filter-label" for="notification-filter">Exibir<select id="notification-filter"><option value="all">Todas</option><option value="pending">Entrega pendente</option><option value="delivered">Entregues</option></select></label></div>
+            <div id="notifications-list" class="notification-list" aria-live="polite"><p class="subheading">Carregando notificações…</p></div>
+          </section>
+          <p class="footnote">A central só exibe notificações reais quando uma sessão autenticada e a API do Zion estão configuradas. Nenhum aviso fictício será criado para preencher esta lista.</p>
+        </section>
+
+        <section class="page" id="page-atividade" data-title="Atividade">
+          <div class="page-title-row"><div><p class="eyebrow">HISTÓRICO</p><h1>Atividade</h1><p class="subheading">Veja os eventos recentes do seu espaço.</p></div><button class="button button-secondary" id="clear-activity">Limpar visualização</button></div>
+          <div class="notice"><span class="notice-icon">ⓘ</span><div><strong>Histórico de exemplo</strong><p>Estes eventos ilustram como a atividade poderá aparecer quando o painel estiver conectado ao serviço.</p></div></div><section class="panel"><div class="activity-list full-activity" id="all-activity"></div></section>
+        </section>
+
+        <section class="page" id="page-configuracoes" data-title="Configurações">
+          <div class="page-title-row"><div><p class="eyebrow">PREFERÊNCIAS</p><h1>Configurações</h1><p class="subheading">Ajuste como você quer usar sua nuvem.</p></div></div>
+          <section class="panel settings-panel"><div class="panel-heading"><div><h2>Geral</h2><p>Preferências desta prévia.</p></div></div><div class="setting-row"><div><strong>Nome do espaço</strong><p>Como seu espaço aparece no painel.</p></div><input class="text-input" id="workspace-name" value="Meu Zion" maxlength="40" aria-label="Nome do espaço"></div><div class="setting-row"><div><strong>Idioma</strong><p>Idioma usado na interface.</p></div><select aria-label="Idioma"><option>Português (Brasil)</option></select></div><div class="setting-row"><div><strong>Modo de demonstração</strong><p>Dados locais, sem conexão com backend.</p></div><span class="status-tag status-neutral">Ativo</span></div><div class="settings-actions"><button class="button button-primary" id="save-settings">Salvar preferências</button><span id="settings-feedback" class="feedback" role="status"></span></div></section>
+          <section class="panel settings-panel"><div class="panel-heading"><div><h2>Inatividade e espaço compartilhado</h2><p>Configure os prazos e revise o impacto antes de salvar.</p></div><span class="status-tag status-neutral" id="inactivity-settings-mode">Prévia local</span></div>
+            <div class="setting-row"><div><strong>Avisar antes da pausa</strong><p>Quando avisar, em dias sem atividade.</p></div><input class="text-input inactivity-number" id="idle-pause-warning" type="number" min="1" max="364" value="7" aria-label="Dias até o aviso de pausa"></div>
+            <div class="setting-row"><div><strong>Pausar contribuição</strong><p>Prazo total de inatividade para pausar.</p></div><input class="text-input inactivity-number" id="idle-pause-after" type="number" min="2" max="365" value="14" aria-label="Dias até pausar a contribuição"></div>
+            <div class="setting-row"><div><strong>Avisar sobre redução</strong><p>Quando avisar que a capacidade será reduzida.</p></div><input class="text-input inactivity-number" id="idle-reduction-warning" type="number" min="1" max="729" value="30" aria-label="Dias até o aviso de redução"></div>
+            <div class="setting-row"><div><strong>Aplicar redução após</strong><p>Prazo total de inatividade, incluindo o aviso prévio.</p></div><input class="text-input inactivity-number" id="idle-reduction-after" type="number" min="2" max="730" value="37" aria-label="Dias até reduzir a capacidade"></div>
+            <div class="setting-row"><div><strong>Reduzir capacidade oferecida em</strong><p>Percentual da capacidade compartilhada atual.</p></div><input class="text-input inactivity-number" id="idle-reduction-percent" type="number" min="1" max="90" value="50" aria-label="Percentual de redução"></div>
+            <div class="inactivity-preview" aria-live="polite"><strong>Resumo dos prazos</strong><p id="inactivity-preview-text">Aviso no dia 7; pausa no dia 14; aviso de redução no dia 30; redução no dia 37.</p><p class="footnote">A redução não autoriza apagar arquivos nem expulsar réplicas sem migração verificada. Se o espaço ocupado exceder a nova cota, a redução deve ficar pendente.</p></div>
+            <div class="settings-actions"><button class="button button-primary" id="save-inactivity-settings">Salvar prazos</button><button class="button button-secondary" id="reset-inactivity-settings">Restaurar padrão</button><span id="inactivity-settings-feedback" class="feedback" role="status"></span></div>
+            <p class="footnote">Importante: estas preferências são guardadas apenas neste navegador. O painel ainda é uma prévia e não altera um nó real nem cria notificações remotas.</p>
+          </section>
+          <section class="panel settings-panel"><div class="panel-heading"><div><h2>Privacidade e segurança</h2><p>Princípios que orientam a Zion.</p></div></div><div class="principle-row"><span class="principle-icon">⌑</span><div><strong>Você controla seus arquivos</strong><p>Compartilhamento deve ser explícito e revogável.</p></div></div><div class="principle-row"><span class="principle-icon">◇</span><div><strong>Limites sob seu controle</strong><p>Participação e uso de recursos devem respeitar suas escolhas.</p></div></div><div class="principle-row"><span class="principle-icon">✓</span><div><strong>Estado sem maquiagem</strong><p>Uma interface conectada deverá distinguir dados reais, simulados e não verificados.</p></div></div></section>
+        </section>
+      </div>
+    </main>
+  </div>
+  <input type="file" id="file-picker" multiple hidden>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <dialog id="help-dialog" class="help-dialog"><div class="dialog-head"><div><p class="eyebrow">AJUDA RÁPIDA</p><h2>Como usar a Zion Cloud</h2></div><button class="icon-button" id="close-help" aria-label="Fechar ajuda">×</button></div><div class="help-content"><p><strong>Meus arquivos</strong><br>Busque, filtre ou adicione arquivos à prévia local.</p><p><strong>Rede e nós</strong><br>Consulte exemplos de estado e controles ilustrativos.</p><p><strong>Social e mensagens</strong><br>Teste seguir perfis e conversar com contas fictícias. As mensagens não são entregues a outros usuários.</p><p><strong>Privacidade</strong><br>A interface deixa claro quando os dados são simulados. Ainda não há sincronização real.</p></div><button class="button button-primary full-width" id="help-ok">Entendi</button></dialog>
+  <script src="./inactivity-settings.js" defer></script>
+  <script src="./inactivity-settings-api-client.js" defer></script>
+  <script src="./inactivity-notifications-api-client.js" defer></script>
+  <script src="./app.js" defer></script>
+</body>
+</html>
