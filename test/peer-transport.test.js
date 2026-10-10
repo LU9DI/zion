@@ -341,3 +341,8 @@ test('mutual TLS rejects a server certificate signed by an untrusted CA', { skip
   await assert.rejects(client.connect('127.0.0.1', address.port), /certificate|issuer|self-signed|verify/i);
   await client.close();
 });
+
+
+test('localhost bind requires TLS because resolver aliases are not trusted as loopback literals', () => {
+  assert.throws(() => new PeerTransport({ identity: createNodeIdentity(), host: 'localhost', trustedPeerIds: ['a'.repeat(64)] }), /requires mutual TLS/);
+});
