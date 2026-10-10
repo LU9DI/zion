@@ -231,7 +231,7 @@ impl StorageCore {
             let name = shard.file_name().to_string_lossy().into_owned();
             // Only the active lock directory is metadata. Silently skipping every
             // dotfile would let unexpected root entries evade quota accounting.
-            if name == ".rea-rust-storage-lock" || name == ".rea-rust-storage-config" || name.starts_with(".rea-rust-storage-config.tmp-") { continue; }
+            if name == ".rea-rust-storage-lock" || name == ".rea-rust-storage-config" { continue; }
             let meta = fs::symlink_metadata(shard.path())?;
             if !meta.is_dir() || meta.file_type().is_symlink() || name.len() != 2 || !name.bytes().all(is_hex) { return Err(StorageError::UnsafePath); }
             for entry in fs::read_dir(shard.path())? {
