@@ -5,18 +5,23 @@ import { basename, dirname, resolve } from 'node:path';
 const VERSION = 1;
 const DEFAULT_MAX_BYTES = 16 * 1024 * 1024;
 const MAX_RECORDS = 100_000;
+const CONSUMED_INVITATION = /^[a-f0-9]{64}:[a-f0-9]{32}$/;
 const hash = value => createHash('sha256').update(value).digest('hex');
 const payloadFor = state => JSON.stringify({ version: VERSION, state });
 const emptyState = () => ({ version: 1, consumed: [], admissions: [] });
 
 function validState(state) {
-  return Boolean(state && state.version === 1 &&
-    Array.isArray(state.consumed) && state.consumed.length <= MAX_RECORDS &&
-    state.consumed.every(x => typeof x === 'string' && x.length > 0 && x.length <= 129) &&
-    Array.isArray(state.admissions) && state.admissions.length <= MAX_RECORDS &&
-    state.admissions.every(x => x && typeof x.subjectNodeId === 'string' &&
+  if (!state || state.version !== 1 ||
+    !Array.isArray(state.consumed) || state.consumed.length > MAX_RECORDS ||
+    !state.consumed.every(x => typeof x === 'string' && CONSUMED_INVITATION.test(x)) ||
+    new Set(state.consumed).size !== state.consumed.length ||
+    !Array.isArray(state.admissions) || state.admissions.length > MAX_RECORDS ||
+    !state.admissions.every(x => x && typeof x.subjectNodeId === 'string' &&
       /^[a-f0-9]{64}$/.test(x.subjectNodeId) && Array.isArray(x.issuerNodeIds) &&
-      x.issuerNodeIds.every(id => typeof id === 'string' && /^[a-f0-9]{64}$/.test(id))));
+      x.issuerNodeIds.length > 0 &&
+      x.issuerNodeIds.every(id => typeof id === 'string' && /^[a-f0-9]{64}$/.test(id)) &&
+      new Set(x.issuerNodeIds).size === x.issuerNodeIds.length)) return false;
+  return new Set(state.admissions.map(x => x.subjectNodeId)).size === state.admissions.length;
 }
 
 /**
