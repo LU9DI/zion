@@ -43,6 +43,36 @@ export function createStoreReceipt(identity, request, { storedBytes, now = Date.
 }
 
 /**
+ * Stateless verification of a signed storage receipt against its original request.
+ * This proves that the target identity signed a matching acknowledgement; it does not
+ * prove that the peer still retains the bytes or will remain available.
+ */
+export function verifyStoreReceipt(message, request, { now = Date.now(), maxClockSkewMs = 120_000 } = {}) {
+  const fail = reason => ({ ok: false, reason });
+  if (!Number.isSafeInteger(now) || !Number.isSafeInteger(maxClockSkewMs) || maxClockSkewMs < 0) return fail('invalid-verification-time');
+  const checked = verifyPeerMessage(message, { now, maxClockSkewMs });
+  if (!checked.ok) return checked;
+  const payload = checked.payload;
+  const keys = ['type', 'requestId', 'chunkId', 'storedBytes', 'storedAt'];
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload) ||
+      Object.keys(payload).length !== keys.length || Object.keys(payload).some(key => !keys.includes(key)) ||
+      payload.type !== 'STORE_RECEIPT' || !REQUEST_ID.test(payload.requestId ?? '') ||
+      !SHA256_HEX.test(payload.chunkId ?? '') || !Number.isSafeInteger(payload.storedBytes) ||
+      payload.storedBytes < 1 || !Number.isSafeInteger(payload.storedAt)) return fail('invalid-receipt');
+  if (!request || payload.requestId !== request.requestId) return fail('receipt-request-mismatch');
+  if (message.timestamp !== payload.storedAt) return fail('receipt-timestamp-mismatch');
+  const requestCheck = validateStoreRequest(request, {
+    now: payload.storedAt,
+    expectedTargetNodeId: checked.nodeId,
+    expectedChunkId: payload.chunkId,
+    expectedBytes: payload.storedBytes,
+  });
+  if (!requestCheck.ok) return fail(requestCheck.reason);
+  if (payload.storedAt < request.createdAt || payload.storedAt > request.expiresAt) return fail('receipt-outside-request-window');
+  return { ok: true, nodeId: checked.nodeId, receipt: Object.freeze({ ...payload }) };
+}
+
+/**
  * Tracks signed acknowledgements, not cryptographic proofs of durable storage.
  * Callers must only issue receipts after local persistence and integrity verification.
  */
