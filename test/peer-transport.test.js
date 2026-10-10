@@ -39,6 +39,7 @@ test('transport accepts a valid signed peer message and exposes authenticated id
 test('transport refuses plaintext outbound connections to non-loopback peers', async () => {
   const client = new PeerTransport({ identity: createNodeIdentity() });
   await assert.rejects(client.connect('192.0.2.10', 443), /require mutual TLS/);
+  await assert.rejects(client.connect('localhost', 443), /require mutual TLS/);
   await assert.rejects(client.connect('::ffff:192.0.2.10', 443), /require mutual TLS/);
   await client.close();
 });
