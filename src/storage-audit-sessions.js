@@ -20,6 +20,7 @@ function responsePayload({ version, peerNodeId, response }) {
   return JSON.stringify({ version, peerNodeId, response });
 }
 function validId(value) { return typeof value === 'string' && ID.test(value); }
+function validChallengeId(value) { return typeof value === 'string' && /^[a-f0-9]{32}$/.test(value); }
 
 /** Sign an audit challenge so peers can authenticate who requested the proof. */
 export function signStorageAuditChallenge({ challenge, auditorIdentity, expiresAt } = {}) {
@@ -80,13 +81,13 @@ export class StorageAuditSessions {
         throw Object.assign(new Error('Persisted storage audit state is invalid or exceeds configured bounds'), { code:'ZION_AUDIT_STATE_CORRUPT' });
       }
       for (const item of state.pending) {
-        if (!item || !validId(item.id) || !validId(item.peerNodeId) || !Number.isSafeInteger(item.issuedAt) ||
+        if (!item || !validChallengeId(item.id) || !validId(item.peerNodeId) || !Number.isSafeInteger(item.issuedAt) ||
             !Number.isSafeInteger(item.expiresAt) || !item.challenge || item.challenge.challengeId !== item.id ||
             this.pending.has(item.id)) throw Object.assign(new Error('Persisted pending audit record is invalid'), { code:'ZION_AUDIT_STATE_CORRUPT' });
         this.pending.set(item.id, { challenge:item.challenge, peerNodeId:item.peerNodeId, issuedAt:item.issuedAt, expiresAt:item.expiresAt });
       }
       for (const item of state.consumed) {
-        if (!Array.isArray(item) || !validId(item[0]) || !Number.isSafeInteger(item[1]) || this.consumed.has(item[0])) {
+        if (!Array.isArray(item) || !validChallengeId(item[0]) || !Number.isSafeInteger(item[1]) || this.consumed.has(item[0])) {
           throw Object.assign(new Error('Persisted consumed audit record is invalid'), { code:'ZION_AUDIT_STATE_CORRUPT' });
         }
         this.consumed.set(item[0], item[1]);
