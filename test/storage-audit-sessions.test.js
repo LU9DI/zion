@@ -1,5 +1,5 @@
 import test from 'node:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FileStorageAuditStateStore } from '../src/storage-audit-state-store.js';
@@ -70,7 +70,6 @@ test('fails closed on corrupted durable audit state', t => {
   const path=join(dir,'audit-state.json'), auditor=identity();
   const store=new FileStorageAuditStateStore(path);
   store.save({pending:[],consumed:[]});
-  const { writeFileSync } = await import('node:fs');
-  writeFileSync(path,'corrupt');
+    writeFileSync(path,'corrupt');
   assert.throws(()=>new StorageAuditSessions({auditorIdentity:auditor,stateStore:store}),{code:'ZION_AUDIT_STATE_CORRUPT'});
 });
