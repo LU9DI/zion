@@ -7,6 +7,7 @@ import { calculateNetworkId, validateGenesisDocument } from './protocol-genesis.
 import { validateProtocolOperation } from './protocol-operation-validator.js';
 
 const MAX_FRAME_BYTES = 256 * 1024;
+const isLoopbackHost = host => host === 'localhost' || host === '::1' || host === '127.0.0.1' || /^127(?:\.\d{1,3}){3}$/.test(host) || /^::ffff:127(?:\.\d{1,3}){3}$/i.test(host);
 const MAX_QUEUED_FRAMES_PER_SOCKET = 64;
 const DEFAULT_TYPES = new Set(['PING', 'PONG', 'STORE_CHUNK', 'GET_CHUNK', 'CHUNK_DATA', 'MANIFEST', 'STORE_REQUEST', 'STORE_RECEIPT', 'STORE_REJECTED']);
 
@@ -27,15 +28,14 @@ export class PeerTransport {
     if (typeof onMessage !== 'function') throw new TypeError('onMessage must be a function');
     if (!['legacy', 'official'].includes(networkMode)) throw new TypeError('networkMode must be legacy or official');
     if (networkMode === 'official' && protocolGenesis === null) throw new Error('Official Zion network mode requires a reviewed protocol genesis');
-    const loopbackHosts = new Set(['127.0.0.1', '::1', 'localhost']);
     if (trustedPeerIds !== null && (!Array.isArray(trustedPeerIds) || trustedPeerIds.some(id => typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)))) throw new TypeError('trustedPeerIds must be null or an array of SHA-256 node IDs');
-    if (!loopbackHosts.has(host) && (!trustedPeerIds || trustedPeerIds.length === 0)) throw new Error('Non-loopback binding requires an explicit trustedPeerIds allowlist');
+    if (!isLoopbackHost(host) && (!trustedPeerIds || trustedPeerIds.length === 0)) throw new Error('Non-loopback binding requires an explicit trustedPeerIds allowlist');
     const hasMaterial = value => Buffer.isBuffer(value) ? value.length > 0
       : typeof value === 'string' ? value.trim().length > 0
         : Array.isArray(value) ? value.length > 0 && value.every(item => hasMaterial(item)) : false;
     const tlsReady = Boolean(tlsOptions && hasMaterial(tlsOptions.key) &&
       hasMaterial(tlsOptions.cert) && hasMaterial(tlsOptions.ca));
-    if (!loopbackHosts.has(host) && !tlsReady) throw new Error('Non-loopback binding requires mutual TLS options (key, cert, ca); signed messages alone do not encrypt transport');
+    if (!isLoopbackHost(host) && !tlsReady) throw new Error('Non-loopback binding requires mutual TLS options (key, cert, ca); signed messages alone do not encrypt transport');
     if (tlsOptions !== null && !tlsReady) throw new TypeError('tlsOptions must provide key, cert, and CA material for mutual TLS');
     this.tlsOptions = tlsReady ? tlsOptions : null;
     this.identity = identity; this.host = host; this.port = port; this.maxConnections = maxConnections;
@@ -119,13 +119,18 @@ export class PeerTransport {
     if (typeof host !== 'string' || !host || !Number.isInteger(port) || port < 1 || port > 65535) throw new TypeError('Invalid peer address');
     if (!['127.0.0.1', '::1', 'localhost'].includes(host) && !this.tlsOptions) throw new Error('Remote peer connections require mutual TLS; plaintext TCP is restricted to loopback');
     if (this.connections.size >= this.maxConnections) throw new Error('Connection capacity reached');
-    const socket = this.tlsOptions
+    const useTls = Boolean(this.tlsOptions);
+    const socket = useTls
       ? createTlsConnection({ ...this.tlsOptions, host, port, servername: netIsIpAddress(host) ? undefined : (this.tlsOptions.servername ?? host), rejectUnauthorized: true, minVersion: 'TLSv1.2' })
       : createConnection({ host, port });
     await new Promise((resolve, reject) => {
-      const onError = error => { socket.off('connect', onConnect); reject(error); };
-      const onConnect = () => { socket.off('error', onError); resolve(); };
-      socket.once('error', onError); socket.once('connect', onConnect);
+      // A TCP 'connect' event does not mean the TLS peer has been authenticated.
+      // Do not attach the protocol parser or expose the socket until certificate
+      // validation and the TLS handshake have completed successfully.
+      const readyEvent = useTls ? 'secureConnect' : 'connect';
+      const onError = error => { socket.off(readyEvent, onReady); reject(error); };
+      const onReady = () => { socket.off('error', onError); resolve(); };
+      socket.once('error', onError); socket.once(readyEvent, onReady);
     });
     if (this.connections.size >= this.maxConnections) { socket.destroy(); throw new Error('Connection capacity reached'); }
     this.#attach(socket);
