@@ -123,3 +123,11 @@ test('Rust adapter rejects oversized sidecar output and kills the child', async 
   await assert.rejects(() => adapter.get('a'.repeat(64)), error => error.code === 'SIDECAR_OUTPUT_LIMIT');
   assert.equal(killed, true);
 });
+
+
+test('Rust adapter rejects a put receipt with a mismatched byte count', async () => {
+  const envelope = Buffer.concat([Buffer.from('REAC1'), Buffer.alloc(64)]);
+  const id = createHash('sha256').update(envelope).digest('hex');
+  const fake = fakeSpawn({ stdout: 'OK 70 0\n' });
+  await assert.rejects(() => config(fake.spawn).put(id, envelope), error => error.code === 'INVALID_RESPONSE');
+});
