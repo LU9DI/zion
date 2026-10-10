@@ -258,9 +258,16 @@ impl StorageCore {
             match fs::create_dir(&lock) {
                 Ok(()) => {
                     let owner_path = lock.join("owner");
-                    let mut file = OpenOptions::new().write(true).create_new(true).open(&owner_path)?;
-                    file.write_all(owner.as_bytes())?;
-                    file.sync_all()?;
+                    let owner_result = (|| -> Result<(), StorageError> {
+                        let mut file = OpenOptions::new().write(true).create_new(true).open(&owner_path)?;
+                        file.write_all(owner.as_bytes())?;
+                        file.sync_all()?;
+                        Ok(())
+                    })();
+                    if let Err(error) = owner_result {
+                        let _ = fs::remove_dir_all(&lock);
+                        return Err(error);
+                    }
                     break;
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
