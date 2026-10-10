@@ -14,9 +14,10 @@ function fakeTimer() {
 
 test('starts once, schedules evaluations, and drains before stop returns', async () => {
   const timer = fakeTimer();
-  let resolveEval, calls = 0;
+  let resolveEval, calls = 0, signalEntered;
+  const entered = new Promise(resolve => { signalEntered = resolve; });
   const scheduler = new IdleParticipationScheduler({
-    controller: { evaluate: () => { calls++; return new Promise(resolve => { resolveEval = resolve; }); } },
+    controller: { evaluate: () => { calls++; signalEntered(); return new Promise(resolve => { resolveEval = resolve; }); } },
     getTelemetry: async () => ({ telemetryHealthy: true, lastActivityAt: 1, pendingOperations: 0 }),
     intervalMs: 1234, setIntervalFn: timer.setIntervalFn.bind(timer), clearIntervalFn: timer.clearIntervalFn.bind(timer),
   });
@@ -24,9 +25,9 @@ test('starts once, schedules evaluations, and drains before stop returns', async
   assert.equal(scheduler.start(), false);
   assert.equal(timer.ms, 1234);
   timer.fire();
+  await entered;
   const stopping = scheduler.stop();
   assert.equal(timer.cleared, true);
-  await Promise.resolve();
   resolveEval({ state: 'paused' });
   await stopping;
   assert.equal(calls, 1);
