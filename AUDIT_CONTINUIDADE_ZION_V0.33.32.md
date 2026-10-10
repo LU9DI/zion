@@ -23,3 +23,8 @@ O backup não contém transcrições completas de conversas apagadas e não pode
 ## Estado da publicação
 
 Este repositório está sendo inicializado. O commit inicial publica documentação, mas ainda não inclui a árvore-fonte completa nem o ZIP mestre. Não houve deploy de produção. A publicação completa exige enviar e verificar os arquivos restantes.
+
+## Auditoria remota adicional (2026-10-10)
+A árvore GitHub foi listada recursivamente: 12 entradas no total, sem a árvore de runtime completa. O repositório ainda não equivale ao ZIP mestre de 388 entradas. O ZIP binário também não está armazenado no GitHub.
+
+SHA-256 recalculado para o ZIP mestre materializado: `e0d7ae6ac2ed68f4dda1f975204df360be6c68ca79be4a86829d25430311f74a`. O sidecar antigo diverge e deve ser tratado como desatualizado.
