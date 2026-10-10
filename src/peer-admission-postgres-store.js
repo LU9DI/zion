@@ -37,19 +37,30 @@ export class PostgresPeerAdmissionStore {
     }
     this.pool = pool;
     this.maxTransactionRetries = maxTransactionRetries;
+    this.commitOutcomeUnknown = false;
   }
 
   async #transaction(work) {
     for (let attempt = 0; ; attempt++) {
       const client = await this.pool.connect();
       let began = false;
+      let commitStarted = false;
       try {
         await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
         began = true;
         const result = await work(client);
+        commitStarted = true;
         await client.query('COMMIT');
         return result;
       } catch (error) {
+        if (commitStarted) {
+          // COMMIT may have reached PostgreSQL even when the connection failed.
+          // Never replay this transaction automatically; reconcile from authoritative state.
+          this.commitOutcomeUnknown = true;
+          throw Object.assign(new Error('PostgreSQL commit outcome is unknown; reconcile authoritative state before retrying'), {
+            code: 'ZION_ADMISSION_COMMIT_OUTCOME_UNKNOWN', cause: error,
+          });
+        }
         if (began) {
           try { await client.query('ROLLBACK'); } catch { /* preserve original error */ }
         }
@@ -62,6 +73,7 @@ export class PostgresPeerAdmissionStore {
   }
 
   async commitAdmission(input) {
+    if (this.commitOutcomeUnknown) return { ok: false, reason: 'admission-state-unavailable' };
     if (!validateInput(input)) return { ok: false, reason: 'invalid-input' };
     try {
       return await this.#transaction(async client => {
@@ -133,7 +145,8 @@ export class PostgresPeerAdmissionStore {
         }
         return { ok: false, reason: 'admission-conflict' };
       }
-      if (error?.code === 'ZION_ADMISSION_CONFIG_MISSING') {
+      if (error?.code === 'ZION_ADMISSION_CONFIG_MISSING' ||
+        error?.code === 'ZION_ADMISSION_COMMIT_OUTCOME_UNKNOWN') {
         return { ok: false, reason: 'admission-state-unavailable' };
       }
       throw error;
@@ -141,7 +154,8 @@ export class PostgresPeerAdmissionStore {
   }
 
   async releaseAdmission(subjectNodeId, status = 'released') {
-    if (!NODE_ID.test(subjectNodeId ?? '') || !['released', 'revoked'].includes(status)) {
+    if (this.commitOutcomeUnknown) return { ok: false, reason: 'admission-state-unavailable' };
+    if (!NODE_ID.test(subjectNodeId ?? '') || !['released', 'revoked'].includes(status))
       return { ok: false, reason: 'invalid-input' };
     }
     return this.#transaction(async client => {
@@ -162,7 +176,8 @@ export class PostgresPeerAdmissionStore {
       }
       return { ok: true, changed: Boolean(updated.rows?.length), subjectNodeId, status };
     }).catch(error => {
-      if (error?.code === 'ZION_ADMISSION_CONFIG_MISSING') {
+      if (error?.code === 'ZION_ADMISSION_CONFIG_MISSING' ||
+        error?.code === 'ZION_ADMISSION_COMMIT_OUTCOME_UNKNOWN') {
         return { ok: false, reason: 'admission-state-unavailable' };
       }
       throw error;
