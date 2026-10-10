@@ -45,8 +45,27 @@ try {
     }
   }
 
+  # The preserved tree intentionally contains only a license notice. Before publishing,
+  # replace it with the official AGPL-3.0 text because package.json declares AGPL-3.0-only.
+  $licenseUrl = "https://www.gnu.org/licenses/agpl-3.0.txt"
+  $licensePath = Join-Path $checkout "LICENSE"
+  Invoke-WebRequest -Uri $licenseUrl -OutFile $licensePath
+  if (-not (Test-Path -LiteralPath $licensePath -PathType Leaf) -or (Get-Item $licensePath).Length -lt 10000) {
+    throw "Could not retrieve the complete official AGPL-3.0 license; refusing to publish."
+  }
+
   Push-Location $checkout
   try {
+    # Validate the actual merged checkout before pushing anything.
+    npm run check
+    if ($LASTEXITCODE -ne 0) { throw "Syntax checks failed; refusing to publish." }
+    npm test
+    if ($LASTEXITCODE -ne 0) { throw "Tests failed; refusing to publish." }
+    npm run demo
+    if ($LASTEXITCODE -ne 0) { throw "Demo smoke test failed; refusing to publish." }
+    npm run client:demo
+    if ($LASTEXITCODE -ne 0) { throw "Client demo failed; refusing to publish." }
+
     git add -A
     if ($LASTEXITCODE -ne 0) { throw "git add failed." }
     git diff --cached --quiet
@@ -59,7 +78,7 @@ try {
     git push origin $Branch
     if ($LASTEXITCODE -ne 0) { throw "git push failed; the commit remains in the temporary checkout." }
     Write-Host "Source tree pushed to $Repository ($Branch)."
-    Write-Host "Verify the GitHub commit and run npm test and npm run check on the published checkout."
+    Write-Host "Published checkout passed npm run check, npm test, npm run demo, and npm run client:demo."
   } finally {
     Pop-Location
   }
