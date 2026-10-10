@@ -227,10 +227,18 @@ impl StorageCore {
     fn with_lock<T>(&self, operation: impl FnOnce() -> Result<T, StorageError>) -> Result<T, StorageError> {
         let lock = self.root.join(".rea-rust-storage-lock");
         let started = Instant::now();
+        let owner = format!("{}:{}\\n", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos());
         loop {
             match fs::create_dir(&lock) {
-                Ok(()) => break,
+                Ok(()) => {
+                    let owner_path = lock.join("owner");
+                    let mut file = OpenOptions::new().write(true).create_new(true).open(&owner_path)?;
+                    file.write_all(owner.as_bytes())?;
+                    file.sync_all()?;
+                    break;
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    self.reap_stale_lock(&lock);
                     if started.elapsed() >= self.lock_wait { return Err(StorageError::LockTimeout); }
                     thread::sleep(Duration::from_millis(15));
                 }
@@ -238,11 +246,50 @@ impl StorageCore {
             }
         }
         let result = operation();
-        // Only remove a real directory; never follow a symlink during cleanup.
+        // Remove only the lock that still carries our exact owner token.
         if fs::symlink_metadata(&lock).map(|m| m.is_dir() && !m.file_type().is_symlink()).unwrap_or(false) {
-            let _ = fs::remove_dir(lock);
+            let owner_path = lock.join("owner");
+            if fs::read_to_string(&owner_path).ok().as_deref() == Some(owner.as_str()) {
+                let _ = fs::remove_file(owner_path);
+                let _ = fs::remove_dir(&lock);
+            }
         }
         result
+    }
+
+    #[cfg(unix)]
+    fn reap_stale_lock(&self, lock: &Path) {
+        let metadata = match fs::symlink_metadata(lock) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => metadata,
+            _ => return,
+        };
+        let owner_path = lock.join("owner");
+        let owner = fs::symlink_metadata(&owner_path).ok().filter(|m| m.is_file() && !m.file_type().is_symlink() && m.len() <= 128)
+            .and_then(|_| fs::read_to_string(&owner_path).ok());
+        let stale = if let Some(owner) = owner {
+            let pid = owner.split(':').next().and_then(|value| value.parse::<i32>().ok());
+            match pid {
+                Some(pid) if pid > 0 => {
+                    // A live or permission-protected PID is never reaped. ESRCH is the
+                    // only positive evidence that the recorded owner process is gone.
+                    let rc = unsafe { libc::kill(pid, 0) };
+                    rc != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+                }
+                _ => metadata.modified().ok().and_then(|time| time.elapsed().ok()).map(|age| age >= Duration::from_secs(30)).unwrap_or(false),
+            }
+        } else {
+            metadata.modified().ok().and_then(|time| time.elapsed().ok()).map(|age| age >= Duration::from_secs(30)).unwrap_or(false)
+        };
+        if stale {
+            let suffix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+            let quarantine = self.root.join(format!(".rea-rust-storage-lock.stale-{}-{suffix}", std::process::id()));
+            if fs::rename(lock, &quarantine).is_ok() { let _ = fs::remove_dir_all(quarantine); }
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn reap_stale_lock(&self, _lock: &Path) {
+        // Without a portable process-liveness primitive, retain the lock and fail closed.
     }
 }
 
