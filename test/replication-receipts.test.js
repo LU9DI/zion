@@ -82,3 +82,14 @@ test('store request validator rejects expired, future-dated and overlong request
   assert.equal(validateStoreRequest({ ...request, createdAt: 200_000, expiresAt: 200_100 }, { now: 10_000 }).reason, 'invalid-request-time-window');
   assert.equal(validateStoreRequest({ ...request, expiresAt: request.createdAt + 700_000 }, { now: 10_001 }).reason, 'invalid-request-time-window');
 });
+
+
+test('stateless SDK verifier validates signature and request binding', async () => {
+  const { verifyStoreReceipt } = await import('../src/replication-receipts.js');
+  const target = createNodeIdentity();
+  const request = createStoreRequest({ chunkId: hash('f'), bytes: 100, targetNodeId: target.nodeId, now: 10_000 });
+  const receipt = createStoreReceipt(target, request, { storedBytes: 100, now: 10_001 });
+  assert.equal(verifyStoreReceipt(receipt, request, { now: 10_001 }).ok, true);
+  assert.equal(verifyStoreReceipt(receipt, { ...request, bytes: 99 }, { now: 10_001 }).ok, false);
+  assert.equal(verifyStoreReceipt({ ...receipt, signature: 'invalid' }, request, { now: 10_001 }).ok, false);
+});
