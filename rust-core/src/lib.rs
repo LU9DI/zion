@@ -114,15 +114,19 @@ impl StorageCore {
         let parent_meta = fs::symlink_metadata(parent)?;
         if !parent_meta.is_dir() || parent_meta.file_type().is_symlink() { return Err(StorageError::UnsafePath); }
 
-        match self.get(chunk_id) {
-            Ok(existing) if existing == envelope => return Ok(PutReceipt { chunk_id: chunk_id.into(), bytes: envelope.len() as u64, already_present: true }),
-            Ok(_) => return Err(StorageError::DigestMismatch),
-            Err(StorageError::Io(ref message)) if message.contains("No such file") || message.contains("not found") => {},
-            Err(StorageError::Io(_)) => {
-                if !target.exists() { /* first write */ } else { return Err(StorageError::UnsafePath); }
+        match fs::symlink_metadata(&target) {
+            Ok(metadata) => {
+                if !metadata.is_file() || metadata.file_type().is_symlink() {
+                    return Err(StorageError::UnsafePath);
+                }
+                let existing = self.get(chunk_id)?;
+                if existing == envelope {
+                    return Ok(PutReceipt { chunk_id: chunk_id.into(), bytes: envelope.len() as u64, already_present: true });
+                }
+                return Err(StorageError::DigestMismatch);
             }
-            Err(_) if !target.exists() => {},
-            Err(error) => return Err(error),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Err(error) => return Err(StorageError::Io(error.to_string())),
         }
 
         let used = self.scan_bytes()?;
