@@ -59,7 +59,7 @@ test('recovers persisted opaque chunks and quota after store reinitialization', 
   await reopened.init();
   assert.deepEqual(await reopened.get(id), bytes);
   assert.equal(await reopened.sizeBytes(), bytes.length);
-  assert.equal((await reopened.usage()).quotaBytes, 64);
+  assert.equal(reopened.maxStorageBytes, 64);
 
   const another = envelope(20);
   const anotherId = createHash('sha256').update(another).digest('hex');
