@@ -9,20 +9,13 @@ import { validateProtocolOperation } from './protocol-operation-validator.js';
 const MAX_FRAME_BYTES = 256 * 1024;
 const isLoopbackAddress = host => {
   if (typeof host !== 'string') return false;
-  const normalized = host.toLowerCase().replace(/^\\[|\\]$/g, '');
+  const normalized = host.toLowerCase();
   if (normalized === '::1') return true;
   if (normalized.startsWith('::ffff:')) return isLoopbackAddress(normalized.slice('::ffff:'.length));
   // Do not trust a loose regex: values such as 127.999.1.1 are not IP literals.
   return netIsIpAddress(normalized) === 4 && normalized.split('.')[0] === '127';
 };
 const isLoopbackHost = host => host === 'localhost' || isLoopbackAddress(host);
-  if (typeof host !== 'string') return false;
-  const normalized = host.toLowerCase().replace(/^\[|\]$/g, '');
-  if (normalized === 'localhost' || normalized === '::1') return true;
-  if (normalized.startsWith('::ffff:')) return isLoopbackHost(normalized.slice('::ffff:'.length));
-  // Do not trust a loose regex: values such as 127.999.1.1 are not IP literals.
-  return netIsIpAddress(normalized) === 4 && normalized.split('.')[0] === '127';
-};
 const MAX_QUEUED_FRAMES_PER_SOCKET = 64;
 const DEFAULT_TYPES = new Set(['PING', 'PONG', 'STORE_CHUNK', 'GET_CHUNK', 'CHUNK_DATA', 'MANIFEST', 'STORE_REQUEST', 'STORE_RECEIPT', 'STORE_REJECTED']);
 
