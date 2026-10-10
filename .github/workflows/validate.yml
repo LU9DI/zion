@@ -47,3 +47,9 @@ jobs:
         run: test -f Cargo.lock
       - name: Test Rust storage core with locked dependencies
         run: cargo test --locked --manifest-path rust-core/Cargo.toml
+      - name: Build Rust storage sidecar
+        run: cargo build --locked --release --manifest-path rust-core/Cargo.toml --bin rea-storage-cli
+      - name: Test real Node-to-Rust storage interoperability
+        env:
+          ZION_RUST_STORAGE_BIN: target/release/rea-storage-cli
+        run: node --test test/rust-storage-integration.test.js
