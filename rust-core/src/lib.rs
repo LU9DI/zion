@@ -123,7 +123,13 @@ impl StorageCore {
         drop(file);
         if let Err(error) = write_result { let _ = fs::remove_file(&temp); return Err(error); }
         let result = match fs::hard_link(&temp, &target) {
-            Ok(()) => Ok(PutReceipt { chunk_id: chunk_id.into(), bytes: size, already_present: false }),
+            Ok(()) => {
+                // The file contents are synced before linking. Sync the containing directory
+                // as well so the new content-addressed name survives a crash on Unix filesystems.
+                #[cfg(unix)]
+                File::open(parent)?.sync_all()?;
+                Ok(PutReceipt { chunk_id: chunk_id.into(), bytes: size, already_present: false })
+            },
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 let existing = self.get(chunk_id)?;
                 if existing == envelope { Ok(PutReceipt { chunk_id: chunk_id.into(), bytes: size, already_present: true }) } else { Err(StorageError::DigestMismatch) }
