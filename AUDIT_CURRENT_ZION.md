@@ -6,7 +6,7 @@ Audited revision at start: `d79e60fe38a59b8a7b8cfc2460cd4abe571fb6ac`; documenta
 
 ## Verdict
 
-**Not production-ready.** The source archive is now in GitHub and the full AGPL-3.0-only license text has been committed. The codebase contains useful local primitives and tests, but does not yet constitute a working public decentralized cloud. The validation workflow passed on the hardening revision: Node tests, demos, Rust unit tests, release build, and real Node-to-Rust storage integration all succeeded. CodeQL passed for both JavaScript/TypeScript and Rust on the latest admission-hardening change (PR #23). Passing tests are not a security certification. Passing tests are not a security certification.
+**Not production-ready.** The source archive is now in GitHub and the full AGPL-3.0-only license text has been committed. The codebase contains useful local primitives and tests, but does not yet constitute a working public decentralized cloud. The validation workflow passed on the hardening revision: Node tests, demos, Rust unit tests, release build, and real Node-to-Rust storage integration all succeeded. CodeQL passed for both JavaScript/TypeScript and Rust on the latest admission-hardening change (PR #23). Passing tests are not a security certification.
 
 ## Issues fixed in this pass
 
