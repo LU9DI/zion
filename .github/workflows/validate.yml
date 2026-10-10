@@ -1,0 +1,40 @@
+name: Zion validation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Validate repository structure
+        run: |
+          test -f package.json
+          test -d src
+          test -d test
+      - name: Install dependencies if lockfile exists
+        shell: bash
+        run: |
+          if [ -f package-lock.json ]; then npm ci; fi
+      - name: Syntax checks
+        run: npm run check
+      - name: Test suite
+        run: npm test
+      - name: Demo smoke tests
+        run: |
+          npm run demo
+          npm run client:demo
