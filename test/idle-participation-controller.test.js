@@ -44,6 +44,22 @@ test('unhealthy telemetry fails closed; activity resumes participation', async (
   assert.deepEqual(calls, [['pause', 'telemetry-unavailable'], ['resume', 'activity-detected']]);
 });
 
+test('uncertain pause state is never resumed before a successful pause retry', async () => {
+  let now = 100_000;
+  let attempts = 0;
+  let resumes = 0;
+  const controller = new IdleParticipationController({
+    idleAfterMs: 60_000, now: () => now,
+    pauseParticipation: async () => { attempts++; if (attempts === 1) throw new Error('disconnect failed'); },
+    resumeParticipation: async () => { resumes++; },
+  });
+  await assert.rejects(controller.evaluate({ telemetryHealthy: true, lastActivityAt: 0, pendingOperations: 0 }), /disconnect failed/);
+  now += 1_000;
+  assert.equal((await controller.evaluate({ telemetryHealthy: true, lastActivityAt: now, pendingOperations: 0 })).state, 'paused');
+  assert.equal(resumes, 0);
+  assert.equal(attempts, 2);
+});
+
 test('pause hook failure is surfaced and retried on next evaluation', async () => {
   let attempts = 0;
   const controller = new IdleParticipationController({
