@@ -26,6 +26,10 @@ function fakePool({ failInvitationInsert = false, retryOnce = false, failCommit 
       return {
         async query(sql, params = []) {
           calls.push({ sql: sql.replace(/\s+/g, ' ').trim(), params });
+          if (sql === 'COMMIT' && commitPending) {
+            commitPending = false;
+            throw Object.assign(new Error('connection lost during COMMIT'), { code: '08006' });
+          }
           if (sql.startsWith('SELECT max_active_peers')) {
             return { rows: [{ max_active_peers: 100, max_admissions_per_issuer: 5,
               min_storage_headroom_ratio: 0.1, policy_version: 7 }] };
