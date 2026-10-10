@@ -79,6 +79,10 @@ export class AdaptiveStorageCapacity {
   }
 
   get(id) { return this.store.get(id); }
+  auditInventory(options) {
+    if (typeof this.store.auditInventory !== 'function') throw new Error('Underlying store does not support inventory audits');
+    return this.store.auditInventory(options);
+  }
   sizeBytes() { return this.store.sizeBytes(); }
   getCapacityBytes() { return Promise.resolve(this.targetCapacityBytes); }
 }
