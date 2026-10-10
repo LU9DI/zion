@@ -82,6 +82,18 @@ impl StorageCore {
     pub fn get(&self, chunk_id: &str) -> Result<Vec<u8>, StorageError> {
         if !valid_digest(chunk_id) { return Err(StorageError::InvalidChunkId); }
         let path = self.chunk_path(chunk_id);
+        // Validate the root and shard before opening a chunk. The final file
+        // is also opened with O_NOFOLLOW on Unix below. This is defense in
+        // depth; hostile concurrent local writers still require OS isolation.
+        let root_meta = fs::symlink_metadata(&self.root)?;
+        if !root_meta.is_dir() || root_meta.file_type().is_symlink() {
+            return Err(StorageError::UnsafePath);
+        }
+        let parent = path.parent().ok_or(StorageError::UnsafePath)?;
+        let parent_meta = fs::symlink_metadata(parent)?;
+        if !parent_meta.is_dir() || parent_meta.file_type().is_symlink() {
+            return Err(StorageError::UnsafePath);
+        }
         // Reject symlink targets at open time on Unix, not only with a prior
         // metadata check (which would leave a check/open race).
         let mut options = OpenOptions::new();
@@ -256,6 +268,23 @@ mod tests {
         assert!(store.get(&digest).is_err(), "a symlink must not be followed as stored content");
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_file(&outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_symlinked_shard_directories() {
+        use std::os::unix::fs::symlink;
+        let root = temp_root();
+        let outside = root.with_extension("outside-shard");
+        fs::create_dir_all(&outside).unwrap();
+        fs::create_dir_all(&root).unwrap();
+        let bytes = envelope(12);
+        let digest = id(&bytes);
+        symlink(&outside, root.join(&digest[..2])).unwrap();
+        let store = StorageCore::new(&root, 1024, 2048).unwrap();
+        assert!(matches!(store.get(&digest), Err(StorageError::UnsafePath)));
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
     }
 
     #[test]
