@@ -26,6 +26,7 @@ test('starts once, schedules evaluations, and drains before stop returns', async
   timer.fire();
   const stopping = scheduler.stop();
   assert.equal(timer.cleared, true);
+  await Promise.resolve();
   resolveEval({ state: 'paused' });
   await stopping;
   assert.equal(calls, 1);
