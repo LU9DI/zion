@@ -1,0 +1,71 @@
+name: Restore preserved Zion source
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/restore-preserved-source.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: restore-preserved-zion-source
+  cancel-in-progress: false
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - name: Download and unpack preserved backup
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            https://raw.githubusercontent.com/LU9DI/zion/main/zion-master-preservation-v0.33.32.zip \
+            --output /tmp/zion-master-preservation-v0.33.32.zip
+          mkdir -p /tmp/zion-preserved
+          unzip -q /tmp/zion-master-preservation-v0.33.32.zip -d /tmp/zion-preserved
+          SOURCE=/tmp/zion-preserved/zion-master-preservation-v0.33.32/source/zion-v0.33.32-continuity-recovery
+          test -f "$SOURCE/package.json"
+          test -d "$SOURCE/src"
+          test -d "$SOURCE/test"
+          echo "Source files: $(find "$SOURCE" -type f | wc -l)"
+          echo "Source bytes: $(du -sb "$SOURCE" | cut -f1)"
+      - name: Restore source files into repository root
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE=/tmp/zion-preserved/zion-master-preservation-v0.33.32/source/zion-v0.33.32-continuity-recovery
+          rsync -a --exclude='.git/' "$SOURCE/" ./
+          git status --short
+      - name: Validate restored source
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run project checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run check
+          npm test
+          npm run demo
+          npm run client:demo
+      - name: Commit and push restored source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No source changes to commit."
+            exit 0
+          fi
+          git commit -m "Restore complete preserved Zion v0.33.32 source"
+          git push origin HEAD:main
