@@ -6,9 +6,9 @@ function canonical(value){if(value===null||typeof value==='string'||typeof value
 export function hashLocalFirstRecord(record){if(!record||typeof record!=='object')throw new TypeError('Invalid record');const {hash,...body}=record;return sha(canonical(body));}
 /** Small local-first append-only record store. Persistence/encryption are injected, not implied. */
 export class LocalFirstStore {
-  constructor({persistLocal=async()=>{},replicateAsync=async()=>{},maxRecords=100_000,onReplicationError=()=>{}}={}) {
-    if(typeof persistLocal!=='function'||typeof replicateAsync!=='function'||typeof onReplicationError!=='function'||!Number.isSafeInteger(maxRecords)||maxRecords<1)throw new TypeError('Invalid local-first store configuration');
-    this.persistLocal=persistLocal;this.replicateAsync=replicateAsync;this.maxRecords=maxRecords;this.onReplicationError=onReplicationError;this.records=new Map();this.heads=new Map();this.conflicts=new Map();this.replicationTasks=new Set();
+  constructor({persistLocal=async()=>{},replicateAsync=async()=>{},maxRecords=100_000,onReplicationError=()=>{},verifyRemoteRecord=async()=>false}={}) {
+    if(typeof persistLocal!=='function'||typeof replicateAsync!=='function'||typeof onReplicationError!=='function'||typeof verifyRemoteRecord!=='function'||!Number.isSafeInteger(maxRecords)||maxRecords<1)throw new TypeError('Invalid local-first store configuration');
+    this.persistLocal=persistLocal;this.replicateAsync=replicateAsync;this.maxRecords=maxRecords;this.onReplicationError=onReplicationError;this.verifyRemoteRecord=verifyRemoteRecord;this.records=new Map();this.heads=new Map();this.conflicts=new Map();this.replicationTasks=new Set();
   }
   async write({key,parentHash=null,value,deviceId}={}) {
     if(typeof key!=='string'||!ID.test(key)||typeof deviceId!=='string'||!ID.test(deviceId)||!value||typeof value!=='object'||Array.isArray(value))throw new TypeError('Invalid local-first record');
@@ -26,8 +26,9 @@ export class LocalFirstStore {
     return Object.freeze({record,localCommitted:true,replication:task});
   }
   /** Import an authenticated remote record. Same-parent siblings are preserved as an explicit conflict. */
-  async ingestRemote(record,{authenticated=false}={}) {
-    if(!authenticated)return {ok:false,reason:'unauthenticated-record'};
+  async ingestRemote(record,context={}) {
+    let authenticated=false;try{authenticated=await this.verifyRemoteRecord(record,context);}catch{}
+    if(authenticated!==true)return {ok:false,reason:'unauthenticated-record'};
     if(!record||typeof record.key!=='string'||!ID.test(record.key)||typeof record.hash!=='string'||!/^[a-f0-9]{64}$/.test(record.hash)||(record.parentHash!==null&&typeof record.parentHash!=='string'))return {ok:false,reason:'invalid-record'};
     try{if(hashLocalFirstRecord(record)!==record.hash)return {ok:false,reason:'record-hash-mismatch'};}catch{return {ok:false,reason:'invalid-record'};}
     const current=this.heads.get(record.key)??null;
