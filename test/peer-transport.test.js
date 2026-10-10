@@ -398,9 +398,14 @@ test('official transport admits an unknown peer only when its signed handshake c
     capacityProvider: async () => ({ activePeers: 0, maxPeers: 10, storageHeadroomRatio: 0.5 }),
   });
   let received = false;
+  // Model a transactional/shared backend whose admission reads are asynchronous.
+  const asyncReadController = {
+    admit: input => admissionController.admit(input),
+    isAdmitted: async nodeId => admissionController.isAdmitted(nodeId),
+  };
   const server = new PeerTransport({
     identity: seed, host: '127.0.0.1', networkMode: 'official', protocolGenesis: genesis, integrityGuard: guard,
-    trustedPeerIds: [issuerA.nodeId, issuerB.nodeId], admissionController,
+    trustedPeerIds: [issuerA.nodeId, issuerB.nodeId], admissionController: asyncReadController,
     onMessage: async message => { if (message.payload.type === 'PING') received = true; },
   });
   const address = await server.listen();
