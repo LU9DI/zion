@@ -14,13 +14,14 @@ Audited revision at start: `d79e60fe38a59b8a7b8cfc2460cd4abe571fb6ac`; documenta
 - Added this current audit so the principal blockers are discoverable without reading every historical audit.
 - Restricted the restoration workflow to explicit manual invocation plus a confirmation phrase, preventing ordinary workflow edits from automatically re-copying an old archive over the repository.
 - Activated CI for every push/PR, extended syntax checks to `.js`, `.mjs`, and `.cjs`, added a root Cargo workspace and Rust tests, and fixed the Rust quota test fixture exposed by CI.
+- Changed peer transport so non-loopback listeners and outbound connections fail closed unless mutual TLS material is configured; added regression tests for both policy paths.
 
 ## Remaining blockers (ordered by risk)
 
 ### P0 — Do not expose to the public internet
 
 1. **No deployed P2P network.** `src/dht-provider-discovery.js` is an injected adapter boundary. There is no configured live libp2p/Kademlia DHT, bootstrap diversity, NAT traversal, or validated peer-to-peer connectivity.
-2. **Experimental TCP transport is not encrypted.** `src/peer-transport.js` uses signed messages and bounded framing but does not provide TLS or equivalent channel confidentiality. Do not expose it directly to the public internet or send secrets over it.
+2. **Transport confidentiality improved, but deployment is still incomplete.** `src/peer-transport.js` now rejects non-loopback listeners and outbound connections unless mutual TLS key/certificate/CA material is configured; plaintext is restricted to loopback. CI tests the fail-closed policy, but there is no production certificate issuance/rotation/trust-distribution system or end-to-end TLS interoperability test. Do not expose a node until those operational pieces are configured and independently tested.
 3. **Production key lifecycle is incomplete.** File-key sharing/recovery, identity lifecycle, key rotation/revocation, and secure recovery flows are not a complete integrated user-facing system. Keep content keys out of manifests and do not treat node identity as authorization.
 4. **OS resource enforcement is incomplete.** `ResourceGovernor` computes budgets; it does not itself enforce CPU, memory, disk, bandwidth, thermal, or user-activity limits. The Linux cgroup adapter explicitly reports `complete: false`; it must not be used to authorize production contribution. Disk quota accounting in the Rust prototype is not a kernel-enforced volume quota.
 5. **Witness trust depends on integration.** Recovery requires the caller to implement `isSessionValid` and provide trusted publisher keys. The local replay ledger is not automatically a remote, rollback-resistant authority. A signed `fsynced` flag is an assertion by the publisher, not independent proof of physical durability.
