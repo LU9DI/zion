@@ -68,20 +68,40 @@ test('serializes concurrent admissions for the same subject and fails closed on 
   assert.throws(() => new PeerAdmissionController({ ...x.config, stateStore: { load: () => ({ version: 1, consumed: 'bad', admissions: [] }), save() {} } }), { code: 'ZION_ADMISSION_STATE_CORRUPT' });
 });
 
-test('rejects asynchronous stores instead of acknowledging unconfirmed persistence', async () => {
+test('awaits asynchronous persistence before reporting admission success', async () => {
   const x = setup();
   assert.throws(() => new PeerAdmissionController({
     ...x.config,
     stateStore: { load: async () => null, save() {} },
   }), { code: 'ZION_ADMISSION_ASYNC_STORE_UNSUPPORTED' });
 
-  let saveCalled = false;
-  assert.throws(() => new PeerAdmissionController({
-    ...x.config,
-    stateStore: {
-      load: () => null,
-      save: async () => { saveCalled = true; },
+  let persisted = null;
+  let releaseSave;
+  const delayedStore = {
+    load: () => null,
+    save: async next => {
+      await new Promise(resolve => { releaseSave = resolve; });
+      persisted = structuredClone(next);
     },
-  }), { code: 'ZION_ADMISSION_ASYNC_STORE_UNSUPPORTED' });
-  assert.equal(saveCalled, false);
+  };
+  const controller = new PeerAdmissionController({ ...x.config, stateStore: delayedStore });
+  const admission = controller.admit({ subjectNodeId: x.subject.nodeId, vouchers: x.vouchers });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(controller.isAdmitted(x.subject.nodeId), false);
+  assert.equal(persisted, null);
+  releaseSave();
+  assert.equal((await admission).ok, true);
+  assert.equal(controller.isAdmitted(x.subject.nodeId), true);
+  assert.equal(persisted.admissions.length, 1);
+});
+
+test('does not expose admission in memory when asynchronous persistence fails', async () => {
+  const x = setup();
+  const controller = new PeerAdmissionController({
+    ...x.config,
+    stateStore: { load: () => null, save: async () => { throw new Error('disk unavailable'); } },
+  });
+  await assert.rejects(controller.admit({ subjectNodeId: x.subject.nodeId, vouchers: x.vouchers }), /disk unavailable/);
+  assert.equal(controller.isAdmitted(x.subject.nodeId), false);
+  assert.deepEqual(controller.snapshot(), { consumedInvitations: 0, admittedPeers: 0 });
 });
