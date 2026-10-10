@@ -63,3 +63,11 @@ test('resource decision exposes bounded disk budget and preserves fractional CPU
   assert.equal(decision.memoryMiBBudget, 10);
   assert.equal(decision.diskMiBBudget, 50);
 });
+
+
+test('resource pressure disables contribution when scaled memory or disk budget rounds to zero', () => {
+  const decision = new ResourceGovernor({ limits: { maxCpuPercent: 1, maxMemoryMiB: 1, maxDiskMiB: 1 } }).evaluate(healthy({ memoryPressure: 0.8 }));
+  assert.equal(decision.memoryMiBBudget, 0);
+  assert.equal(decision.diskMiBBudget, 0);
+  assert.equal(decision.enabled, false);
+});
