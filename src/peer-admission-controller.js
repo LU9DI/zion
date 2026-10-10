@@ -14,8 +14,8 @@ function validState(state) {
 const emptyState = () => ({ version: 1, consumed: [], admissions: [] });
 
 /**
- * Invite-only admission policy. Supply a durable stateStore with synchronous load()/save()
- * methods and a live capacityProvider. This is a single-process coordinator, not a DHT consensus
+ * Invite-only admission policy. Supply a durable stateStore with synchronous load() and
+ * synchronous or asynchronous save() methods, plus a live capacityProvider. This is a single-process coordinator, not a DHT consensus
  * mechanism; multi-process deployments need a transactional shared store with uniqueness constraints.
  */
 export class PeerAdmissionController {
@@ -62,6 +62,7 @@ export class PeerAdmissionController {
     };
     else throw Object.assign(new Error('Peer admission state is invalid'), { code: 'ZION_ADMISSION_STATE_CORRUPT' });
     this.queue = Promise.resolve();
+    this.persistenceFailed = false;
   }
 
   admit({ subjectNodeId, vouchers } = {}) {
@@ -71,6 +72,10 @@ export class PeerAdmissionController {
   }
 
   async #admit({ subjectNodeId, vouchers }) {
+    // A failed save may have committed on disk before reporting an error (for example,
+    // directory fsync failure after rename). Without a transactional read-back contract,
+    // continuing from the old in-memory snapshot could reuse vouchers or exceed quotas.
+    if (this.persistenceFailed) return { ok: false, reason: 'admission-state-unavailable' };
     if (!ID.test(subjectNodeId ?? '') || !Array.isArray(vouchers) ||
       vouchers.length < this.threshold || vouchers.length > this.maxVouchers) {
       return { ok: false, reason: 'invalid-input' };
@@ -124,7 +129,12 @@ export class PeerAdmissionController {
     // Persist before reporting success; async save implementations must be awaited so a
     // transport never accepts the peer before persistence has completed. The controller's
     // local queue serializes this process only; shared stores still need real transactions.
-    await this.stateStore.save(next);
+    try {
+      await this.stateStore.save(next);
+    } catch (error) {
+      this.persistenceFailed = true;
+      throw error;
+    }
     this.state = next;
     return { ok: true, subjectNodeId, trustedIntroductions: accepted.size,
       issuerNodeIds: [...accepted.keys()] };

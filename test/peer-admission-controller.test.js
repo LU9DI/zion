@@ -95,13 +95,22 @@ test('awaits asynchronous persistence before reporting admission success', async
   assert.equal(persisted.admissions.length, 1);
 });
 
-test('does not expose admission in memory when asynchronous persistence fails', async () => {
+test('fails closed after uncertain persistence and requires restart to reconcile state', async () => {
   const x = setup();
+  let saveCalls = 0;
   const controller = new PeerAdmissionController({
     ...x.config,
-    stateStore: { load: () => null, save: async () => { throw new Error('disk unavailable'); } },
+    stateStore: {
+      load: () => null,
+      save: async () => { saveCalls += 1; throw new Error('directory fsync failed after commit'); },
+    },
   });
-  await assert.rejects(controller.admit({ subjectNodeId: x.subject.nodeId, vouchers: x.vouchers }), /disk unavailable/);
+  await assert.rejects(controller.admit({ subjectNodeId: x.subject.nodeId, vouchers: x.vouchers }), /directory fsync failed after commit/);
   assert.equal(controller.isAdmitted(x.subject.nodeId), false);
   assert.deepEqual(controller.snapshot(), { consumedInvitations: 0, admittedPeers: 0 });
+  assert.deepEqual(
+    await controller.admit({ subjectNodeId: x.subject.nodeId, vouchers: x.vouchers }),
+    { ok: false, reason: 'admission-state-unavailable' },
+  );
+  assert.equal(saveCalls, 1);
 });
