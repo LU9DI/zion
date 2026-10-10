@@ -29,10 +29,11 @@ export class PeerTransport {
     maxFrameBytes = MAX_FRAME_BYTES, allowedTypes = DEFAULT_TYPES, trustedPeerIds = null,
     onMessage = async () => {}, replayGuard = new ReplayGuard(),
     rateLimiter = new PeerRateLimiter({ capacity: 64, refillPerSecond: 20 }), transferScheduler = null,
-    protocolGenesis = null, networkMode = 'legacy', integrityGuard = null, tlsOptions = null, now = () => Date.now() } = {}) {
+    protocolGenesis = null, networkMode = 'legacy', integrityGuard = null, tlsOptions = null, tlsHandshakeTimeoutMs = 10_000, now = () => Date.now() } = {}) {
     if (!identity?.privateKey || typeof identity.nodeId !== 'string') throw new TypeError('A node identity is required');
     if (typeof host !== 'string' || !host || !Number.isInteger(port) || port < 0 || port > 65535) throw new RangeError('Invalid bind address');
     if (!Number.isSafeInteger(maxConnections) || maxConnections < 1 || !Number.isSafeInteger(maxFrameBytes) || maxFrameBytes < 256) throw new RangeError('Invalid transport limits');
+    if (!Number.isSafeInteger(tlsHandshakeTimeoutMs) || tlsHandshakeTimeoutMs < 100 || tlsHandshakeTimeoutMs > 60_000) throw new RangeError('Invalid TLS handshake timeout');
     if (typeof onMessage !== 'function') throw new TypeError('onMessage must be a function');
     if (!['legacy', 'official'].includes(networkMode)) throw new TypeError('networkMode must be legacy or official');
     if (networkMode === 'official' && protocolGenesis === null) throw new Error('Official Zion network mode requires a reviewed protocol genesis');
@@ -46,6 +47,7 @@ export class PeerTransport {
     if (!isLoopbackHost(host) && !tlsReady) throw new Error('Non-loopback binding requires mutual TLS options (key, cert, ca); signed messages alone do not encrypt transport');
     if (tlsOptions !== null && !tlsReady) throw new TypeError('tlsOptions must provide key, cert, and CA material for mutual TLS');
     this.tlsOptions = tlsReady ? tlsOptions : null;
+    this.tlsHandshakeTimeoutMs = tlsHandshakeTimeoutMs;
     this.identity = identity; this.host = host; this.port = port; this.maxConnections = maxConnections;
     this.networkMode = networkMode;
     this.genesis = protocolGenesis === null ? null : validateGenesisDocument(protocolGenesis);
@@ -68,7 +70,7 @@ export class PeerTransport {
     if (this.started) throw new Error('Transport already started');
     if (this.networkMode === 'official') await this.integrityGuard.checkHealthy();
     this.server = this.tlsOptions
-      ? createTlsServer({ ...this.tlsOptions, requestCert: true, rejectUnauthorized: true, minVersion: 'TLSv1.2' }, socket => this.#accept(socket))
+      ? createTlsServer({ ...this.tlsOptions, requestCert: true, rejectUnauthorized: true, minVersion: 'TLSv1.2', handshakeTimeout: this.tlsHandshakeTimeoutMs }, socket => this.#accept(socket))
       : createTcpServer(socket => this.#accept(socket));
     this.server.maxConnections = this.maxConnections;
     await new Promise((resolve, reject) => {
