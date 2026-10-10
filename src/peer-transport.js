@@ -186,7 +186,11 @@ export class PeerTransport {
     const checked = verifyPeerMessage(message, { now: this.now(), maxBytes: this.maxFrameBytes });
     if (!checked.ok) { socket.destroy(); return; }
     const trustedByAllowlist = !this.trustedPeerIds || this.trustedPeerIds.has(checked.nodeId);
-    const previouslyAdmitted = this.admittedPeerIds.has(checked.nodeId) || this.admissionController?.isAdmitted(checked.nodeId) === true;
+    // Admission backends may be transactional and remote, so their fresh reads can be async.
+    const controllerAdmitted = this.admissionController
+      ? await this.admissionController.isAdmitted(checked.nodeId)
+      : false;
+    const previouslyAdmitted = this.admittedPeerIds.has(checked.nodeId) || controllerAdmitted === true;
     if (!trustedByAllowlist && !previouslyAdmitted && !this.admissionController) { socket.destroy(); return; }
     // Admission control applies to handshake frames as well as application traffic.
     if (!this.rateLimiter.allow(checked.nodeId) || !this.replayGuard.accept(message, this.now())) { socket.destroy(); return; }
@@ -203,7 +207,8 @@ export class PeerTransport {
           let admission;
           try { admission = await this.admissionController.admit({ subjectNodeId: checked.nodeId, vouchers: payload.vouchers }); }
           catch { socket.destroy(); return; }
-          if (!admission?.ok && !this.admissionController.isAdmitted(checked.nodeId)) { socket.destroy(); return; }
+          const admittedAfterAttempt = await this.admissionController.isAdmitted(checked.nodeId);
+          if (!admission?.ok && !admittedAfterAttempt) { socket.destroy(); return; }
           this.admittedPeerIds.add(checked.nodeId);
         }
         session.remoteNonce = payload.nonce;
