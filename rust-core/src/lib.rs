@@ -235,6 +235,25 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn refuses_symlinked_chunk_targets() {
+        use std::os::unix::fs::symlink;
+        let root = temp_root();
+        let store = StorageCore::new(&root, 1024, 2048).unwrap();
+        store.init().unwrap();
+        let bytes = envelope(11);
+        let digest = id(&bytes);
+        let shard = root.join(&digest[..2]);
+        fs::create_dir_all(&shard).unwrap();
+        let outside = root.with_extension("outside-chunk");
+        fs::write(&outside, &bytes).unwrap();
+        symlink(&outside, shard.join(&digest[2..])).unwrap();
+        assert!(store.get(&digest).is_err(), "a symlink must not be followed as stored content");
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_file(&outside);
+    }
+
     #[test]
     fn rejects_wrong_digest_and_non_encrypted_envelope() {
         let root = temp_root(); let store = StorageCore::new(&root, 1024, 2048).unwrap(); store.init().unwrap();
