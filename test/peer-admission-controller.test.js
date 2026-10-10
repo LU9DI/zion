@@ -66,6 +66,24 @@ test('serializes concurrent admissions for the same subject and fails closed on 
   assert.equal(outcomes.filter(r => r.ok).length, 1);
   assert.equal(outcomes.filter(r => r.reason === 'subject-already-admitted').length, 1);
   assert.throws(() => new PeerAdmissionController({ ...x.config, stateStore: { load: () => ({ version: 1, consumed: 'bad', admissions: [] }), save() {} } }), { code: 'ZION_ADMISSION_STATE_CORRUPT' });
+  assert.throws(() => new PeerAdmissionController({
+    ...x.config,
+    stateStore: { load: () => ({
+      version: 1,
+      consumed: ['a'.repeat(64) + ':' + 'b'.repeat(32), 'a'.repeat(64) + ':' + 'b'.repeat(32)],
+      admissions: [],
+    }), save() {} },
+  }), { code: 'ZION_ADMISSION_STATE_CORRUPT' });
+  assert.throws(() => new PeerAdmissionController({
+    ...x.config,
+    stateStore: { load: () => ({
+      version: 1, consumed: [],
+      admissions: [
+        { subjectNodeId: 'a'.repeat(64), issuerNodeIds: ['b'.repeat(64)] },
+        { subjectNodeId: 'a'.repeat(64), issuerNodeIds: ['c'.repeat(64)] },
+      ],
+    }), save() {} },
+  }), { code: 'ZION_ADMISSION_STATE_CORRUPT' });
 });
 
 test('awaits asynchronous persistence before reporting admission success', async () => {

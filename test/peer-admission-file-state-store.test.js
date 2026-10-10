@@ -35,7 +35,7 @@ test('file store rejects corruption instead of resetting replay protection', t =
 test('file store enforces size limits on reads and writes', t => {
   const path = fixture(t), store = new FilePeerAdmissionStateStore(path, { maxBytes: 1024 });
   assert.throws(() => store.save({
-    version: 1, consumed: Array.from({ length: 20 }, (_, i) => String(i).padStart(2, '0') + 'x'.repeat(127)), admissions: [],
+    version: 1, consumed: Array.from({ length: 20 }, (_, i) => i.toString(16).padStart(64, '0') + ':' + (i + 1).toString(16).padStart(32, '0')), admissions: [],
   }), { code: 'ZION_ADMISSION_STATE_TOO_LARGE' });
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, 'x'.repeat(1025));
@@ -57,4 +57,29 @@ test('file store is usable by the admission controller across controller restart
   assert.equal((await new PeerAdmissionController(config).admit({ subjectNodeId: subject.nodeId, vouchers })).ok, true);
   assert.equal(new PeerAdmissionController(config).isAdmitted(subject.nodeId), true);
   assert.equal((await new PeerAdmissionController(config).admit({ subjectNodeId: subject.nodeId, vouchers })).reason, 'subject-already-admitted');
+});
+
+test('file store rejects duplicate consumed invitation keys and duplicate admission identities', t => {
+  const path = fixture(t), store = new FilePeerAdmissionStateStore(path);
+  const key = 'a'.repeat(64) + ':' + 'b'.repeat(32);
+  const subject = 'c'.repeat(64), issuer = 'd'.repeat(64);
+  assert.throws(() => store.save({
+    version: 1, consumed: [key, key],
+    admissions: [{ subjectNodeId: subject, issuerNodeIds: [issuer] }],
+  }), TypeError);
+  assert.throws(() => store.save({
+    version: 1, consumed: [key],
+    admissions: [
+      { subjectNodeId: subject, issuerNodeIds: [issuer] },
+      { subjectNodeId: subject, issuerNodeIds: ['e'.repeat(64)] },
+    ],
+  }), TypeError);
+  assert.throws(() => store.save({
+    version: 1, consumed: [key],
+    admissions: [{ subjectNodeId: subject, issuerNodeIds: [issuer, issuer] }],
+  }), TypeError);
+  assert.throws(() => store.save({
+    version: 1, consumed: ['malformed-key'],
+    admissions: [{ subjectNodeId: subject, issuerNodeIds: [issuer] }],
+  }), TypeError);
 });
