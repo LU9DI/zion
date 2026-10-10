@@ -11,6 +11,7 @@ path = "src/lib.rs"
 
 [dependencies]
 sha2 = "=0.10.9"
+libc = "=0.2.190"
 
 [[bin]]
 name = "rea-storage-cli"
