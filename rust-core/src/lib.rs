@@ -208,7 +208,7 @@ mod tests {
 
     #[test]
     fn refuses_quota_overflow() {
-        let root = temp_root(); let bytes = envelope(8); let store = StorageCore::new(&root, 1024, bytes.len() as u64).unwrap(); store.init().unwrap();
+        let root = temp_root(); let bytes = envelope(8); let store = StorageCore::new(&root, bytes.len() as u64, bytes.len() as u64).unwrap(); store.init().unwrap();
         store.put(&id(&bytes), &bytes).unwrap();
         let other = envelope(9);
         assert!(matches!(store.put(&id(&other), &other), Err(StorageError::CapacityExhausted { .. })));
