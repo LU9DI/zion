@@ -9,7 +9,7 @@
 - **Storage caveat:** the Rust storage core is opt-in and not integrated into the active JavaScript replica path. The default in-memory ciphertext adapter is for tests/demos; a durable authenticated adapter is required for real use.
 - **Security caveat:** production key management/key sharing, network transport encryption, distributed Sybil/DDoS defense, and cross-platform hard resource quotas are incomplete. Do not store sensitive data or the only copy of important files.
 - **Witness caveat:** recovery depends on an integrator-supplied live-session validator and trusted publisher keys. Local signatures and fsync calls do not prove an external authority or device-level durability.
-- **Validation:** GitHub Actions passed on the restored tree after the stale dormant gate was removed: 533/533 Node tests, syntax checks, and both demo smoke tests passed. See [validation run](https://github.com/LU9DI/zion/actions/runs/38062968893).
+- **Validation:** GitHub Actions passed on commit `4c3dc545edbd9b4565754d351e327cd6a751fc7a`: 168 JavaScript module files passed syntax checks, 533/533 Node tests passed, both demos passed, and all 3 Rust unit tests passed. See [validation run](https://github.com/LU9DI/zion/actions/runs/38063144217).
 
 ## Local verification
 
