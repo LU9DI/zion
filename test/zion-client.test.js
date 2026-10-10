@@ -82,3 +82,12 @@ test('upload failure cleans up acknowledged chunks when adapter supports deletio
   await assert.rejects(client.upload('abcdef'), /simulated-store-failure/);
   assert.equal(memory.size, 0);
 });
+
+
+test('SDK store alias exposes a stable application-facing entry point', async () => {
+  const client = new ZionClient({ storageAdapter: new MemoryCiphertextAdapter(), chunkBytes: 5 });
+  const stored = await client.store(Buffer.from('sdk API'));
+  assert.equal(stored.cid, stored.manifest.cid);
+  assert.equal(stored.screening.accepted, true);
+  assert.deepEqual(await client.download({ manifest: stored.manifest, fileKey: stored.fileKey }), Buffer.from('sdk API'));
+});
