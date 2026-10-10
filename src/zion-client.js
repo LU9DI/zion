@@ -1,5 +1,6 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import { screenContentHashLocally } from './content-admission-policy.js';
+import { verifyStoreReceipt } from './replication-receipts.js';
 
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 const stableJson = value => {
@@ -52,6 +53,20 @@ export class ZionClient {
     this.blacklistSha256 = [...blacklistSha256];
     this.chunkBytes = chunkBytes;
     this.maxFileBytes = maxFileBytes;
+  }
+
+  /**
+   * Stable application-facing entry point. Stores encrypted chunks through the configured
+   * adapter and returns a manifest plus a client-held file key. This is not, by itself,
+   * evidence of remote replication; callers must retain and verify peer receipts separately.
+   */
+  async store(input, options = {}) {
+    return this.upload(input, options);
+  }
+
+  /** Verify a signed peer storage receipt against the exact request that authorized it. */
+  verify(receipt, request, options = {}) {
+    return verifyStoreReceipt(receipt, request, options);
   }
 
   async upload(input, { blacklistSha256 = this.blacklistSha256 } = {}) {

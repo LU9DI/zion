@@ -82,3 +82,24 @@ test('store request validator rejects expired, future-dated and overlong request
   assert.equal(validateStoreRequest({ ...request, createdAt: 200_000, expiresAt: 200_100 }, { now: 10_000 }).reason, 'invalid-request-time-window');
   assert.equal(validateStoreRequest({ ...request, expiresAt: request.createdAt + 700_000 }, { now: 10_001 }).reason, 'invalid-request-time-window');
 });
+
+
+test('stateless SDK verifier validates signature and request binding', async () => {
+  const { verifyStoreReceipt } = await import('../src/replication-receipts.js');
+  const target = createNodeIdentity();
+  const request = createStoreRequest({ chunkId: hash('f'), bytes: 100, targetNodeId: target.nodeId, now: 10_000 });
+  const receipt = createStoreReceipt(target, request, { storedBytes: 100, now: 10_001 });
+  assert.equal(verifyStoreReceipt(receipt, request).ok, true);
+  assert.equal(verifyStoreReceipt(receipt, { ...request, bytes: 99 }).ok, false);
+  assert.equal(verifyStoreReceipt({ ...receipt, signature: 'invalid' }, request).ok, false);
+});
+
+
+test('historical receipts remain verifiable after the live freshness window', async () => {
+  const { verifyStoreReceipt } = await import('../src/replication-receipts.js');
+  const target = createNodeIdentity();
+  const request = createStoreRequest({ chunkId: hash('9'), bytes: 50, targetNodeId: target.nodeId, now: 1_000 });
+  const receipt = createStoreReceipt(target, request, { storedBytes: 50, now: 1_001 });
+  assert.equal(verifyStoreReceipt(receipt, request).ok, true);
+  assert.equal(verifyStoreReceipt({ ...receipt, extra: true }, request).reason, 'invalid-receipt-envelope');
+});
