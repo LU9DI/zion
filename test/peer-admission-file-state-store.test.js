@@ -35,7 +35,7 @@ test('file store rejects corruption instead of resetting replay protection', t =
 test('file store enforces size limits on reads and writes', t => {
   const path = fixture(t), store = new FilePeerAdmissionStateStore(path, { maxBytes: 1024 });
   assert.throws(() => store.save({
-    version: 1, consumed: ['x'.repeat(129)], admissions: [],
+    version: 1, consumed: Array.from({ length: 20 }, (_, i) => String(i).padStart(2, '0') + 'x'.repeat(127)), admissions: [],
   }), { code: 'ZION_ADMISSION_STATE_TOO_LARGE' });
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, 'x'.repeat(1025));
