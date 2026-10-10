@@ -15,7 +15,8 @@ const isLoopbackAddress = host => {
   // Do not trust a loose regex: values such as 127.999.1.1 are not IP literals.
   return netIsIpAddress(normalized) === 4 && normalized.split('.')[0] === '127';
 };
-const isLoopbackHost = host => host === 'localhost' || isLoopbackAddress(host);
+// Treat only validated IP literals as loopback. Hostnames can be redirected by local resolver configuration.
+const isLoopbackHost = host => isLoopbackAddress(host);
 const MAX_QUEUED_FRAMES_PER_SOCKET = 64;
 const DEFAULT_TYPES = new Set(['PING', 'PONG', 'STORE_CHUNK', 'GET_CHUNK', 'CHUNK_DATA', 'MANIFEST', 'STORE_REQUEST', 'STORE_RECEIPT', 'STORE_REJECTED']);
 
