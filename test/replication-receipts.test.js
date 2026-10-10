@@ -89,7 +89,16 @@ test('stateless SDK verifier validates signature and request binding', async () 
   const target = createNodeIdentity();
   const request = createStoreRequest({ chunkId: hash('f'), bytes: 100, targetNodeId: target.nodeId, now: 10_000 });
   const receipt = createStoreReceipt(target, request, { storedBytes: 100, now: 10_001 });
-  assert.equal(verifyStoreReceipt(receipt, request, { now: 10_001 }).ok, true);
-  assert.equal(verifyStoreReceipt(receipt, { ...request, bytes: 99 }, { now: 10_001 }).ok, false);
-  assert.equal(verifyStoreReceipt({ ...receipt, signature: 'invalid' }, request, { now: 10_001 }).ok, false);
+  assert.equal(verifyStoreReceipt(receipt, request).ok, true);
+  assert.equal(verifyStoreReceipt(receipt, { ...request, bytes: 99 }).ok, false);
+  assert.equal(verifyStoreReceipt({ ...receipt, signature: 'invalid' }, request).ok, false);
+});
+
+
+test('historical receipts remain verifiable after the live freshness window', async () => {
+  const { verifyStoreReceipt } = await import('../src/replication-receipts.js');
+  const target = createNodeIdentity();
+  const request = createStoreRequest({ chunkId: hash('9'), bytes: 50, targetNodeId: target.nodeId, now: 1_000 });
+  const receipt = createStoreReceipt(target, request, { storedBytes: 50, now: 1_001 });
+  assert.equal(verifyStoreReceipt(receipt, request).ok, true);
 });
