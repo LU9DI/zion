@@ -54,7 +54,7 @@ export class PeerTransport {
     this.genesis = protocolGenesis === null ? null : validateGenesisDocument(protocolGenesis);
     if (this.genesis && maxFrameBytes > this.genesis.limits.maxFrameBytes) throw new RangeError('Transport frame limit exceeds protocol genesis');
     if (networkMode === 'official' && (!integrityGuard || typeof integrityGuard.checkHealthy !== 'function' || typeof integrityGuard.assertHealthy !== 'function')) throw new Error('Official Zion mode requires a verified IntegrityGuard');
-    if (admissionController !== null && (networkMode !== 'official' || !protocolGenesis || typeof admissionController.admit !== 'function' || typeof admissionController.isAdmitted !== 'function')) throw new Error('Invite admission requires an official network and a compatible admission controller');
+    if (admissionController !== null && (networkMode !== 'official' || !protocolGenesis || !trustedPeerIds || trustedPeerIds.length === 0 || typeof admissionController.admit !== 'function' || typeof admissionController.isAdmitted !== 'function')) throw new Error('Invite admission requires an official network, genesis, bootstrap allowlist, and compatible admission controller');
     if (!Array.isArray(admissionVouchers) || admissionVouchers.length > 16) throw new TypeError('admissionVouchers must be an array of at most 16 vouchers');
     if (admissionVouchers.length && (networkMode !== 'official' || !protocolGenesis)) throw new Error('Admission vouchers require an official network with a protocol genesis');
     this.integrityGuard = integrityGuard;
