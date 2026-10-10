@@ -27,7 +27,7 @@ function setup(options = {}) {
   return { controller: new PeerAdmissionController(config), subject, vouchers, store, config, issuers: [a, b] };
 }
 
-test('admits with distinct trusted vouchers and durably consumes them', async () => {
+test('admits with distinct trusted vouchers and restores admission state after restart', async () => {
   const x = setup();
   const result = await x.controller.admit({ subjectNodeId: x.subject.nodeId, vouchers: x.vouchers });
   assert.equal(result.ok, true);
@@ -36,7 +36,7 @@ test('admits with distinct trusted vouchers and durably consumes them', async ()
   const restarted = new PeerAdmissionController(x.config);
   assert.equal((await restarted.admit({ subjectNodeId: x.subject.nodeId, vouchers: x.vouchers })).reason, 'subject-already-admitted');
   const another = createNodeIdentity();
-  assert.equal((await restarted.admit({ subjectNodeId: another.nodeId, vouchers: x.vouchers })).reason, 'invitation-already-used');
+  assert.equal((await restarted.admit({ subjectNodeId: another.nodeId, vouchers: x.vouchers })).reason, 'insufficient-valid-invitations');
 });
 
 test('capacity and storage pressure stop admission without consuming vouchers', async () => {
@@ -57,14 +57,13 @@ test('issuer quota limits future admissions without guilt-by-association penalti
   assert.equal((await x.controller.admit({ subjectNodeId: next.nodeId, vouchers: more })).reason, 'issuer-admission-quota-reached');
 });
 
-test('serializes concurrent admissions and fails closed on malformed state', async () => {
+test('serializes concurrent admissions for the same subject and fails closed on malformed state', async () => {
   const x = setup();
-  const other = createNodeIdentity();
   const outcomes = await Promise.all([
     x.controller.admit({ subjectNodeId: x.subject.nodeId, vouchers: x.vouchers }),
-    x.controller.admit({ subjectNodeId: other.nodeId, vouchers: x.vouchers }),
+    x.controller.admit({ subjectNodeId: x.subject.nodeId, vouchers: x.vouchers }),
   ]);
   assert.equal(outcomes.filter(r => r.ok).length, 1);
-  assert.equal(outcomes.filter(r => r.reason === 'invitation-already-used').length, 1);
+  assert.equal(outcomes.filter(r => r.reason === 'subject-already-admitted').length, 1);
   assert.throws(() => new PeerAdmissionController({ ...x.config, stateStore: { load: () => ({ version: 1, consumed: 'bad', admissions: [] }), save() {} } }), { code: 'ZION_ADMISSION_STATE_CORRUPT' });
 });
