@@ -68,7 +68,32 @@ impl StorageCore {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&self.root, fs::Permissions::from_mode(0o700))?;
         }
+        self.with_lock(|| self.sync_config_locked())?;
         Ok(())
+    }
+
+    fn sync_config_locked(&self) -> Result<(), StorageError> {
+        let path = self.root.join(".rea-rust-storage-config");
+        let expected = format!("version=1\nmax_chunk_bytes={}\nmax_storage_bytes={}\n", self.max_chunk_bytes, self.max_storage_bytes);
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                file.write_all(expected.as_bytes())?;
+                file.sync_all()?;
+                #[cfg(unix)]
+                File::open(&self.root)?.sync_all()?;
+                Ok(())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let metadata = fs::symlink_metadata(&path)?;
+                if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 256 {
+                    return Err(StorageError::UnsafePath);
+                }
+                let mut saved = String::new();
+                File::open(&path)?.read_to_string(&mut saved)?;
+                if saved == expected { Ok(()) } else { Err(StorageError::InvalidConfiguration) }
+            }
+            Err(error) => Err(StorageError::Io(error.to_string())),
+        }
     }
 
     pub fn put(&self, chunk_id: &str, envelope: &[u8]) -> Result<PutReceipt, StorageError> {
@@ -179,7 +204,7 @@ impl StorageCore {
             let name = shard.file_name().to_string_lossy().into_owned();
             // Only the active lock directory is metadata. Silently skipping every
             // dotfile would let unexpected root entries evade quota accounting.
-            if name == ".rea-rust-storage-lock" { continue; }
+            if name == ".rea-rust-storage-lock" || name == ".rea-rust-storage-config" { continue; }
             let meta = fs::symlink_metadata(shard.path())?;
             if !meta.is_dir() || meta.file_type().is_symlink() || name.len() != 2 || !name.bytes().all(is_hex) { return Err(StorageError::UnsafePath); }
             for entry in fs::read_dir(shard.path())? {
