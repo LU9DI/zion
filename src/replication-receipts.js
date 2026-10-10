@@ -49,9 +49,14 @@ export function createStoreReceipt(identity, request, { storedBytes, now = Date.
  */
 export function verifyStoreReceipt(message, request) {
   const fail = reason => ({ ok: false, reason });
+  const envelopeKeys = ['version', 'nodeId', 'timestamp', 'nonce', 'payload', 'publicKeyPem', 'signature'];
+  if (!message || typeof message !== 'object' || Array.isArray(message) ||
+      Object.keys(message).length !== envelopeKeys.length || Object.keys(message).some(key => !envelopeKeys.includes(key))) {
+    return fail('invalid-receipt-envelope');
+  }
   // Historical receipts must remain independently verifiable after their original freshness
   // window. Freshness/replay protection belongs to ReplicaReceiptTracker.accept(), not here.
-  if (!Number.isSafeInteger(message?.timestamp) || message.timestamp < 0) return fail('invalid-receipt-timestamp');
+  if (!Number.isSafeInteger(message.timestamp) || message.timestamp < 0) return fail('invalid-receipt-timestamp');
   const checked = verifyPeerMessage(message, { now: message.timestamp, maxClockSkewMs: 0 });
   if (!checked.ok) return checked;
   const payload = checked.payload;
