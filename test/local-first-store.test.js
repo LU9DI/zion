@@ -17,6 +17,7 @@ test('detects same-parent forks and blocks writes until explicit resolution',asy
  const remote={...remoteBase,hash:hashLocalFirstRecord(remoteBase)};
  const fork=await store.ingestRemote(remote);
  assert.equal(fork.reason,'fork-detected');
+ assert.equal(store.records.has(remote.hash),true,'remote fork must be preserved locally');
  await assert.rejects(store.write({key:'doc',parentHash:local.record.hash,deviceId:'laptop',value:{v:3}}),{code:'ZION_CONFLICT_UNRESOLVED'});
  const resolution=await store.resolveConflict('doc',{keepHashes:fork.conflict.branches,mergedValue:{v:3},deviceId:'laptop'});
  assert.equal(resolution.parentHashes.length,2);assert.equal(store.getConflict('doc'),null);assert.equal(store.get('doc').value.v,3);
