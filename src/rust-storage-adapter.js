@@ -95,6 +95,7 @@ export class RustStorageAdapter {
         finish(reject, new RustStorageError('SIDECAR_TIMEOUT', 'Rust storage sidecar timed out'));
       }, this.timeoutMs);
       child.stdout.on('data', chunk => {
+        if (settled) return;
         stdoutBytes += chunk.length;
         const maxOutput = binaryOutput ? this.maxChunkBytes : 4096;
         if (stdoutBytes > maxOutput) {
@@ -105,6 +106,7 @@ export class RustStorageAdapter {
         stdout.push(chunk);
       });
       child.stderr.on('data', chunk => {
+        if (settled) return;
         stderrBytes += chunk.length;
         if (stderrBytes > 4096) {
           child.kill('SIGKILL');
