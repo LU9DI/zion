@@ -205,3 +205,12 @@ O módulo `src/storage-audit-sessions.js` acrescenta uma camada de sessão sobre
 - política de confiança configurável por callbacks e testes de assinatura adulterada, peer incorreto, prova inválida, replay, expiração e capacidade.
 
 **Limites que permanecem:** o estado de sessões pendentes/consumidas é apenas em memória; reinícios ou múltiplas instâncias exigem armazenamento durável e coordenação para manter a proteção anti-replay. O verificador de identidade confiável precisa ser configurado pela aplicação. Merkle sampled proofs autenticadas não são, por si sós, uma prova formal de recuperabilidade (PoR), não garantem disponibilidade futura e ainda não acionam reparação automática. O módulo não deve ser tratado como auditoria distribuída de produção até haver persistência, scheduler, política de falhas transitórias e integração com a camada de armazenamento/transporte.
+
+
+## Estado durável das auditorias de armazenamento
+
+A camada de auditoria agora pode usar `FileStorageAuditStateStore` (`src/storage-audit-state-store.js`) para salvar sessões pendentes e IDs já consumidos em snapshots JSON atômicos. O snapshot é escrito em arquivo temporário exclusivo, sincronizado com `fsync`, renomeado e seguido de sincronização do diretório. A carga valida versão, estrutura, tamanho máximo e checksum; estado corrompido causa falha explícita, sem reiniciar silenciosamente a lista anti-replay vazia.
+
+Para ativar, passe uma instância de `FileStorageAuditStateStore` como `stateStore` para `StorageAuditSessions`. A opção continua desativada por padrão para manter compatibilidade.
+
+**Limites de segurança:** o checksum detecta corrupção acidental, mas não é uma assinatura nem impede adulteração por um atacante com acesso de escrita ao disco. O armazenamento pressupõe um único processo auditor por arquivo; não há transação multi-processo, replicação do estado ou proteção contra rollback de snapshots antigos. Configure permissões restritas para o diretório e faça backup seguro. Para uso distribuído, ainda é necessário um backend transacional compartilhado com controle de concorrência e política de retenção.
