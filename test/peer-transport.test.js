@@ -32,6 +32,12 @@ test('transport accepts a valid signed peer message and exposes authenticated id
   assert.deepEqual(received.payload, { type: 'PING', nonce: 'test' });
 });
 
+test('transport refuses plaintext outbound connections to non-loopback peers', async () => {
+  const client = new PeerTransport({ identity: createNodeIdentity() });
+  await assert.rejects(client.connect('192.0.2.10', 443), /require mutual TLS/);
+  await client.close();
+});
+
 test('transport rejects unsupported message types before sending', async t => {
   const client = new PeerTransport({ identity: createNodeIdentity() });
   const socket = { destroyed: false, writable: true, write() { throw new Error('should not write'); } };
