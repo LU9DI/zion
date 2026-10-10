@@ -6,7 +6,7 @@ Audited revision at start: `d79e60fe38a59b8a7b8cfc2460cd4abe571fb6ac`; documenta
 
 ## Verdict
 
-**Not production-ready.** The source archive is now in GitHub and the full AGPL-3.0-only license text has been committed. The codebase contains useful local primitives and tests, but does not yet constitute a working public decentralized cloud. GitHub Actions now passes on the current source and audit tree; passing tests are not a security certification.
+**Not production-ready.** The source archive is now in GitHub and the full AGPL-3.0-only license text has been committed. The codebase contains useful local primitives and tests, but does not yet constitute a working public decentralized cloud. The previously confirmed GitHub Actions run passed on an earlier revision; the latest hardening commits still require CI confirmation. Passing tests are not a security certification.
 
 ## Issues fixed in this pass
 
