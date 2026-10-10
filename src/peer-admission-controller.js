@@ -25,6 +25,9 @@ export class PeerAdmissionController {
     maxVouchers = 16, now = () => Date.now(), capacityProvider,
     stateStore, maxRecords = MAX_RECORDS, rolloutPolicy = null,
   } = {}) {
+    if (stateStore && (stateStore.load?.constructor?.name === 'AsyncFunction' || stateStore.save?.constructor?.name === 'AsyncFunction')) {
+      throw Object.assign(new TypeError('Peer admission stateStore.load()/save() must be synchronous'), { code: 'ZION_ADMISSION_ASYNC_STORE_UNSUPPORTED' });
+    }
     if (!Array.isArray(trustedIssuerNodeIds) || trustedIssuerNodeIds.some(id => !ID.test(id)) ||
       !Number.isSafeInteger(threshold) || threshold < 1 || threshold > 16 ||
       !Number.isSafeInteger(maxActivePeers) || maxActivePeers < 1 ||
@@ -34,7 +37,6 @@ export class PeerAdmissionController {
       typeof now !== 'function' || typeof capacityProvider !== 'function' ||
       (rolloutPolicy !== null && typeof rolloutPolicy.evaluate !== 'function') ||
       !stateStore || typeof stateStore.load !== 'function' || typeof stateStore.save !== 'function' ||
-      stateStore.load.constructor?.name === 'AsyncFunction' || stateStore.save.constructor?.name === 'AsyncFunction' ||
       !Number.isSafeInteger(maxRecords) || maxRecords < 1 || maxRecords > MAX_RECORDS) {
       throw new TypeError('Invalid peer admission configuration');
     }
