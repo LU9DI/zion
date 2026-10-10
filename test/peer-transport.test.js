@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { connect } from 'node:net';
+import { connect, createServer as createTcpServer } from 'node:net';
 import { once } from 'node:events';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
@@ -345,4 +345,21 @@ test('mutual TLS rejects a server certificate signed by an untrusted CA', { skip
 
 test('localhost bind requires TLS because resolver aliases are not trusted as loopback literals', () => {
   assert.throws(() => new PeerTransport({ identity: createNodeIdentity(), host: 'localhost', trustedPeerIds: ['a'.repeat(64)] }), /requires mutual TLS/);
+});
+
+
+test('outbound TLS handshake timeout closes an unresponsive peer', { skip: !opensslAvailable }, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'zion-mtls-timeout-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const material = createTlsTestMaterial(directory);
+  const stalledServer = createTcpServer(() => { /* accept TCP but never perform TLS handshake */ });
+  stalledServer.listen(0, '127.0.0.1');
+  await once(stalledServer, 'listening');
+  t.after(() => stalledServer.close());
+  const address = stalledServer.address();
+  const client = new PeerTransport({ identity: createNodeIdentity(), tlsOptions: material.client, tlsHandshakeTimeoutMs: 150 });
+  const started = Date.now();
+  await assert.rejects(client.connect('127.0.0.1', address.port), /TLS handshake timed out/);
+  assert.ok(Date.now() - started < 1500, 'stalled handshake must be bounded');
+  await client.close();
 });
