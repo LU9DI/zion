@@ -103,6 +103,7 @@ test('transport applies rate limiting before replay-cache admission', async t =>
 
 test('non-loopback binding requires an explicit trusted peer allowlist', () => {
   assert.doesNotThrow(() => new PeerTransport({ identity: createNodeIdentity(), host: '127.0.0.2' }));
+  assert.throws(() => new PeerTransport({ identity: createNodeIdentity(), host: '127.999.1.1' }), /trustedPeerIds allowlist/);
   assert.throws(() => new PeerTransport({ identity: createNodeIdentity(), host: '0.0.0.0' }), /trustedPeerIds allowlist/);
   assert.throws(() => new PeerTransport({ identity: createNodeIdentity(), host: '0.0.0.0', trustedPeerIds: ['bad-id'] }), /trustedPeerIds/);
   assert.throws(() => new PeerTransport({ identity: createNodeIdentity(), host: '0.0.0.0', trustedPeerIds: ['a'.repeat(64)] }), /mutual TLS options/);
