@@ -20,6 +20,7 @@ function responsePayload({ version, peerNodeId, response }) {
   return JSON.stringify({ version, peerNodeId, response });
 }
 function validId(value) { return typeof value === 'string' && ID.test(value); }
+function validChallengeId(value) { return typeof value === 'string' && /^[a-f0-9]{32}$/.test(value); }
 
 /** Sign an audit challenge so peers can authenticate who requested the proof. */
 export function signStorageAuditChallenge({ challenge, auditorIdentity, expiresAt } = {}) {
@@ -64,15 +65,41 @@ export function signStorageAuditResponse({ response, peerIdentity } = {}) {
  */
 export class StorageAuditSessions {
   constructor({ auditorIdentity, now = () => Date.now(), ttlMs = 60_000, maxPending = 10_000,
-    isTrustedPeer = () => true } = {}) {
+    isTrustedPeer = () => true, stateStore = null } = {}) {
     if (!auditorIdentity?.privateKey || !validId(auditorIdentity.nodeId) ||
         nodeIdFromPublicKey(auditorIdentity.publicKeyPem) !== auditorIdentity.nodeId ||
         typeof now !== 'function' || !Number.isSafeInteger(ttlMs) || ttlMs < 1000 || ttlMs > 24*60*60_000 ||
         !Number.isSafeInteger(maxPending) || maxPending < 1 || maxPending > 1_000_000 ||
-        typeof isTrustedPeer !== 'function') throw new TypeError('Invalid storage audit session configuration');
+        typeof isTrustedPeer !== 'function' || (stateStore !== null && (typeof stateStore.load !== 'function' || typeof stateStore.save !== 'function'))) throw new TypeError('Invalid storage audit session configuration');
     this.auditorIdentity = auditorIdentity;
     this.now = now; this.ttlMs = ttlMs; this.maxPending = maxPending; this.isTrustedPeer = isTrustedPeer;
-    this.pending = new Map(); this.consumed = new Map();
+    this.pending = new Map(); this.consumed = new Map(); this.stateStore = stateStore;
+    if (stateStore) {
+      const state = stateStore.load();
+      if (!state || !Array.isArray(state.pending) || !Array.isArray(state.consumed) ||
+          state.pending.length > maxPending || state.consumed.length > maxPending * 10) {
+        throw Object.assign(new Error('Persisted storage audit state is invalid or exceeds configured bounds'), { code:'ZION_AUDIT_STATE_CORRUPT' });
+      }
+      for (const item of state.pending) {
+        if (!item || !validChallengeId(item.id) || !validId(item.peerNodeId) || !Number.isSafeInteger(item.issuedAt) ||
+            !Number.isSafeInteger(item.expiresAt) || !item.challenge || item.challenge.challengeId !== item.id ||
+            this.pending.has(item.id)) throw Object.assign(new Error('Persisted pending audit record is invalid'), { code:'ZION_AUDIT_STATE_CORRUPT' });
+        this.pending.set(item.id, { challenge:item.challenge, peerNodeId:item.peerNodeId, issuedAt:item.issuedAt, expiresAt:item.expiresAt });
+      }
+      for (const item of state.consumed) {
+        if (!Array.isArray(item) || !validChallengeId(item[0]) || !Number.isSafeInteger(item[1]) || this.consumed.has(item[0])) {
+          throw Object.assign(new Error('Persisted consumed audit record is invalid'), { code:'ZION_AUDIT_STATE_CORRUPT' });
+        }
+        this.consumed.set(item[0], item[1]);
+      }
+    }
+  }
+  #saveState(pending = this.pending, consumed = this.consumed) {
+    if (!this.stateStore) return;
+    this.stateStore.save({
+      pending: [...pending.entries()].map(([id, item]) => ({ id, peerNodeId:item.peerNodeId, issuedAt:item.issuedAt, expiresAt:item.expiresAt, challenge:item.challenge })),
+      consumed: [...consumed.entries()]
+    });
   }
   #prune(now) {
     for (const [id, item] of this.pending) if (item.expiresAt <= now) this.pending.delete(id);
@@ -85,7 +112,10 @@ export class StorageAuditSessions {
     const challenge = createStorageChallenge({ commitment, sampleCount });
     if (this.pending.has(challenge.challengeId) || this.consumed.has(challenge.challengeId)) throw new Error('Challenge ID collision');
     const expiresAt = now + this.ttlMs;
-    this.pending.set(challenge.challengeId, { challenge, peerNodeId, issuedAt:now, expiresAt });
+    const item = { challenge, peerNodeId, issuedAt:now, expiresAt };
+    const nextPending = new Map(this.pending); nextPending.set(challenge.challengeId, item);
+    this.#saveState(nextPending, this.consumed);
+    this.pending.set(challenge.challengeId, item);
     return Object.freeze(signStorageAuditChallenge({ challenge, auditorIdentity:this.auditorIdentity, expiresAt }));
   }
   verify({ envelope, signedResponse } = {}) {
@@ -110,6 +140,9 @@ export class StorageAuditSessions {
     } catch { return { ok:false, reason:'invalid-peer-signature' }; }
     const result = verifyStorageChallengeResponse({ challenge:session.challenge, response:signedResponse.response });
     if (!result.ok) return { ...result, reason:`invalid-proof:${result.reason}` };
+    const nextPending = new Map(this.pending); nextPending.delete(id);
+    const nextConsumed = new Map(this.consumed); nextConsumed.set(id, now + this.ttlMs);
+    this.#saveState(nextPending, nextConsumed);
     this.pending.delete(id);
     this.consumed.set(id, now + this.ttlMs);
     return Object.freeze({ ok:true, peerNodeId:session.peerNodeId, challengeId:id, verifiedSamples:result.verifiedSamples,

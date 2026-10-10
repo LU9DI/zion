@@ -1,4 +1,8 @@
 import test from 'node:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { FileStorageAuditStateStore } from '../src/storage-audit-state-store.js';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, createHash } from 'node:crypto';
 import { createStorageCommitment, answerStorageChallenge } from '../src/storage-challenge.js';
@@ -43,4 +47,29 @@ test('storage audit expires pending sessions and enforces bounded capacity', () 
   now=2001;
   assert.equal(sessions.verify({envelope:{challenge:{challengeId:'a'.repeat(32)}}}).reason,'unknown-or-expired-challenge');
   assert.equal(sessions.issue({commitment,peerNodeId:peer.nodeId}).challenge.root,commitment.root);
+});
+
+test('persists pending and consumed audit IDs across auditor restart', t => {
+  const dir=mkdtempSync(join(tmpdir(),'zion-audit-session-'));
+  t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const path=join(dir,'audit-state.json'), auditor=identity(), peer=identity(), data=Buffer.alloc(5000,19);
+  const store=()=>new FileStorageAuditStateStore(path);
+  const first=new StorageAuditSessions({auditorIdentity:auditor,stateStore:store(),isTrustedPeer:id=>id===peer.nodeId});
+  const envelope=first.issue({commitment:createStorageCommitment(data,{leafSize:512}),peerNodeId:peer.nodeId});
+  const restarted=new StorageAuditSessions({auditorIdentity:auditor,stateStore:store(),isTrustedPeer:id=>id===peer.nodeId});
+  assert.equal(restarted.pendingCount,1);
+  const response=answerStorageChallenge(data,envelope.challenge);
+  const signedResponse=signStorageAuditResponse({response,peerIdentity:peer});
+  assert.equal(restarted.verify({envelope,signedResponse}).ok,true);
+  const afterSuccess=new StorageAuditSessions({auditorIdentity:auditor,stateStore:store(),isTrustedPeer:id=>id===peer.nodeId});
+  assert.equal(afterSuccess.verify({envelope,signedResponse}).reason,'replay');
+});
+test('fails closed on corrupted durable audit state', t => {
+  const dir=mkdtempSync(join(tmpdir(),'zion-audit-session-'));
+  t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const path=join(dir,'audit-state.json'), auditor=identity();
+  const store=new FileStorageAuditStateStore(path);
+  store.save({pending:[],consumed:[]});
+    writeFileSync(path,'corrupt');
+  assert.throws(()=>new StorageAuditSessions({auditorIdentity:auditor,stateStore:store}),{code:'ZION_AUDIT_STATE_CORRUPT'});
 });
