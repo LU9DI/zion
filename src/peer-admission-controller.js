@@ -117,6 +117,10 @@ export class PeerAdmissionController {
       issuerNodeIds: [...accepted.keys()] };
   }
 
+  isAdmitted(subjectNodeId) {
+    return ID.test(subjectNodeId ?? '') && this.state.admissions.some(record => record.subjectNodeId === subjectNodeId);
+  }
+
   snapshot() {
     return Object.freeze({
       consumedInvitations: this.state.consumed.length,
