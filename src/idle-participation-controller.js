@@ -40,7 +40,11 @@ export class IdleParticipationController {
 
       const idleForMs = timestamp - lastActivityAt;
       if (idleForMs < this.idleAfterMs) {
-        if (this.state !== 'active') {
+        if (this.state === 'pause-failed') {
+          // The runtime's actual state is uncertain; retry the safe direction first.
+          return this.#pause('pause-retry-required');
+        }
+        if (this.state === 'paused') {
           await this.resumeParticipation({ reason: 'activity-detected' });
           this.state = 'active';
         }
