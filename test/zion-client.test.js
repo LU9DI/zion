@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { ZionClient, MemoryCiphertextAdapter } from '../src/zion-client.js';
+import { createNodeIdentity } from '../src/peer-security.js';
+import { createStoreRequest, createStoreReceipt } from '../src/replication-receipts.js';
 
 const digest = data => createHash('sha256').update(data).digest('hex');
 
@@ -90,4 +92,14 @@ test('SDK store alias exposes a stable application-facing entry point', async ()
   assert.equal(stored.cid, stored.manifest.cid);
   assert.equal(stored.screening.accepted, true);
   assert.deepEqual(await client.download({ manifest: stored.manifest, fileKey: stored.fileKey }), Buffer.from('sdk API'));
+});
+
+
+test('SDK verify method binds a receipt to its original storage request', () => {
+  const identity = createNodeIdentity();
+  const client = new ZionClient({ storageAdapter: new MemoryCiphertextAdapter() });
+  const request = createStoreRequest({ chunkId: 'a'.repeat(64), bytes: 64, targetNodeId: identity.nodeId, now: 50_000 });
+  const receipt = createStoreReceipt(identity, request, { storedBytes: 64, now: 50_001 });
+  assert.equal(client.verify(receipt, request, { now: 50_001 }).ok, true);
+  assert.equal(client.verify(receipt, { ...request, chunkId: 'b'.repeat(64) }, { now: 50_001 }).ok, false);
 });
