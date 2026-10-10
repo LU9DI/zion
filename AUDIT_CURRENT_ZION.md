@@ -6,14 +6,14 @@ Audited revision at start: `d79e60fe38a59b8a7b8cfc2460cd4abe571fb6ac`; documenta
 
 ## Verdict
 
-**Not production-ready.** The source archive is now in GitHub and the full AGPL-3.0-only license text has been committed. The codebase contains useful local primitives and tests, but does not yet constitute a working public decentralized cloud. Historical test counts are not a substitute for a fresh green CI run on the current tree.
+**Not production-ready.** The source archive is now in GitHub and the full AGPL-3.0-only license text has been committed. The codebase contains useful local primitives and tests, but does not yet constitute a working public decentralized cloud. GitHub Actions now passes on the current source and audit tree; passing tests are not a security certification.
 
 ## Issues fixed in this pass
 
 - Replaced the stale README heading/version and misleading opening status with the package version and a concise prototype/production boundary.
 - Added this current audit so the principal blockers are discoverable without reading every historical audit.
-- The restoration workflow is being restricted to explicit manual invocation, to prevent a later edit to the workflow file from automatically re-copying an old archive over the repository.
-- The validation workflow is being made active instead of carrying a “dormant” condition after source restoration.
+- Restricted the restoration workflow to explicit manual invocation plus a confirmation phrase, preventing ordinary workflow edits from automatically re-copying an old archive over the repository.
+- Activated CI for every push/PR, extended syntax checks to `.js`, `.mjs`, and `.cjs`, added a root Cargo workspace and Rust tests, and fixed the Rust quota test fixture exposed by CI.
 
 ## Remaining blockers (ordered by risk)
 
