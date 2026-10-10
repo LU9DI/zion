@@ -1,6 +1,6 @@
 # Transactional peer-admission backend contract
 
-Status: design contract plus an initial PostgreSQL schema migration. **No transactional adapter is implemented, and the migration has not been applied to a production database.**
+Status: PostgreSQL schema migration plus an initial injected-pool transaction store. **The store is not wired into `PeerAdmissionController`; real-PostgreSQL multi-process integration tests and production migration/application are still missing.**
 
 ## Why the file store is insufficient
 
@@ -34,7 +34,7 @@ A generic `load()` + `save()` pair is not a substitute for this interface. Neith
 
 ## PostgreSQL reference model
 
-The executable schema draft is committed at `migrations/postgres/0001_peer_admission.sql`; it creates normalized issuer membership, unique consumed invitation keys, policy/capacity singleton rows, and subject uniqueness. It is not automatically applied and is not sufficient without the transactional adapter. The SQL below remains a conceptual reference; all runtime SQL identifiers/values must be safely handled and values parameterized.
+The executable schema draft is committed at `migrations/postgres/0001_peer_admission.sql`. `src/peer-admission-postgres-store.js` now provides an initial transaction-bound persistence API for a node-postgres-compatible injected pool, with serializable transactions, singleton-row locks, uniqueness handling, issuer-quota checks, capacity reservation, bounded serialization/deadlock retries, and release/revoke operations. Unit tests with a fake pool cover transaction boundaries and rollback behavior, but do not prove PostgreSQL semantics or cross-process safety. The store is not yet integrated into `PeerAdmissionController`; the migration is not automatically applied. The SQL below remains a conceptual reference; all runtime SQL identifiers/values must be safely handled and values parameterized.
 
 ```sql
 CREATE TABLE peer_admission_capacity (
@@ -108,4 +108,4 @@ A concrete adapter is not ready until integration tests with a real database dem
 
 ## Acceptance gate
 
-The migration is a schema foundation only. It does not provide runtime locking, quota enforcement, active-capacity lifecycle, or atomic admission by itself. This contract is complete only when a real adapter implements the transaction boundary and all concurrency/failure tests above pass in CI. Until then, the controller's documented guarantee remains single-process only, and Zion remains not production-ready.
+The schema and initial store are not a production-ready integrated backend. The controller still uses its existing stateStore API, and the new store has only fake-pool unit coverage. Before production use, wire cryptographically verified vouchers to this transaction boundary, add a real PostgreSQL service to CI, prove races with independent connections/processes, test ambiguous commits and restart/reconciliation, and validate migration/rollback operations. Until those gates pass, the controller's documented guarantee remains single-process only, and Zion remains not production-ready.
