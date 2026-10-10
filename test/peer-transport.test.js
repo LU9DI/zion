@@ -289,13 +289,13 @@ try { execFileSync('openssl', ['version'], { stdio: 'ignore' }); opensslAvailabl
 
 function createTlsTestMaterial(directory) {
   const run = args => execFileSync('openssl', args, { cwd: directory, stdio: 'ignore' });
-  run(['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'ca.key', '-out', 'ca.crt', '-subj', '/CN=Zion Test CA', '-days', '2']);
-  run(['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'wrong-ca.key', '-out', 'wrong-ca.crt', '-subj', '/CN=Untrusted Zion Test CA', '-days', '2']);
+  run(['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'ca.key', '-out', 'ca.crt', '-subj', '/CN=Zion Test CA', '-days', '2', '-addext', 'basicConstraints=critical,CA:TRUE', '-addext', 'keyUsage=critical,keyCertSign,cRLSign']);
+  run(['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'wrong-ca.key', '-out', 'wrong-ca.crt', '-subj', '/CN=Untrusted Zion Test CA', '-days', '2', '-addext', 'basicConstraints=critical,CA:TRUE', '-addext', 'keyUsage=critical,keyCertSign,cRLSign']);
   for (const role of ['server', 'client']) {
     run(['req', '-new', '-newkey', 'rsa:2048', '-nodes', '-keyout', role + '.key', '-out', role + '.csr', '-subj', '/CN=' + (role === 'server' ? 'localhost' : 'zion-test-client')]);
     const extensions = role === 'server'
-      ? 'basicConstraints=critical,CA:false\\nkeyUsage=critical,digitalSignature,keyEncipherment\\nextendedKeyUsage=serverAuth\\nsubjectAltName=DNS:localhost,IP:127.0.0.1\\n'
-      : 'basicConstraints=critical,CA:false\\nkeyUsage=critical,digitalSignature,keyEncipherment\\nextendedKeyUsage=clientAuth\\n';
+      ? 'basicConstraints=critical,CA:false\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,IP:127.0.0.1\n'
+      : 'basicConstraints=critical,CA:false\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=clientAuth\n';
     writeFileSync(join(directory, role + '.ext'), extensions);
     run(['x509', '-req', '-in', role + '.csr', '-CA', 'ca.crt', '-CAkey', 'ca.key', '-CAcreateserial', '-out', role + '.crt', '-days', '2', '-sha256', '-extfile', role + '.ext']);
   }
