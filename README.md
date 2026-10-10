@@ -1,6 +1,36 @@
-# Zion v0.33.28 — Signed Witness Temporary Recovery
+# Zion v0.33.32 — Experimental decentralized storage foundation
 
-Consumer apps can call `ZionClient.upload()` and `ZionClient.download()` rather than orchestrating encryption and chunking directly. The client screens the input locally, encrypts chunks with AES-256-GCM before passing them to a pluggable storage adapter, and keeps the file key outside the manifest. `MemoryCiphertextAdapter` is only for tests/demos; integrate a durable authenticated adapter for real use. This does not yet implement ZKP or automatic key sharing. See `AUDIT_V0.33.28.md`.
+**Status: research prototype; not production-ready and not a public P2P cloud.** The repository contains local storage/crypto primitives, resource-policy logic, signed Witness recovery, an experimental bounded TCP transport, and an illustrative cloud UI. The license text is now present as AGPL-3.0-only.
+
+## Quick status
+
+- **Available for local experiments:** Node.js modules and automated tests; the cloud UI is a local-only preview.
+- **Not wired as a complete network:** no running libp2p/Kademlia deployment, bootstrap network, NAT traversal, or validated internet connectivity.
+- **Storage caveat:** the Rust storage core is opt-in and not integrated into the active JavaScript replica path. The default in-memory ciphertext adapter is for tests/demos; a durable authenticated adapter is required for real use.
+- **Security caveat:** production key management/key sharing, network transport encryption, distributed Sybil/DDoS defense, and cross-platform hard resource quotas are incomplete. Do not store sensitive data or the only copy of important files.
+- **Witness caveat:** recovery depends on an integrator-supplied live-session validator and trusted publisher keys. Local signatures and fsync calls do not prove an external authority or device-level durability.
+- **Validation:** CI is being repaired after the source restoration; do not infer a passing current CI run from historical audit results.
+
+## Local verification
+
+Requires Node.js 20 or newer:
+
+```sh
+npm run check
+npm test
+npm run demo
+npm run client:demo
+```
+
+The test suite verifies prototype behavior; passing tests do not certify a secure public network, production deployment, power-loss durability across filesystems, or resistance to a coordinated distributed attack.
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), [SECURITY.md](SECURITY.md), and [AUDIT_CURRENT_ZION.md](AUDIT_CURRENT_ZION.md) for implementation boundaries and remaining blockers.
+
+Consumer apps can call `ZionClient.upload()` and `ZionClient.download()` rather than orchestrating encryption and chunking directly. The client screens input locally, encrypts chunks with AES-256-GCM before passing them to a pluggable storage adapter, and keeps the file key outside the manifest. Do not use the in-memory adapter for real data. Automatic key sharing and ZKP are not implemented.
+
+## Historical release notes
+
+The sections below preserve older version notes and audit history; they are not a claim that every historical feature is wired into a production network.
 
 # Zion v0.33.17 — Witness crash-boundary publication safety
 
