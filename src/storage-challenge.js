@@ -31,8 +31,9 @@ export function createStorageChallenge({ commitment, sampleCount = 3, challengeI
       typeof challengeId!=='string' || !/^[a-f0-9]{32}$/.test(challengeId)) throw new TypeError('Invalid storage challenge');
   const indices=new Set();
   const seed=randomBytes(32);
+  let counter=0;
   while(indices.size<Math.min(sampleCount,commitment.leafCount)) {
-    const n=sha(Buffer.concat([seed,Buffer.from(String(indices.size)),Buffer.from(challengeId)]));
+    const n=sha(Buffer.concat([seed,Buffer.from(String(counter++)),Buffer.from(challengeId)]));
     indices.add(Number(n.readUInt32BE(0))%commitment.leafCount);
   }
   return Object.freeze({ version:1, challengeId, root:commitment.root, byteLength:commitment.byteLength, leafSize:commitment.leafSize,
