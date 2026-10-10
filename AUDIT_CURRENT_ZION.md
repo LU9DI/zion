@@ -18,6 +18,8 @@ Audited revision at start: `d79e60fe38a59b8a7b8cfc2460cd4abe571fb6ac`; documenta
 - Fixed resource-governor edge cases where explicit zero CPU, memory, disk, or concurrency limits—or a memory/disk budget rounded to zero under host pressure—could still report contribution as enabled. Decisions include a disk budget and preserve fractional CPU budgets; regression tests cover zero-limit opt-outs.
 - Hardened Rust chunk reads: Unix opens use `O_NOFOLLOW|O_CLOEXEC`, root and shard paths are checked against symlinks, file size is checked from the opened handle, actual reads are bounded to the configured chunk ceiling, and regression tests reject symlinked chunk and shard targets. Existing-chunk detection now uses typed filesystem errors rather than matching platform-specific error-message text. `libc` is pinned and recorded in `Cargo.lock`.
 - Added weekly Dependabot monitoring for npm, Cargo, and GitHub Actions, plus scheduled CodeQL analysis for JavaScript/TypeScript and Rust. These scanners complement but do not replace review and runtime tests.
+- Hardened the Rust sidecar adapter's stderr handling: output above 4 KiB now terminates the child with a typed `SIDECAR_OUTPUT_LIMIT` error, and output handlers stop buffering after an operation settles. Added a regression test for oversized stderr.
+- Added a filesystem-store regression test that reopens the replica store, verifies previously stored ciphertext remains readable, and confirms the persisted quota remains enforced after reinitialization. This covers the Node filesystem store only; it does not claim the Rust sidecar's restart behavior is fully validated.
 
 ## Remaining blockers (ordered by risk)
 
