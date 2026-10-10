@@ -30,9 +30,11 @@ export class PeerTransport {
     const loopbackHosts = new Set(['127.0.0.1', '::1', 'localhost']);
     if (trustedPeerIds !== null && (!Array.isArray(trustedPeerIds) || trustedPeerIds.some(id => typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)))) throw new TypeError('trustedPeerIds must be null or an array of SHA-256 node IDs');
     if (!loopbackHosts.has(host) && (!trustedPeerIds || trustedPeerIds.length === 0)) throw new Error('Non-loopback binding requires an explicit trustedPeerIds allowlist');
-    const tlsReady = tlsOptions && (Buffer.isBuffer(tlsOptions.key) || typeof tlsOptions.key === 'string') &&
-      (Buffer.isBuffer(tlsOptions.cert) || typeof tlsOptions.cert === 'string') &&
-      (Buffer.isBuffer(tlsOptions.ca) || typeof tlsOptions.ca === 'string' || Array.isArray(tlsOptions.ca));
+    const hasMaterial = value => Buffer.isBuffer(value) ? value.length > 0
+      : typeof value === 'string' ? value.trim().length > 0
+        : Array.isArray(value) ? value.length > 0 && value.every(item => hasMaterial(item)) : false;
+    const tlsReady = Boolean(tlsOptions && hasMaterial(tlsOptions.key) &&
+      hasMaterial(tlsOptions.cert) && hasMaterial(tlsOptions.ca));
     if (!loopbackHosts.has(host) && !tlsReady) throw new Error('Non-loopback binding requires mutual TLS options (key, cert, ca); signed messages alone do not encrypt transport');
     if (tlsOptions !== null && !tlsReady) throw new TypeError('tlsOptions must provide key, cert, and CA material for mutual TLS');
     this.tlsOptions = tlsReady ? tlsOptions : null;
