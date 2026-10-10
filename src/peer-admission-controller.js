@@ -23,7 +23,7 @@ export class PeerAdmissionController {
     trustedIssuerNodeIds, threshold = 2, maxActivePeers = 100,
     maxAdmissionsPerIssuer = 5, minStorageHeadroomRatio = 0.1,
     maxVouchers = 16, now = () => Date.now(), capacityProvider,
-    stateStore, maxRecords = MAX_RECORDS,
+    stateStore, maxRecords = MAX_RECORDS, rolloutPolicy = null,
   } = {}) {
     if (!Array.isArray(trustedIssuerNodeIds) || trustedIssuerNodeIds.some(id => !ID.test(id)) ||
       !Number.isSafeInteger(threshold) || threshold < 1 || threshold > 16 ||
@@ -32,6 +32,7 @@ export class PeerAdmissionController {
       !Number.isFinite(minStorageHeadroomRatio) || minStorageHeadroomRatio < 0 || minStorageHeadroomRatio > 1 ||
       !Number.isSafeInteger(maxVouchers) || maxVouchers < threshold || maxVouchers > 64 ||
       typeof now !== 'function' || typeof capacityProvider !== 'function' ||
+      (rolloutPolicy !== null && typeof rolloutPolicy.evaluate !== 'function') ||
       !stateStore || typeof stateStore.load !== 'function' || typeof stateStore.save !== 'function' ||
       !Number.isSafeInteger(maxRecords) || maxRecords < 1 || maxRecords > MAX_RECORDS) {
       throw new TypeError('Invalid peer admission configuration');
@@ -44,6 +45,7 @@ export class PeerAdmissionController {
     this.maxVouchers = maxVouchers;
     this.now = now;
     this.capacityProvider = capacityProvider;
+    this.rolloutPolicy = rolloutPolicy;
     this.stateStore = stateStore;
     this.maxRecords = maxRecords;
     const loaded = stateStore.load();
@@ -75,7 +77,10 @@ export class PeerAdmissionController {
       !Number.isSafeInteger(capacity.maxPeers) || capacity.maxPeers < 1 ||
       !Number.isFinite(capacity.storageHeadroomRatio) || capacity.storageHeadroomRatio < 0 ||
       capacity.storageHeadroomRatio > 1) return { ok: false, reason: 'capacity-unavailable' };
-    if (capacity.activePeers >= Math.min(capacity.maxPeers, this.maxActivePeers)) {
+    const rollout = this.rolloutPolicy?.evaluate(capacity);
+    if (rollout && !rollout.allowed) return { ok: false, reason: rollout.reason };
+    const rolloutCap = rollout?.stageCap ?? Number.MAX_SAFE_INTEGER;
+    if (capacity.activePeers >= Math.min(capacity.maxPeers, this.maxActivePeers, rolloutCap)) {
       return { ok: false, reason: 'peer-capacity-reached' };
     }
     if (capacity.storageHeadroomRatio < this.minStorageHeadroomRatio) {

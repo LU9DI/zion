@@ -102,6 +102,16 @@ Reputação é um sinal probabilístico, não prova absoluta. Respostas inválid
 
 Cada nó define quotas locais explícitas de disco, CPU, memória, conexões e banda. O operador pode interromper a participação a qualquer momento. A política de contribuição deve ser transparente, auditável e resistente a manipulação por identidades múltiplas. A versão inicial deve priorizar limites locais seguros e medição verificável antes de introduzir créditos, tokens ou punições econômicas.
 
+
+
+### 10.1 Admissão gradual e lançamento controlado
+
+O protótipo inclui uma política local de estágios de admissão (paused, pilot, cohort, scale) com limites configuráveis de peers ativos. Os limites padrão (0, 25, 100 e 500) são valores conservadores de referência, não estimativas de capacidade de produção. O operador deve calibrá-los com testes de carga e métricas reais.
+
+Todos os estágios não pausados continuam sujeitos aos vouchers criptográficos, às quotas de emissores, à disponibilidade de armazenamento e aos limites do controlador de admissão. Avançar de estágio não desativa o modelo invite-only. paused bloqueia novas admissões, sem implicar expulsão automática dos peers já conectados. A política é local ao processo/nó e **não** impõe um limite global da rede; coordenar cotas globais exige estado compartilhado transacional e consenso/coordenação explícita.
+
+A progressão deve ser baseada em critérios verificáveis — taxa de falhas, latência, uso de CPU/memória/disco, headroom de armazenamento, reconexões e incidentes de segurança — e permitir regressão imediata a um estágio menor. Convites podem ajudar a obter feedback inicial e reduzir picos, mas não são garantia de qualidade ou honestidade. A escassez artificial/FOMO não deve substituir transparência, acessibilidade ou critérios técnicos.
+
 ## 11. Recuperação e reparação
 
 Ao detectar fragmento indisponível, o coordenador procura provedores alternativos na DHT. Se houver pelo menos k fragmentos válidos, reconstrói-se o objeto ou um conjunto de fragmentos de substituição e publica-se novos anúncios. A reparação deve ser idempotente, limitada por orçamento, protegida contra loops e confirmada por verificações de integridade.
