@@ -186,7 +186,18 @@ export class PeerTransport {
     const checked = verifyPeerMessage(message, { now: this.now(), maxBytes: this.maxFrameBytes });
     if (!checked.ok) { socket.destroy(); return; }
     const trustedByAllowlist = !this.trustedPeerIds || this.trustedPeerIds.has(checked.nodeId);
-    const previouslyAdmitted = this.admittedPeerIds.has(checked.nodeId) || this.admissionController?.isAdmitted(checked.nodeId) === true;
+    let persistedAdmission = false;
+    if (this.admissionController && !this.admittedPeerIds.has(checked.nodeId)) {
+      try {
+        persistedAdmission = typeof this.admissionController.isAdmittedAsync === 'function'
+          ? await this.admissionController.isAdmittedAsync(checked.nodeId)
+          : this.admissionController.isAdmitted(checked.nodeId) === true;
+      } catch {
+        socket.destroy();
+        return;
+      }
+    }
+    const previouslyAdmitted = this.admittedPeerIds.has(checked.nodeId) || persistedAdmission;
     if (!trustedByAllowlist && !previouslyAdmitted && !this.admissionController) { socket.destroy(); return; }
     // Admission control applies to handshake frames as well as application traffic.
     if (!this.rateLimiter.allow(checked.nodeId) || !this.replayGuard.accept(message, this.now())) { socket.destroy(); return; }
