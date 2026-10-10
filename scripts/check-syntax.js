@@ -18,13 +18,13 @@ async function collect(directory) {
   for (const entry of entries) {
     const fullPath = path.join(directory, entry.name);
     if (entry.isDirectory()) await collect(fullPath);
-    else if (entry.isFile() && fullPath.endsWith('.js')) files.push(fullPath);
+    else if (entry.isFile() && /\.(?:js|mjs|cjs)$/.test(fullPath)) files.push(fullPath);
   }
 }
 
 for (const root of roots) await collect(root);
 if (files.length === 0) {
-  console.error('Syntax check failed: no JavaScript files found in src/, test/, or scripts/.');
+  console.error('Syntax check failed: no JavaScript module files found in src/, test/, or scripts/.');
   process.exit(1);
 }
 
@@ -36,4 +36,4 @@ for (const file of files) {
   }
 }
 
-console.log(`Syntax check passed for ${files.length} JavaScript files.`);
+console.log(`Syntax check passed for ${files.length} JavaScript module files (.js/.mjs/.cjs).`);
