@@ -170,3 +170,24 @@ A política de participação deve reduzir consumo quando o computador não est�
 A capacidade de armazenamento anunciada também pode variar segundo a contribuição verificada. O controlador experimental `src/adaptive-storage-capacity.js` limita a admissão de novas réplicas por degraus de contribuição e, quando a telemetria é inválida, desativa novas admissões. Uma redução de capacidade nunca deve provocar exclusão automática de réplicas existentes: se o uso atual superar o novo limite, o nó preserva os dados e recusa novas réplicas únicas até que haja espaço ou uma migração/reparação segura.
 
 **Limite de implementação:** estes controladores e seus testes são building blocks, não prova de integração com todos os transportes, anúncios de provedores, supervisores de nuvem ou runtime oficial. Antes de declarar o comportamento completo, é necessário conectar os hooks reais do nó e verificar a pausa e retomada ponta a ponta. Consulte `docs/IDLE_AND_ADAPTIVE_CAPACITY.md` para os degraus iniciais e os critérios de validação.
+
+
+## Descoberta confiável, provas de armazenamento e SDK local-first
+
+Os seguintes componentes são protótipos de protocolo e precisam ser integrados e avaliados antes de serem tratados como segurança de produção:
+
+- **Vouchers de introdução:** src/peer-introduction-vouchers.js emite introduções Ed25519 com validade limitada e exige um conjunto de introdutores previamente confiáveis e distintos. Vouchers não provam que uma identidade representa uma pessoa ou máquina única; a confiança inicial e os limites de emissão continuam sendo decisões de governança.
+- **Reputação por evidência:** src/peer-reputation.js aceita recibos de armazenamento assinados e resultados de auditoria autenticados, impede a repetição do mesmo identificador de evidência e calcula uma pontuação local limitada. Um recibo de aceitação, isoladamente, não prova armazenamento durável. O sistema não deve aceitar penalidades arbitrárias enviadas por pares.
+- **Desafios amostrados de armazenamento:** src/storage-challenge.js cria um compromisso Merkle de folhas e desafia o nó a devolver folhas aleatórias com provas de inclusão. Isso comprova a posse das amostras verificadas, não é por si só uma prova formal de recuperabilidade (Proof of Retrievability), nem garante que o nó continuará online. É necessário adicionar agendamento de desafios, autenticação do desafiante/resposta, proteção contra replay, limiares de falha e um orquestrador de reparação que confirme réplicas substitutas antes de retirar réplicas antigas.
+- **SDK e transporte plugável:** src/sdk-transport.js define o contrato mínimo send(peerId, message, options), oferece um sandbox com nós isolados no mesmo processo e falhas/latência injetáveis e permite corridas de requisições com validação da resposta. O modo p2p-net exige explicitamente um adaptador real; o sandbox não é uma rede libp2p/Kademlia nem simula todos os efeitos de uma rede distribuída.
+- **Estado local-first e forks:** src/local-first-store.js persiste localmente antes de replicar e conserva conflitos de mesmo pai para resolução explícita. É um building block de estado em memória; a autenticação das mensagens remotas, o formato canônico assinado, a criptografia em repouso, o armazenamento durável e a resolução de conflitos integrada ao Witness ainda precisam ser conectados. Não substitui um protocolo completo de sincronização de chaves.
+
+### Requisitos para as próximas etapas de integração
+
+1. Integrar vouchers e reputação ao caminho real de admissão e descoberta, com política contra conluio e múltiplas identidades controladas pela mesma entidade.
+2. Assinar desafios e respostas, usar nonces frescos e verificar compromissos em uma implementação de armazenamento real; acionar reparação apenas após auditoria independente e confirmação de réplicas substitutas.
+3. Completar o SDK com adaptadores de persistência cifrada, API pública estável, cancelamento de requisições perdedoras e testes de determinismo.
+4. Vincular as cadeias de auditoria por dispositivo ao estado local-first, autenticar cada operação e registrar forks como eventos verificáveis, sem escolher vencedores automaticamente.
+5. Tratar cache e nós de borda como otimizações não confiáveis: validar hash/manifesto antes de entregar conteúdo, cifrar dados privados no cliente e não divulgar metadados de acesso além do necessário.
+
+**Não declarar concluídos:** DHT global, resistência Sybil forte, Proof of Retrievability formal, reparação automática de ponta a ponta, transporte P2P de produção ou sincronização de chaves multi-dispositivo. Esses resultados dependem das integrações e de testes adversariais adicionais.
