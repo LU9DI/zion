@@ -250,3 +250,21 @@ test('does not issue a storage receipt when adapter read-back fails integrity ve
   assert.equal(committed, 0);
   assert.equal(released, 1);
 });
+
+test('accepts Rust storage adapter receipt shape after verified read-back', async () => {
+  const targetIdentity = createNodeIdentity(); const clientIdentity = createNodeIdentity();
+  const bytes = envelope(21); const chunkId = createHash('sha256').update(bytes).digest('hex');
+  const request = createStoreRequest({ chunkId, bytes: bytes.length, targetNodeId: targetIdentity.nodeId });
+  const sent = [];
+  const store = {
+    async put(id, value) { return { chunkId: id, bytes: value.length, alreadyPresent: false }; },
+    async get() { return Buffer.from(bytes); }
+  };
+  const service = new PeerStorageService({ identity: targetIdentity, store, maxChunkBytes: 1024, partBytes: 1024 });
+  const transport = { send(_socket, payload) { sent.push(payload); } };
+  await service.handle({ nodeId: clientIdentity.nodeId, payload: {
+    type: 'STORE_CHUNK', transferId: randomBytes(16).toString('hex'), chunkId, totalBytes: bytes.length,
+    partIndex: 0, partCount: 1, data: bytes.toString('base64'), request
+  } }, {}, transport);
+  assert.equal(sent.some(message => message.type === 'STORE_RECEIPT'), true);
+});
