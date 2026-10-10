@@ -41,3 +41,25 @@ test('memory budget scales down under host pressure', () => {
   const d = new ResourceGovernor({ limits: { maxMemoryMiB: 100 } }).evaluate(healthy({ memoryPressure: 0.8 }));
   assert.equal(d.memoryMiBBudget, 10);
 });
+
+
+test('zero owner resource limits disable contribution instead of enabling a zero-budget worker', () => {
+  for (const limits of [
+    { maxCpuPercent: 0 },
+    { maxMemoryMiB: 0 },
+    { maxDiskMiB: 0 },
+    { maxConcurrentJobs: 0 },
+  ]) {
+    const decision = new ResourceGovernor({ limits }).evaluate(healthy({}));
+    assert.equal(decision.enabled, false, JSON.stringify(limits));
+  }
+});
+
+test('resource decision exposes bounded disk budget and preserves fractional CPU budgets', () => {
+  const decision = new ResourceGovernor({
+    limits: { maxCpuPercent: 0.5, maxMemoryMiB: 100, maxDiskMiB: 500 },
+  }).evaluate(healthy({ memoryPressure: 0.8 }));
+  assert.equal(decision.cpuPercentBudget, 0.05);
+  assert.equal(decision.memoryMiBBudget, 10);
+  assert.equal(decision.diskMiBBudget, 50);
+});
