@@ -25,8 +25,8 @@ export class PeerAdmissionController {
     maxVouchers = 16, now = () => Date.now(), capacityProvider,
     stateStore, maxRecords = MAX_RECORDS, rolloutPolicy = null,
   } = {}) {
-    if (stateStore && (stateStore.load?.constructor?.name === 'AsyncFunction' || stateStore.save?.constructor?.name === 'AsyncFunction')) {
-      throw Object.assign(new TypeError('Peer admission stateStore.load()/save() must be synchronous'), { code: 'ZION_ADMISSION_ASYNC_STORE_UNSUPPORTED' });
+    if (stateStore && stateStore.load?.constructor?.name === 'AsyncFunction') {
+      throw Object.assign(new TypeError('Peer admission stateStore.load() must be synchronous'), { code: 'ZION_ADMISSION_ASYNC_STORE_UNSUPPORTED' });
     }
     if (!Array.isArray(trustedIssuerNodeIds) || trustedIssuerNodeIds.some(id => !ID.test(id)) ||
       !Number.isSafeInteger(threshold) || threshold < 1 || threshold > 16 ||
@@ -121,13 +121,10 @@ export class PeerAdmissionController {
         subjectNodeId, issuerNodeIds: [...accepted.keys()],
       }],
     };
-    // Persist before reporting success; fail closed if durable state cannot be written.
-    const persisted = this.stateStore.save(next);
-    if (persisted && typeof persisted.then === 'function') {
-      // The transport must never accept a peer before persistence is confirmed.
-      // Async stores need an explicit transactional adapter rather than this sync contract.
-      throw Object.assign(new TypeError('Peer admission stateStore.save() must be synchronous'), { code: 'ZION_ADMISSION_ASYNC_STORE_UNSUPPORTED' });
-    }
+    // Persist before reporting success; async save implementations must be awaited so a
+    // transport never accepts the peer before persistence has completed. The controller's
+    // local queue serializes this process only; shared stores still need real transactions.
+    await this.stateStore.save(next);
     this.state = next;
     return { ok: true, subjectNodeId, trustedIntroductions: accepted.size,
       issuerNodeIds: [...accepted.keys()] };
