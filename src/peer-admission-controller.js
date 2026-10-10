@@ -1,7 +1,6 @@
 import { verifyPeerIntroductionVouchers } from './peer-introduction-vouchers.js';
 
 const ID = /^[a-f0-9]{64}$/;
-const NONCE = /^[a-f0-9]{32}$/;
 const MAX_RECORDS = 100_000;
 
 function validState(state) {
