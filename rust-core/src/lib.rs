@@ -227,7 +227,7 @@ impl StorageCore {
     fn with_lock<T>(&self, operation: impl FnOnce() -> Result<T, StorageError>) -> Result<T, StorageError> {
         let lock = self.root.join(".rea-rust-storage-lock");
         let started = Instant::now();
-        let owner = format!("{}:{}\\n", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos());
+        let owner = format!("{}:{}\n", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos());
         loop {
             match fs::create_dir(&lock) {
                 Ok(()) => {
@@ -324,7 +324,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let lock = root.join(".rea-rust-storage-lock");
         fs::create_dir(&lock).unwrap();
-        fs::write(lock.join("owner"), format!("{}:1\\n", i32::MAX)).unwrap();
+        fs::write(lock.join("owner"), format!("{}:1\n", i32::MAX)).unwrap();
         let store = StorageCore::new(&root, 1024, 2048).unwrap();
         store.reap_stale_lock(&lock);
         assert!(!lock.exists(), "a lock owned by a definitively dead process should be recoverable");
