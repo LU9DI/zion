@@ -14,6 +14,7 @@ export class PeerReputation {
   recordReceipt({message, request}) {
     const result=verifyStoreReceipt(message,request,{now:this.now()});
     if(!result.ok)return result;
+    if(this.events.some(e=>e.type==='receipt'&&e.evidenceId===request.requestId))return {ok:false,reason:'duplicate-receipt-evidence'};
     if(this.events.length>=this.maxEvents)return {ok:false,reason:'event-capacity-reached'};
     this.events.push(Object.freeze({nodeId:result.nodeId,type:'receipt',at:this.now(),weight:this.weights.receiptWeight, evidenceId:request.requestId}));
     return {ok:true,nodeId:result.nodeId};
