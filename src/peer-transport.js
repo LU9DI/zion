@@ -7,7 +7,15 @@ import { calculateNetworkId, validateGenesisDocument } from './protocol-genesis.
 import { validateProtocolOperation } from './protocol-operation-validator.js';
 
 const MAX_FRAME_BYTES = 256 * 1024;
-const isLoopbackHost = host => {
+const isLoopbackAddress = host => {
+  if (typeof host !== 'string') return false;
+  const normalized = host.toLowerCase().replace(/^\\[|\\]$/g, '');
+  if (normalized === '::1') return true;
+  if (normalized.startsWith('::ffff:')) return isLoopbackAddress(normalized.slice('::ffff:'.length));
+  // Do not trust a loose regex: values such as 127.999.1.1 are not IP literals.
+  return netIsIpAddress(normalized) === 4 && normalized.split('.')[0] === '127';
+};
+const isLoopbackHost = host => host === 'localhost' || isLoopbackAddress(host);
   if (typeof host !== 'string') return false;
   const normalized = host.toLowerCase().replace(/^\[|\]$/g, '');
   if (normalized === 'localhost' || normalized === '::1') return true;
@@ -124,7 +132,7 @@ export class PeerTransport {
   /** Open an authenticated-message TCP connection and attach the inbound frame parser. */
   async connect(host, port) {
     if (typeof host !== 'string' || !host || !Number.isInteger(port) || port < 1 || port > 65535) throw new TypeError('Invalid peer address');
-    if (!isLoopbackHost(host) && !this.tlsOptions) throw new Error('Remote peer connections require mutual TLS; plaintext TCP is restricted to loopback');
+    if (!isLoopbackAddress(host) && !this.tlsOptions) throw new Error('Remote peer connections require mutual TLS; plaintext TCP is restricted to loopback IP literals');
     if (this.connections.size >= this.maxConnections) throw new Error('Connection capacity reached');
     const useTls = Boolean(this.tlsOptions);
     const socket = useTls
