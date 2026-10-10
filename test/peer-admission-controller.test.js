@@ -67,3 +67,25 @@ test('serializes concurrent admissions for the same subject and fails closed on 
   assert.equal(outcomes.filter(r => r.reason === 'subject-already-admitted').length, 1);
   assert.throws(() => new PeerAdmissionController({ ...x.config, stateStore: { load: () => ({ version: 1, consumed: 'bad', admissions: [] }), save() {} } }), { code: 'ZION_ADMISSION_STATE_CORRUPT' });
 });
+
+test('rejects asynchronous stores instead of acknowledging unconfirmed persistence', async () => {
+  const x = setup();
+  assert.throws(() => new PeerAdmissionController({
+    ...x.config,
+    stateStore: { load: async () => null, save() {} },
+  }), { code: 'ZION_ADMISSION_ASYNC_STORE_UNSUPPORTED' });
+
+  const state = { value: null };
+  const controller = new PeerAdmissionController({
+    ...x.config,
+    stateStore: {
+      load: () => state.value,
+      save: async next => { state.value = structuredClone(next); },
+    },
+  });
+  await assert.rejects(
+    controller.admit({ subjectNodeId: x.subject.nodeId, vouchers: x.vouchers }),
+    { code: 'ZION_ADMISSION_ASYNC_STORE_UNSUPPORTED' },
+  );
+  assert.equal(controller.snapshot().admittedPeers, 0);
+});
