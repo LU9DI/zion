@@ -29,7 +29,7 @@ test('reduction blocks new writes over target but preserves existing replicas', 
   const store = memoryStore([[idFor(original), original]]);
   const capacity = new AdaptiveStorageCapacity({ store, baseCapacityBytes: 100, minCapacityBytes: 10 });
   capacity.evaluate({ telemetryHealthy: true, contributionRatio: 1 });
-  const next = Buffer.from('new-data');
+  const next = Buffer.from('this-new-replica-is-too-large-for-the-reduced-capacity');
   capacity.evaluate({ telemetryHealthy: true, contributionRatio: 0.1 });
   await assert.rejects(capacity.put(idFor(next), next), error => error.code === 'ZION_ADAPTIVE_CAPACITY_REACHED');
   assert.deepEqual(await capacity.get(idFor(original)), original);
