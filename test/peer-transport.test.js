@@ -2,6 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { connect } from 'node:net';
 import { once } from 'node:events';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createNodeIdentity } from '../src/peer-security.js';
 import { PeerTransport } from '../src/peer-transport.js';
 
@@ -277,4 +281,62 @@ test('three-node isolation quarantines only the compromised node while healthy p
   assert.equal(nodeA.started, true);
   assert.equal(nodeC.started, true);
   assert.equal(nodeB.started, false);
+});
+
+
+let opensslAvailable = false;
+try { execFileSync('openssl', ['version'], { stdio: 'ignore' }); opensslAvailable = true; } catch { /* integration test is skipped on hosts without OpenSSL */ }
+
+function createTlsTestMaterial(directory) {
+  const run = args => execFileSync('openssl', args, { cwd: directory, stdio: 'ignore' });
+  run(['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'ca.key', '-out', 'ca.crt', '-subj', '/CN=Zion Test CA', '-days', '2']);
+  run(['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'wrong-ca.key', '-out', 'wrong-ca.crt', '-subj', '/CN=Untrusted Zion Test CA', '-days', '2']);
+  for (const role of ['server', 'client']) {
+    run(['req', '-new', '-newkey', 'rsa:2048', '-nodes', '-keyout', role + '.key', '-out', role + '.csr', '-subj', '/CN=' + (role === 'server' ? 'localhost' : 'zion-test-client')]);
+    const extensions = role === 'server'
+      ? 'basicConstraints=critical,CA:false\\nkeyUsage=critical,digitalSignature,keyEncipherment\\nextendedKeyUsage=serverAuth\\nsubjectAltName=DNS:localhost,IP:127.0.0.1\\n'
+      : 'basicConstraints=critical,CA:false\\nkeyUsage=critical,digitalSignature,keyEncipherment\\nextendedKeyUsage=clientAuth\\n';
+    writeFileSync(join(directory, role + '.ext'), extensions);
+    run(['x509', '-req', '-in', role + '.csr', '-CA', 'ca.crt', '-CAkey', 'ca.key', '-CAcreateserial', '-out', role + '.crt', '-days', '2', '-sha256', '-extfile', role + '.ext']);
+  }
+  const read = name => readFileSync(join(directory, name));
+  return {
+    ca: read('ca.crt'),
+    server: { key: read('server.key'), cert: read('server.crt'), ca: read('ca.crt') },
+    client: { key: read('client.key'), cert: read('client.crt'), ca: read('ca.crt') },
+    untrustedClient: { key: read('client.key'), cert: read('client.crt'), ca: read('wrong-ca.crt') }
+  };
+}
+
+test('mutual TLS peer transport completes a real verified handshake and exchanges signed messages', { skip: !opensslAvailable }, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'zion-mtls-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const material = createTlsTestMaterial(directory);
+  let received;
+  const server = new PeerTransport({
+    identity: createNodeIdentity(),
+    host: '127.0.0.1',
+    tlsOptions: material.server,
+    onMessage: async message => { received = message; }
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({ identity: createNodeIdentity(), tlsOptions: material.client });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(async () => { socket.destroy(); await client.close(); });
+  client.send(socket, { type: 'PING', nonce: 'verified-mtls' });
+  await waitFor(() => Boolean(received));
+  assert.equal(received.payload.nonce, 'verified-mtls');
+});
+
+test('mutual TLS rejects a server certificate signed by an untrusted CA', { skip: !opensslAvailable }, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'zion-mtls-untrusted-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const material = createTlsTestMaterial(directory);
+  const server = new PeerTransport({ identity: createNodeIdentity(), host: '127.0.0.1', tlsOptions: material.server });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({ identity: createNodeIdentity(), tlsOptions: material.untrustedClient });
+  await assert.rejects(client.connect('127.0.0.1', address.port), /certificate|issuer|self-signed|verify/i);
+  await client.close();
 });
