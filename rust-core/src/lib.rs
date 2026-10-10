@@ -7,6 +7,8 @@
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -80,12 +82,24 @@ impl StorageCore {
     pub fn get(&self, chunk_id: &str) -> Result<Vec<u8>, StorageError> {
         if !valid_digest(chunk_id) { return Err(StorageError::InvalidChunkId); }
         let path = self.chunk_path(chunk_id);
-        let metadata = fs::symlink_metadata(&path)?;
-        if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() < MIN_ENVELOPE_BYTES as u64 || metadata.len() > self.max_chunk_bytes {
+        // Reject symlink targets at open time on Unix, not only with a prior
+        // metadata check (which would leave a check/open race).
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        let mut file = options.open(&path)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.len() < MIN_ENVELOPE_BYTES as u64 || metadata.len() > self.max_chunk_bytes {
             return Err(StorageError::UnsafePath);
         }
+        // Bound actual bytes read too: the file may change after metadata is read
+        // if an unrelated local process can mutate the storage directory.
         let mut bytes = Vec::with_capacity(metadata.len() as usize);
-        File::open(path)?.read_to_end(&mut bytes)?;
+        file.take(self.max_chunk_bytes.saturating_add(1)).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > self.max_chunk_bytes || bytes.len() < MIN_ENVELOPE_BYTES {
+            return Err(StorageError::UnsafePath);
+        }
         if !bytes.starts_with(MAGIC) || hex(&Sha256::digest(&bytes)) != chunk_id { return Err(StorageError::DigestMismatch); }
         Ok(bytes)
     }
