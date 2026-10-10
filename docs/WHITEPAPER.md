@@ -214,3 +214,12 @@ A camada de auditoria agora pode usar `FileStorageAuditStateStore` (`src/storage
 Para ativar, passe uma instância de `FileStorageAuditStateStore` como `stateStore` para `StorageAuditSessions`. A opção continua desativada por padrão para manter compatibilidade.
 
 **Limites de segurança:** o checksum detecta corrupção acidental, mas não é uma assinatura nem impede adulteração por um atacante com acesso de escrita ao disco. O armazenamento pressupõe um único processo auditor por arquivo; não há transação multi-processo, replicação do estado ou proteção contra rollback de snapshots antigos. Configure permissões restritas para o diretório e faça backup seguro. Para uso distribuído, ainda é necessário um backend transacional compartilhado com controle de concorrência e política de retenção.
+
+
+## Convites restritos e admissão de pares
+
+O protótipo inclui vouchers de introdução assinados Ed25519 e um controlador de política de admissão. A admissão exige um limiar configurável de emissores previamente confiáveis e distintos, validade criptográfica/temporal dos vouchers, consumo persistido de nonces, limite de peers ativos e reserva mínima de capacidade de armazenamento. As quotas limitam quantas admissões podem ser atribuídas a cada emissor; uma falha do convidado não implica punição automática do convidador.
+
+O controlador `PeerAdmissionController` (`src/peer-admission-controller.js`) requer um `stateStore` durável com `load()` e `save(state)`, além de `capacityProvider()` que retorne `activePeers`, `maxPeers` e `storageHeadroomRatio`. A gravação do estado ocorre antes de confirmar a admissão, e erros de persistência devem ser tratados como falha. O armazenamento fornecido deve preservar o snapshot entre reinícios.
+
+**Limitações importantes:** a implementação coordena operações dentro de uma única instância/processo. Não é consenso da DHT nem impede múltiplas identidades por si só. Para vários processos, o estado de convites precisa de um banco transacional compartilhado com unicidade de `issuerNodeId:nonce` e admissão idempotente. Um snapshot local com checksum não impede adulteração hostil ou rollback. O controlador também não altera sozinho o runtime P2P nem garante capacidade física: o adaptador deve fornecer métricas reais e bloquear a entrada na camada de rede.
