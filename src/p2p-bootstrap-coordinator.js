@@ -134,8 +134,7 @@ export class P2PBootstrapCoordinator {
       while (cursor < this.bootstrapPeers.length && !signal.aborted) {
         const peer = this.bootstrapPeers[cursor++];
         try {
-          const result = await this.#dialOne(peer, signal);
-          if (result.peerId !== peer.peerId) throw new Error('Authenticated remote peer ID does not match bootstrap configuration');
+          await this.#dialOne(peer, signal);
           successes.push(Object.freeze({ peerId: peer.peerId, failureDomain: peer.failureDomain, multiaddrs: peer.multiaddrs }));
         } catch (error) {
           failures.push({ peerId: peer.peerId, reason: String(error?.message ?? error).slice(0, 240) });
@@ -161,23 +160,40 @@ export class P2PBootstrapCoordinator {
     const abort = () => controller.abort(parentSignal.reason);
     parentSignal.addEventListener('abort', abort, { once: true });
     let timer;
+    let timedOut = false;
+    let abortListener;
     try {
       const timeout = new Promise((_, reject) => {
         timer = setTimeout(() => {
+          timedOut = true;
           controller.abort(new Error('Bootstrap dial timed out'));
           reject(new Error('Bootstrap dial timed out'));
         }, this.timeoutMs);
       });
-      const result = await Promise.race([
-        Promise.resolve().then(() => this.dialPeer(peer, { signal: controller.signal })),
-        timeout,
-      ]);
-      if (!result || result.authenticated !== true || typeof result.peerId !== 'string') {
-        throw new Error('Bootstrap dial did not return an authenticated peer identity');
-      }
-      return result;
+      const cancelled = new Promise((_, reject) => {
+        abortListener = () => reject(new Error('Bootstrap connection cancelled'));
+        controller.signal.addEventListener('abort', abortListener, { once: true });
+      });
+      const dial = Promise.resolve().then(() => this.dialPeer(peer, { signal: controller.signal })).then(async result => {
+        // A dialer may ignore AbortSignal and finish after timeout/cancellation. Clean up
+        // any late connection instead of leaving an untracked peer connected.
+        if (timedOut || controller.signal.aborted) {
+          if (typeof result?.peerId === 'string') await this.disconnectPeer(result.peerId).catch(() => {});
+          throw new Error('Bootstrap connection completed after cancellation');
+        }
+        if (!result || result.authenticated !== true || typeof result.peerId !== 'string') {
+          throw new Error('Bootstrap dial did not return an authenticated peer identity');
+        }
+        if (result.peerId !== peer.peerId) {
+          await this.disconnectPeer(result.peerId).catch(() => {});
+          throw new Error('Authenticated remote peer ID does not match bootstrap configuration');
+        }
+        return result;
+      });
+      return await Promise.race([dial, timeout, cancelled]);
     } finally {
       clearTimeout(timer);
+      if (abortListener) controller.signal.removeEventListener('abort', abortListener);
       parentSignal.removeEventListener('abort', abort);
     }
   }
