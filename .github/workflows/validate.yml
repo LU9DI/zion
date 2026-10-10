@@ -43,14 +43,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
-      - name: Generate reproducible Rust dependency lockfile
-        run: cargo generate-lockfile --manifest-path rust-core/Cargo.toml
-      - name: Test Rust storage core
+      - name: Verify Rust dependency lockfile is committed
+        run: test -f Cargo.lock
+      - name: Test Rust storage core with locked dependencies
         run: cargo test --locked --manifest-path rust-core/Cargo.toml
-      - name: Export generated Rust lockfile for repository pinning
-        uses: actions/upload-artifact@v4
-        with:
-          name: zion-cargo-lockfile
-          path: Cargo.lock
-          if-no-files-found: error
-          retention-days: 1
