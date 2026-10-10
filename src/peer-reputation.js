@@ -6,10 +6,10 @@ const ID=/^[a-f0-9]{64}$/;
  * externally authenticated audit outcomes. It is a ranking signal, never proof of identity uniqueness.
  */
 export class PeerReputation {
-  constructor({ now=()=>Date.now(), maxEvents=100_000, receiptWeight=1, successWeight=2, failurePenalty=5 }={}) {
-    if(typeof now!=='function'||![maxEvents].every(n=>Number.isSafeInteger(n)&&n>0)||
+  constructor({ now=()=>Date.now(), maxEvents=100_000, receiptWeight=1, successWeight=2, failurePenalty=5, verifyAuditEvidence=async()=>false }={}) {
+    if(typeof now!=='function'||typeof verifyAuditEvidence!=='function'||![maxEvents].every(n=>Number.isSafeInteger(n)&&n>0)||
       ![receiptWeight,successWeight,failurePenalty].every(n=>Number.isFinite(n)&&n>=0&&n<=100))throw new TypeError('Invalid reputation configuration');
-    this.now=now;this.maxEvents=maxEvents;this.weights={receiptWeight,successWeight,failurePenalty};this.events=[];
+    this.now=now;this.maxEvents=maxEvents;this.verifyAuditEvidence=verifyAuditEvidence;this.weights={receiptWeight,successWeight,failurePenalty};this.events=[];
   }
   recordReceipt({message, request}) {
     const result=verifyStoreReceipt(message,request,{now:this.now()});
@@ -19,8 +19,9 @@ export class PeerReputation {
     this.events.push(Object.freeze({nodeId:result.nodeId,type:'receipt',at:this.now(),weight:this.weights.receiptWeight, evidenceId:request.requestId}));
     return {ok:true,nodeId:result.nodeId};
   }
-  recordAuditOutcome({nodeId, outcome, evidenceId, authenticated=false}) {
-    if(!authenticated)return {ok:false,reason:'unauthenticated-audit-outcome'};
+  async recordAuditOutcome({nodeId, outcome, evidenceId, evidence}) {
+    let authenticated=false;try{authenticated=await this.verifyAuditEvidence(evidence,{nodeId,outcome,evidenceId});}catch{}
+    if(authenticated!==true)return {ok:false,reason:'unauthenticated-audit-outcome'};
     if(!ID.test(nodeId??'')||!['success','failure'].includes(outcome)||typeof evidenceId!=='string'||evidenceId.length<1||evidenceId.length>256)
       return {ok:false,reason:'invalid-audit-outcome'};
     if(this.events.length>=this.maxEvents)return {ok:false,reason:'event-capacity-reached'};
