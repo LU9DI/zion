@@ -47,10 +47,12 @@ export function createStoreReceipt(identity, request, { storedBytes, now = Date.
  * This proves that the target identity signed a matching acknowledgement; it does not
  * prove that the peer still retains the bytes or will remain available.
  */
-export function verifyStoreReceipt(message, request, { now = Date.now(), maxClockSkewMs = 120_000 } = {}) {
+export function verifyStoreReceipt(message, request) {
   const fail = reason => ({ ok: false, reason });
-  if (!Number.isSafeInteger(now) || !Number.isSafeInteger(maxClockSkewMs) || maxClockSkewMs < 0) return fail('invalid-verification-time');
-  const checked = verifyPeerMessage(message, { now, maxClockSkewMs });
+  // Historical receipts must remain independently verifiable after their original freshness
+  // window. Freshness/replay protection belongs to ReplicaReceiptTracker.accept(), not here.
+  if (!Number.isSafeInteger(message?.timestamp) || message.timestamp < 0) return fail('invalid-receipt-timestamp');
+  const checked = verifyPeerMessage(message, { now: message.timestamp, maxClockSkewMs: 0 });
   if (!checked.ok) return checked;
   const payload = checked.payload;
   const keys = ['type', 'requestId', 'chunkId', 'storedBytes', 'storedAt'];
