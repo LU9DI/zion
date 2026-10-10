@@ -56,4 +56,18 @@ test('real Rust sidecar stores peer uploads through PeerStorageService and enfor
   );
   assert.deepEqual(await adapter.get(digest(first)), first, 'quota failure must preserve existing content');
   assert.deepEqual(await adapter.usage(), { usedBytes: first.length, quotaBytes: quota });
+
+  // Recreate the adapter as a new process owner of the same storage root.
+  // This verifies that committed ciphertext survives a process restart and that
+  // the explicitly configured quota is still enforced by the real Rust binary.
+  const restarted = new RustStorageAdapter({
+    binaryPath, root, maxChunkBytes: quota, maxStorageBytes: quota, timeoutMs: 10_000,
+  });
+  await restarted.init();
+  assert.deepEqual(await restarted.get(digest(first)), first);
+  assert.deepEqual(await restarted.usage(), { usedBytes: first.length, quotaBytes: quota });
+  await assert.rejects(
+    restarted.put(digest(second), second),
+    error => error?.code === 'CAPACITY_EXHAUSTED',
+  );
 });
