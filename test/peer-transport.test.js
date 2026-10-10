@@ -363,3 +363,92 @@ test('outbound TLS handshake timeout closes an unresponsive peer', { skip: !open
   assert.ok(Date.now() - started < 1500, 'stalled handshake must be bounded');
   await client.close();
 });
+
+test('official transport admits an unknown peer only when its signed handshake carries valid invite vouchers', async t => {
+  const { calculateNetworkId } = await import('../src/protocol-genesis.js');
+  const { createPeerIntroductionVoucher } = await import('../src/peer-introduction-vouchers.js');
+  const { PeerAdmissionController } = await import('../src/peer-admission-controller.js');
+  const draft = {
+    schemaVersion: 1, networkName: 'Zion Invite Test', protocolMajor: 1, genesisTime: 1_800_000_000,
+    serialization: 'canonical-json-v1',
+    crypto: { identity: 'Ed25519', signature: 'Ed25519', hash: 'SHA-256', aead: 'AES-256-GCM' },
+    contentAddress: { algorithm: 'SHA-256', encoding: 'lowercase-hex' },
+    erasureCoding: { algorithm: 'Reed-Solomon', dataShards: 10, parityShards: 20 },
+    limits: { maxFrameBytes: 262144, maxMessageBytes: 262144, maxTtlMs: 600000, maxHops: 16 },
+    replay: { maxClockSkewMs: 120000, nonceBytes: 16, retentionMs: 120000 },
+    rules: { gossipIsDiscoveryOnly: true, localResourceLimitsAreAuthoritative: true, breakingChangesRequireNewNetwork: true },
+  };
+  const genesis = { ...draft };
+  const guard = {
+    status: { quarantined: false },
+    checkHealthy: async () => {},
+    assertHealthy: () => {},
+    addQuarantineListener: () => () => {},
+  };
+  const issuerA = createNodeIdentity(), issuerB = createNodeIdentity();
+  const newcomer = createNodeIdentity(), seed = createNodeIdentity();
+  const vouchers = [
+    createPeerIntroductionVoucher({ issuerIdentity: issuerA, subjectNodeId: newcomer.nodeId }),
+    createPeerIntroductionVoucher({ issuerIdentity: issuerB, subjectNodeId: newcomer.nodeId }),
+  ];
+  let state = null;
+  const stateStore = { load: () => state === null ? null : structuredClone(state), save: next => { state = structuredClone(next); } };
+  const admissionController = new PeerAdmissionController({
+    trustedIssuerNodeIds: [issuerA.nodeId, issuerB.nodeId], threshold: 2, stateStore,
+    capacityProvider: async () => ({ activePeers: 0, maxPeers: 10, storageHeadroomRatio: 0.5 }),
+  });
+  let received = false;
+  const server = new PeerTransport({
+    identity: seed, host: '127.0.0.1', networkMode: 'official', protocolGenesis: genesis, integrityGuard: guard,
+    trustedPeerIds: [issuerA.nodeId, issuerB.nodeId], admissionController,
+    onMessage: async message => { if (message.payload.type === 'PING') received = true; },
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({
+    identity: newcomer, host: '127.0.0.1', networkMode: 'official', protocolGenesis: genesis, integrityGuard: guard,
+    trustedPeerIds: [seed.nodeId], admissionVouchers: vouchers,
+  });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(() => { socket.destroy(); client.close(); });
+  await waitFor(() => server.admittedPeerIds.has(newcomer.nodeId));
+  client.send(socket, { type: 'PING', nonce: 'invite-admitted' });
+  await waitFor(() => received);
+  assert.equal(admissionController.isAdmitted(newcomer.nodeId), true);
+});
+
+test('official transport rejects an unknown peer with no valid invite vouchers', async t => {
+  const { PeerAdmissionController } = await import('../src/peer-admission-controller.js');
+  const genesis = {
+    schemaVersion: 1, networkName: 'Zion Invite Reject Test', protocolMajor: 1, genesisTime: 1_800_000_000,
+    serialization: 'canonical-json-v1',
+    crypto: { identity: 'Ed25519', signature: 'Ed25519', hash: 'SHA-256', aead: 'AES-256-GCM' },
+    contentAddress: { algorithm: 'SHA-256', encoding: 'lowercase-hex' },
+    erasureCoding: { algorithm: 'Reed-Solomon', dataShards: 10, parityShards: 20 },
+    limits: { maxFrameBytes: 262144, maxMessageBytes: 262144, maxTtlMs: 600000, maxHops: 16 },
+    replay: { maxClockSkewMs: 120000, nonceBytes: 16, retentionMs: 120000 },
+    rules: { gossipIsDiscoveryOnly: true, localResourceLimitsAreAuthoritative: true, breakingChangesRequireNewNetwork: true },
+  };
+  const guard = { status: { quarantined: false }, checkHealthy: async () => {}, assertHealthy: () => {}, addQuarantineListener: () => () => {} };
+  const issuer = createNodeIdentity(), seed = createNodeIdentity(), newcomer = createNodeIdentity();
+  let state = null;
+  const admissionController = new PeerAdmissionController({
+    trustedIssuerNodeIds: [issuer.nodeId], threshold: 1,
+    stateStore: { load: () => state, save: next => { state = structuredClone(next); } },
+    capacityProvider: async () => ({ activePeers: 0, maxPeers: 10, storageHeadroomRatio: 0.5 }),
+  });
+  const server = new PeerTransport({
+    identity: seed, host: '127.0.0.1', networkMode: 'official', protocolGenesis: genesis, integrityGuard: guard,
+    trustedPeerIds: [issuer.nodeId], admissionController,
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({
+    identity: newcomer, host: '127.0.0.1', networkMode: 'official', protocolGenesis: genesis, integrityGuard: guard,
+    trustedPeerIds: [seed.nodeId],
+  });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(() => { socket.destroy(); client.close(); });
+  await waitFor(() => socket.destroyed);
+  assert.equal(admissionController.isAdmitted(newcomer.nodeId), false);
+});
