@@ -28,6 +28,7 @@ export class AdaptiveStorageCapacity {
     this.minCapacityBytes = minCapacityBytes;
     this.targetCapacityBytes = baseCapacityBytes;
     this.reason = 'initial-capacity';
+    this.queue = Promise.resolve();
   }
 
   evaluate({ telemetryHealthy, contributionRatio } = {}) {
@@ -52,7 +53,13 @@ export class AdaptiveStorageCapacity {
     });
   }
 
-  async put(id, envelope) {
+  put(id, envelope) {
+    const operation = this.queue.then(() => this.#putLocked(id, envelope));
+    this.queue = operation.catch(() => {});
+    return operation;
+  }
+
+  async #putLocked(id, envelope) {
     if (!Buffer.isBuffer(envelope) || envelope.length < 1) throw new TypeError('envelope must be a non-empty Buffer');
     // Preserve idempotent writes of a replica already present, even after a quota reduction.
     try {
