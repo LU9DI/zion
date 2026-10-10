@@ -85,3 +85,27 @@ test('rejects asynchronous stores instead of acknowledging unconfirmed persisten
   }), { code: 'ZION_ADMISSION_ASYNC_STORE_UNSUPPORTED' });
   assert.equal(saveCalled, false);
 });
+
+test('refreshes persisted admission state across controller instances before reconnect', async () => {
+  const x = setup();
+  const staleController = new PeerAdmissionController(x.config);
+  assert.equal(await staleController.isAdmittedAsync(x.subject.nodeId), false);
+
+  const result = await x.controller.admit({ subjectNodeId: x.subject.nodeId, vouchers: x.vouchers });
+  assert.equal(result.ok, true);
+  // The second controller was constructed before the admission was persisted.
+  assert.equal(staleController.isAdmitted(x.subject.nodeId), false);
+  assert.equal(await staleController.isAdmittedAsync(x.subject.nodeId), true);
+  assert.equal(staleController.snapshot().admittedPeers, 1);
+});
+
+test('fresh admission reads fail closed when the persisted state is malformed', async () => {
+  const x = setup();
+  const corruptStore = {
+    load: () => ({ version: 1, consumed: [], admissions: [{ subjectNodeId: 'bad', issuerNodeIds: [] }] }),
+    save() {},
+  };
+  const controller = new PeerAdmissionController({ ...x.config, stateStore: memoryStore() });
+  controller.stateStore = corruptStore;
+  await assert.rejects(controller.isAdmittedAsync(x.subject.nodeId), { code: 'ZION_ADMISSION_STATE_CORRUPT' });
+});
