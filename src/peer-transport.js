@@ -136,11 +136,26 @@ export class PeerTransport {
       : createConnection({ host, port });
     await new Promise((resolve, reject) => {
       // A TCP 'connect' event does not mean the TLS peer has been authenticated.
-      // Do not attach the protocol parser or expose the socket until certificate
-      // validation and the TLS handshake have completed successfully.
+      // Bound the outbound connection/handshake too: server-side TLS timeouts do
+      // not protect clients connecting to an unresponsive or malicious endpoint.
       const readyEvent = useTls ? 'secureConnect' : 'connect';
-      const onError = error => { socket.off(readyEvent, onReady); reject(error); };
-      const onReady = () => { socket.off('error', onError); resolve(); };
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        socket.off('error', onError);
+        socket.off(readyEvent, onReady);
+        socket.destroy();
+        reject(new Error(useTls ? 'TLS handshake timed out' : 'Peer connection timed out'));
+      }, this.tlsHandshakeTimeoutMs);
+      const onError = error => {
+        if (settled) return;
+        settled = true; clearTimeout(timer); socket.off(readyEvent, onReady); reject(error);
+      };
+      const onReady = () => {
+        if (settled) return;
+        settled = true; clearTimeout(timer); socket.off('error', onError); resolve();
+      };
       socket.once('error', onError); socket.once(readyEvent, onReady);
     });
     if (this.connections.size >= this.maxConnections) { socket.destroy(); throw new Error('Connection capacity reached'); }
