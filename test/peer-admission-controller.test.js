@@ -75,17 +75,13 @@ test('rejects asynchronous stores instead of acknowledging unconfirmed persisten
     stateStore: { load: async () => null, save() {} },
   }), { code: 'ZION_ADMISSION_ASYNC_STORE_UNSUPPORTED' });
 
-  const state = { value: null };
-  const controller = new PeerAdmissionController({
+  let saveCalled = false;
+  assert.throws(() => new PeerAdmissionController({
     ...x.config,
     stateStore: {
-      load: () => state.value,
-      save: async next => { state.value = structuredClone(next); },
+      load: () => null,
+      save: async () => { saveCalled = true; },
     },
-  });
-  await assert.rejects(
-    controller.admit({ subjectNodeId: x.subject.nodeId, vouchers: x.vouchers }),
-    { code: 'ZION_ADMISSION_ASYNC_STORE_UNSUPPORTED' },
-  );
-  assert.equal(controller.snapshot().admittedPeers, 0);
+  }), { code: 'ZION_ADMISSION_ASYNC_STORE_UNSUPPORTED' });
+  assert.equal(saveCalled, false);
 });
