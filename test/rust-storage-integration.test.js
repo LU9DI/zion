@@ -21,7 +21,7 @@ test('real Rust sidecar stores peer uploads through PeerStorageService and enfor
   const digest = bytes => createHash('sha256').update(bytes).digest('hex');
   const quota = first.length;
   const adapter = new RustStorageAdapter({
-    binaryPath, root, maxChunkBytes: 1024, maxStorageBytes: quota, timeoutMs: 10_000,
+    binaryPath, root, maxChunkBytes: quota, maxStorageBytes: quota, timeoutMs: 10_000,
   });
 
   await adapter.init();
