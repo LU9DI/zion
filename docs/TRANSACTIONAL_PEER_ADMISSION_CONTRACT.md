@@ -1,6 +1,6 @@
 # Transactional peer-admission backend contract
 
-Status: PostgreSQL schema migration plus an initial injected-pool transaction store. **The store is not wired into `PeerAdmissionController`; real-PostgreSQL multi-process integration tests and production migration/application are still missing.**
+Status: initial PostgreSQL store, real-PostgreSQL CI integration, independent-process capacity-race test, and `TransactionalPeerAdmissionController` adapter are implemented. **This is not yet production-ready**: deployment migration/rollback, restart reconciliation after ambiguous commits, broader independent-process race tests, operational recovery, and security review remain open.
 
 ## Why the file store is insufficient
 
@@ -34,7 +34,7 @@ A generic `load()` + `save()` pair is not a substitute for this interface. Neith
 
 ## PostgreSQL reference model
 
-The executable schema draft is committed at `migrations/postgres/0001_peer_admission.sql`. `src/peer-admission-postgres-store.js` now provides an initial transaction-bound persistence API for a node-postgres-compatible injected pool, with serializable transactions, singleton-row locks, uniqueness handling, issuer-quota checks, capacity reservation, bounded serialization/deadlock retries, and release/revoke operations. Unit tests with a fake pool cover transaction boundaries and rollback behavior, but do not prove PostgreSQL semantics or cross-process safety. The store is not yet integrated into `PeerAdmissionController`; the migration is not automatically applied. The SQL below remains a conceptual reference; all runtime SQL identifiers/values must be safely handled and values parameterized.
+The executable schema is committed at `migrations/postgres/0001_peer_admission.sql`. `src/peer-admission-postgres-store.js` provides a transaction-bound persistence API for a node-postgres-compatible pool, and `src/transactional-peer-admission-controller.js` verifies signed introduction vouchers before delegating uniqueness, issuer quotas, and capacity reservation to that store. The controller exposes asynchronous authoritative state queries and release operations. CI applies the migration to PostgreSQL 16 and tests concurrent admissions from independent Node.js processes. The migration is not automatically applied by the application; deployment must explicitly apply and verify it. The SQL below remains a conceptual reference; runtime identifiers/values must be safely handled and values parameterized.
 
 ```sql
 CREATE TABLE peer_admission_capacity (
@@ -108,4 +108,4 @@ A concrete adapter is not ready until integration tests with a real database dem
 
 ## Acceptance gate
 
-The schema and initial store are not a production-ready integrated backend. The controller still uses its existing stateStore API, and the new store has only fake-pool unit coverage. Before production use, wire cryptographically verified vouchers to this transaction boundary, add a real PostgreSQL service to CI, prove races with independent connections/processes, test ambiguous commits and restart/reconciliation, and validate migration/rollback operations. Until those gates pass, the controller's documented guarantee remains single-process only, and Zion remains not production-ready.
+The schema and initial store are not a production-ready integrated backend. The controller still uses its existing stateStore API, and the new store has only fake-pool unit coverage. Before production use, wire the transactional controller into the actual network admission path, prove races for duplicate nonce/subject and issuer quotas across independent processes, test ambiguous commits and restart/reconciliation, validate migration/rollback and backup restore operations, and complete an independent security review. The existing `PeerAdmissionController` plus file state store remains single-process only; the transactional controller is a separate adapter and must be deliberately selected by the application. Zion remains not production-ready.
