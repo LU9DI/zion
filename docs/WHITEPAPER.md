@@ -191,3 +191,17 @@ Os seguintes componentes são protótipos de protocolo e precisam ser integrados
 5. Tratar cache e nós de borda como otimizações não confiáveis: validar hash/manifesto antes de entregar conteúdo, cifrar dados privados no cliente e não divulgar metadados de acesso além do necessário.
 
 **Não declarar concluídos:** DHT global, resistência Sybil forte, Proof of Retrievability formal, reparação automática de ponta a ponta, transporte P2P de produção ou sincronização de chaves multi-dispositivo. Esses resultados dependem das integrações e de testes adversariais adicionais.
+
+
+## Implementação incremental — sessões de auditoria autenticadas (2026-10)
+
+O módulo `src/storage-audit-sessions.js` acrescenta uma camada de sessão sobre os desafios Merkle amostrados:
+
+- desafios assinados com Ed25519 e prazo de expiração incluído na assinatura;
+- associação da identidade declarada ao hash da chave pública Ed25519;
+- respostas assinadas pelo peer-alvo e vinculadas ao ID do peer esperado;
+- verificação de assinatura, identidade, amostras e provas Merkle antes de aceitar o resultado;
+- consumo de cada desafio válido uma única vez, rejeição de replay, expiração e limite de sessões pendentes;
+- política de confiança configurável por callbacks e testes de assinatura adulterada, peer incorreto, prova inválida, replay, expiração e capacidade.
+
+**Limites que permanecem:** o estado de sessões pendentes/consumidas é apenas em memória; reinícios ou múltiplas instâncias exigem armazenamento durável e coordenação para manter a proteção anti-replay. O verificador de identidade confiável precisa ser configurado pela aplicação. Merkle sampled proofs autenticadas não são, por si sós, uma prova formal de recuperabilidade (PoR), não garantem disponibilidade futura e ainda não acionam reparação automática. O módulo não deve ser tratado como auditoria distribuída de produção até haver persistência, scheduler, política de falhas transitórias e integração com a camada de armazenamento/transporte.
