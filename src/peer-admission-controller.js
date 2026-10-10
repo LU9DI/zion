@@ -34,6 +34,7 @@ export class PeerAdmissionController {
       typeof now !== 'function' || typeof capacityProvider !== 'function' ||
       (rolloutPolicy !== null && typeof rolloutPolicy.evaluate !== 'function') ||
       !stateStore || typeof stateStore.load !== 'function' || typeof stateStore.save !== 'function' ||
+      stateStore.load.constructor?.name === 'AsyncFunction' || stateStore.save.constructor?.name === 'AsyncFunction' ||
       !Number.isSafeInteger(maxRecords) || maxRecords < 1 || maxRecords > MAX_RECORDS) {
       throw new TypeError('Invalid peer admission configuration');
     }
