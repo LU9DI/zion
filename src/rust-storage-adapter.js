@@ -50,7 +50,11 @@ export class RustStorageAdapter {
     const output = await this.#run('put', chunkId, envelope);
     const match = /^OK (\d+) ([01])$/.exec(output.trim());
     if (!match) throw new RustStorageError('INVALID_RESPONSE', 'Rust storage sidecar returned an invalid put receipt');
-    return Object.freeze({ chunkId, bytes: Number(match[1]), alreadyPresent: match[2] === '1' });
+    const storedBytes = Number(match[1]);
+    if (!Number.isSafeInteger(storedBytes) || storedBytes !== envelope.length) {
+      throw new RustStorageError('INVALID_RESPONSE', 'Rust storage sidecar receipt byte count does not match the submitted envelope');
+    }
+    return Object.freeze({ chunkId, bytes: storedBytes, alreadyPresent: match[2] === '1' });
   }
 
   async get(chunkId) {
