@@ -20,6 +20,7 @@ Audited revision at start: `d79e60fe38a59b8a7b8cfc2460cd4abe571fb6ac`; documenta
 - Added weekly Dependabot monitoring for npm, Cargo, and GitHub Actions, plus scheduled CodeQL analysis for JavaScript/TypeScript and Rust. These scanners complement but do not replace review and runtime tests.
 - Hardened the Rust sidecar adapter's stderr handling: output above 4 KiB now terminates the child with a typed `SIDECAR_OUTPUT_LIMIT` error, and output handlers stop buffering after an operation settles. Added a regression test for oversized stderr.
 - Bounded the Rust storage core's accepted chunk size to 64 MiB, matching the Node adapter, and made quota scans reject unexpected hidden root entries instead of silently skipping them. Added Rust regression tests for both cases.
+- Persisted the Rust sidecar's local quota configuration atomically on initialization and first write; later runs with a mismatched chunk/storage quota now fail closed instead of silently changing policy. This remains an application-level quota, not an OS-enforced disk quota.
 - Extended the real Node-to-Rust integration test to create a fresh adapter against the same root, read the previously committed ciphertext back, and re-check quota exhaustion after reinitialization.
 - Added a filesystem-store regression test that reopens the replica store, verifies previously stored ciphertext remains readable, and confirms the persisted quota remains enforced after reinitialization. This covers the Node filesystem store only; it does not claim the Rust sidecar's restart behavior is fully validated.
 
