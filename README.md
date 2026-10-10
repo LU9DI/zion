@@ -9,7 +9,7 @@
 - **Storage caveat:** the Rust storage core is opt-in and not integrated into the active JavaScript replica path. The default in-memory ciphertext adapter is for tests/demos; a durable authenticated adapter is required for real use.
 - **Security caveat:** production key management/key sharing, network transport encryption, distributed Sybil/DDoS defense, and cross-platform hard resource quotas are incomplete. Do not store sensitive data or the only copy of important files.
 - **Witness caveat:** recovery depends on an integrator-supplied live-session validator and trusted publisher keys. Local signatures and fsync calls do not prove an external authority or device-level durability.
-- **Validation:** CI is being repaired after the source restoration; do not infer a passing current CI run from historical audit results.
+- **Validation:** GitHub Actions passed on the restored tree after the stale dormant gate was removed: 533/533 Node tests, syntax checks, and both demo smoke tests passed. See [validation run](https://github.com/LU9DI/zion/actions/runs/38062968893).
 
 ## Local verification
 
