@@ -11,11 +11,11 @@ test('commits locally before async replication settles',async()=>{
 });
 
 test('detects same-parent forks and blocks writes until explicit resolution',async()=>{
- const store=new LocalFirstStore();
+ const store=new LocalFirstStore({verifyRemoteRecord:async record=>record?.deviceId==='phone'});
  const local=await store.write({key:'doc',deviceId:'laptop',value:{v:1}});
  const remoteBase={version:1,key:'doc',parentHash:null,deviceId:'phone',createdAt:2,recordId:'remote',value:{v:2}};
  const remote={...remoteBase,hash:hashLocalFirstRecord(remoteBase)};
- const fork=await store.ingestRemote(remote,{authenticated:true});
+ const fork=await store.ingestRemote(remote);
  assert.equal(fork.reason,'fork-detected');
  await assert.rejects(store.write({key:'doc',parentHash:local.record.hash,deviceId:'laptop',value:{v:3}}),{code:'ZION_CONFLICT_UNRESOLVED'});
  const resolution=await store.resolveConflict('doc',{keepHashes:fork.conflict.branches,mergedValue:{v:3},deviceId:'laptop'});
@@ -25,5 +25,5 @@ test('detects same-parent forks and blocks writes until explicit resolution',asy
 test('rejects unauthenticated remote records',async()=>{
  const store=new LocalFirstStore();
  assert.deepEqual(await store.ingestRemote({key:'doc',hash:'a'.repeat(64),parentHash:null}),{ok:false,reason:'unauthenticated-record'});
- assert.deepEqual(await store.ingestRemote({key:'doc',hash:'a'.repeat(64),parentHash:null},{authenticated:true}),{ok:false,reason:'record-hash-mismatch'});
+ assert.deepEqual(await new LocalFirstStore({verifyRemoteRecord:async()=>true}).ingestRemote({key:'doc',hash:'a'.repeat(64),parentHash:null}),{ok:false,reason:'record-hash-mismatch'});
 });
