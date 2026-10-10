@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { PostgresPeerAdmissionStore } from '../src/peer-admission-postgres-store.js';
 
@@ -21,7 +22,34 @@ function admissionInput(subjectDigit, issuerDigits, nonceDigits) {
   };
 }
 
-test('real PostgreSQL migration, concurrent capacity enforcement, and release lifecycle', {
+function runAdmissionWorker(input) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [
+      new URL('./fixtures/postgres-admission-worker.js', import.meta.url).pathname,
+    ], {
+      env: {
+        ...process.env,
+        ZION_ADMISSION_INPUT_JSON: JSON.stringify(input),
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8').on('data', chunk => { stdout += chunk; });
+    child.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk; });
+    child.once('error', reject);
+    child.once('close', code => {
+      if (code !== 0) {
+        reject(new Error(`Admission worker exited ${code}: ${stderr}`));
+        return;
+      }
+      try { resolve(JSON.parse(stdout)); }
+      catch (error) { reject(new Error(`Invalid worker result: ${stdout}; ${error}`)); }
+    });
+  });
+}
+
+test('real PostgreSQL migration, independent-process capacity race, and release lifecycle', {
   skip: !enabled && 'set ZION_POSTGRES_TEST_URL to run real PostgreSQL integration tests',
 }, async () => {
   const { Pool } = await import('pg');
@@ -50,10 +78,11 @@ test('real PostgreSQL migration, concurrent capacity enforcement, and release li
       'UPDATE peer_admission_policy SET max_active_peers = 1, max_admissions_per_issuer = 5, min_storage_headroom_ratio = 0.1, policy_version = policy_version + 1 WHERE singleton = true',
     );
 
-    const store = new PostgresPeerAdmissionStore({ pool, maxTransactionRetries: 5 });
+    // Separate Node processes force separate pools/connections; a local promise queue
+    // cannot make this race pass accidentally.
     const attempts = await Promise.all([
-      store.commitAdmission(admissionInput('a', ['1', '2'], ['a', 'b'])),
-      store.commitAdmission(admissionInput('b', ['3', '4'], ['c', 'd'])),
+      runAdmissionWorker(admissionInput('a', ['1', '2'], ['a', 'b'])),
+      runAdmissionWorker(admissionInput('b', ['3', '4'], ['c', 'd'])),
     ]);
 
     assert.equal(attempts.filter(result => result.ok).length, 1,
@@ -71,6 +100,7 @@ test('real PostgreSQL migration, concurrent capacity enforcement, and release li
     );
     assert.equal(Number(capacity[0].active_reservations), 1);
 
+    const store = new PostgresPeerAdmissionStore({ pool, maxTransactionRetries: 5 });
     const released = await store.releaseAdmission(winner, 'released');
     assert.deepEqual(
       { ok: released.ok, changed: released.changed, status: released.status },
