@@ -137,6 +137,40 @@ export class PeerAdmissionController {
     return ID.test(subjectNodeId ?? '') && this.state.admissions.some(record => record.subjectNodeId === subjectNodeId);
   }
 
+  /**
+   * Refresh admission state from the configured store before making a handshake decision.
+   * The store contract is synchronous; this method is async only so transport callers can
+   * await a uniform API. This is not a cross-process transaction or a substitute for a
+   * store that itself returns a fresh, authoritative snapshot.
+   */
+  async isAdmittedAsync(subjectNodeId) {
+    if (!ID.test(subjectNodeId ?? '')) return false;
+    const loaded = this.stateStore.load();
+    if (loaded && typeof loaded.then === 'function') {
+      throw Object.assign(new TypeError('Peer admission stateStore.load() must be synchronous'), {
+        code: 'ZION_ADMISSION_ASYNC_STORE_UNSUPPORTED',
+      });
+    }
+    if (loaded === null || loaded === undefined) {
+      this.state = emptyState();
+      return false;
+    }
+    if (!validState(loaded)) {
+      throw Object.assign(new Error('Peer admission state is invalid'), {
+        code: 'ZION_ADMISSION_STATE_CORRUPT',
+      });
+    }
+    this.state = {
+      version: 1,
+      consumed: [...loaded.consumed],
+      admissions: loaded.admissions.map(x => ({
+        subjectNodeId: x.subjectNodeId,
+        issuerNodeIds: [...x.issuerNodeIds],
+      })),
+    };
+    return this.isAdmitted(subjectNodeId);
+  }
+
   snapshot() {
     return Object.freeze({
       consumedInvitations: this.state.consumed.length,
