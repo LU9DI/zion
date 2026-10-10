@@ -115,6 +115,7 @@ export class PeerTransport {
   /** Open an authenticated-message TCP connection and attach the inbound frame parser. */
   async connect(host, port) {
     if (typeof host !== 'string' || !host || !Number.isInteger(port) || port < 1 || port > 65535) throw new TypeError('Invalid peer address');
+    if (!['127.0.0.1', '::1', 'localhost'].includes(host) && !this.tlsOptions) throw new Error('Remote peer connections require mutual TLS; plaintext TCP is restricted to loopback');
     if (this.connections.size >= this.maxConnections) throw new Error('Connection capacity reached');
     const socket = this.tlsOptions
       ? createTlsConnection({ ...this.tlsOptions, host, port, servername: netIsIpAddress(host) ? undefined : (this.tlsOptions.servername ?? host), rejectUnauthorized: true, minVersion: 'TLSv1.2' })
