@@ -14,7 +14,23 @@ jobs:
   validate:
     # Source has been restored; validate every push and pull request.
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    env:
+      ZION_POSTGRES_TEST_URL: postgres://zion:zion@localhost:5432/zion_test
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: zion
+          POSTGRES_PASSWORD: zion
+          POSTGRES_DB: zion_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U zion -d zion_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -31,9 +47,11 @@ jobs:
         shell: bash
         run: |
           if [ -f package-lock.json ]; then npm ci; fi
+      - name: Install PostgreSQL integration-test driver
+        run: npm install --no-save --no-package-lock pg@^8.13.0
       - name: Syntax checks
         run: npm run check
-      - name: Test suite
+      - name: Test suite including real PostgreSQL integration
         run: npm test
       - name: Demo smoke tests
         run: |
