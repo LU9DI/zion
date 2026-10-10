@@ -57,6 +57,7 @@ test('validates policy inputs and rejects conflicting duplicate ids', async () =
   const store = memoryStore();
   const capacity = new AdaptiveStorageCapacity({ store, baseCapacityBytes: 100, minCapacityBytes: 10 });
   assert.equal(capacity.evaluate({ telemetryHealthy: false, contributionRatio: 2 }).targetCapacityBytes, 0);
+  capacity.evaluate({ telemetryHealthy: true, contributionRatio: 1 });
   const original = Buffer.from('one'); await capacity.put(idFor(original), original);
   await assert.rejects(capacity.put(idFor(original), Buffer.from('two')), /Existing replica content mismatch/);
 });
