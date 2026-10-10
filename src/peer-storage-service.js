@@ -445,7 +445,10 @@ export class PeerStorageService {
     // filesystems can fail after reporting success. Read back the committed object and
     // verify both its content address and byte count before granting credit or signing.
     try {
-      if (!result || result.id !== transfer.chunkId || result.bytes !== complete.length ||
+      // Both OpaqueReplicaStore ({ id }) and the optional RustStorageAdapter
+      // ({ chunkId }) implement the same persistence contract.
+      const storedId = result?.id ?? result?.chunkId;
+      if (!result || storedId !== transfer.chunkId || result.bytes !== complete.length ||
           typeof this.store.get !== 'function') {
         throw new Error('Storage adapter did not provide verifiable persistence evidence');
       }
