@@ -1,4 +1,6 @@
-import { createServer, createConnection } from 'node:net';
+import { createServer as createTcpServer, createConnection } from 'node:net';
+import { createServer as createTlsServer, connect as createTlsConnection } from 'node:tls';
+import { isIP as netIsIpAddress } from 'node:net';
 import { randomBytes } from 'node:crypto';
 import { signPeerMessage, verifyPeerMessage, ReplayGuard, PeerRateLimiter } from './peer-security.js';
 import { calculateNetworkId, validateGenesisDocument } from './protocol-genesis.js';
@@ -18,7 +20,7 @@ export class PeerTransport {
     maxFrameBytes = MAX_FRAME_BYTES, allowedTypes = DEFAULT_TYPES, trustedPeerIds = null,
     onMessage = async () => {}, replayGuard = new ReplayGuard(),
     rateLimiter = new PeerRateLimiter({ capacity: 64, refillPerSecond: 20 }), transferScheduler = null,
-    protocolGenesis = null, networkMode = 'legacy', integrityGuard = null, now = () => Date.now() } = {}) {
+    protocolGenesis = null, networkMode = 'legacy', integrityGuard = null, tlsOptions = null, now = () => Date.now() } = {}) {
     if (!identity?.privateKey || typeof identity.nodeId !== 'string') throw new TypeError('A node identity is required');
     if (typeof host !== 'string' || !host || !Number.isInteger(port) || port < 0 || port > 65535) throw new RangeError('Invalid bind address');
     if (!Number.isSafeInteger(maxConnections) || maxConnections < 1 || !Number.isSafeInteger(maxFrameBytes) || maxFrameBytes < 256) throw new RangeError('Invalid transport limits');
@@ -28,6 +30,12 @@ export class PeerTransport {
     const loopbackHosts = new Set(['127.0.0.1', '::1', 'localhost']);
     if (trustedPeerIds !== null && (!Array.isArray(trustedPeerIds) || trustedPeerIds.some(id => typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)))) throw new TypeError('trustedPeerIds must be null or an array of SHA-256 node IDs');
     if (!loopbackHosts.has(host) && (!trustedPeerIds || trustedPeerIds.length === 0)) throw new Error('Non-loopback binding requires an explicit trustedPeerIds allowlist');
+    const tlsReady = tlsOptions && (Buffer.isBuffer(tlsOptions.key) || typeof tlsOptions.key === 'string') &&
+      (Buffer.isBuffer(tlsOptions.cert) || typeof tlsOptions.cert === 'string') &&
+      (Buffer.isBuffer(tlsOptions.ca) || typeof tlsOptions.ca === 'string' || Array.isArray(tlsOptions.ca));
+    if (!loopbackHosts.has(host) && !tlsReady) throw new Error('Non-loopback binding requires mutual TLS options (key, cert, ca); signed messages alone do not encrypt transport');
+    if (tlsOptions !== null && !tlsReady) throw new TypeError('tlsOptions must provide key, cert, and CA material for mutual TLS');
+    this.tlsOptions = tlsReady ? tlsOptions : null;
     this.identity = identity; this.host = host; this.port = port; this.maxConnections = maxConnections;
     this.networkMode = networkMode;
     this.genesis = protocolGenesis === null ? null : validateGenesisDocument(protocolGenesis);
@@ -49,7 +57,9 @@ export class PeerTransport {
   async listen() {
     if (this.started) throw new Error('Transport already started');
     if (this.networkMode === 'official') await this.integrityGuard.checkHealthy();
-    this.server = createServer(socket => this.#accept(socket));
+    this.server = this.tlsOptions
+      ? createTlsServer({ ...this.tlsOptions, requestCert: true, rejectUnauthorized: true, minVersion: 'TLSv1.2' }, socket => this.#accept(socket))
+      : createTcpServer(socket => this.#accept(socket));
     this.server.maxConnections = this.maxConnections;
     await new Promise((resolve, reject) => {
       const onError = error => { this.server.off('listening', onListening); reject(error); };
@@ -106,7 +116,9 @@ export class PeerTransport {
   async connect(host, port) {
     if (typeof host !== 'string' || !host || !Number.isInteger(port) || port < 1 || port > 65535) throw new TypeError('Invalid peer address');
     if (this.connections.size >= this.maxConnections) throw new Error('Connection capacity reached');
-    const socket = createConnection({ host, port });
+    const socket = this.tlsOptions
+      ? createTlsConnection({ ...this.tlsOptions, host, port, servername: netIsIpAddress(host) ? undefined : (this.tlsOptions.servername ?? host), rejectUnauthorized: true, minVersion: 'TLSv1.2' })
+      : createConnection({ host, port });
     await new Promise((resolve, reject) => {
       const onError = error => { socket.off('connect', onConnect); reject(error); };
       const onConnect = () => { socket.off('error', onError); resolve(); };
