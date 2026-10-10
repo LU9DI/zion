@@ -100,6 +100,6 @@ test('SDK verify method binds a receipt to its original storage request', () => 
   const client = new ZionClient({ storageAdapter: new MemoryCiphertextAdapter() });
   const request = createStoreRequest({ chunkId: 'a'.repeat(64), bytes: 64, targetNodeId: identity.nodeId, now: 50_000 });
   const receipt = createStoreReceipt(identity, request, { storedBytes: 64, now: 50_001 });
-  assert.equal(client.verify(receipt, request, { now: 50_001 }).ok, true);
-  assert.equal(client.verify(receipt, { ...request, chunkId: 'b'.repeat(64) }, { now: 50_001 }).ok, false);
+  assert.equal(client.verify(receipt, request).ok, true);
+  assert.equal(client.verify(receipt, { ...request, chunkId: 'b'.repeat(64) }).ok, false);
 });
