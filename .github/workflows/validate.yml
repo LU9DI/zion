@@ -39,3 +39,9 @@ jobs:
         run: |
           npm run demo
           npm run client:demo
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - name: Test Rust storage core
+        run: cargo test --manifest-path rust-core/Cargo.toml
