@@ -38,4 +38,4 @@ Build the binary with:
 cargo build --release --manifest-path rust-core/Cargo.toml --bin rea-storage-cli
 ```
 
-Then construct `RustStorageAdapter` with the path to the built binary and owner-chosen local quota values. Do not enable it by default until the Rust crate has been compiled and tested on each supported OS and parity tests cover the full storage contract. The adapter is currently an opt-in boundary, not yet wired into `OpaqueReplicaStore` or the network service.
+Then construct `RustStorageAdapter` with the path to the built binary and owner-chosen local quota values. CI builds the binary and runs `test/rust-storage-integration.test.js` against the real executable, covering init, put/get read-back, usage accounting, and fail-closed quota exhaustion through the Node adapter. The adapter remains opt-in and must be explicitly injected into `PeerStorageService`; this Linux CI test does not replace cross-platform, crash-recovery, or hostile-concurrency testing.
