@@ -1,15 +1,20 @@
 import { verifyPeerIntroductionVouchers } from './peer-introduction-vouchers.js';
 
 const ID = /^[a-f0-9]{64}$/;
+const CONSUMED_INVITATION = /^[a-f0-9]{64}:[a-f0-9]{32}$/;
 const MAX_RECORDS = 100_000;
 
 function validState(state) {
-  return Boolean(state && state.version === 1 && Array.isArray(state.consumed) &&
-    Array.isArray(state.admissions) && state.consumed.length <= MAX_RECORDS &&
-    state.admissions.length <= MAX_RECORDS &&
-    state.consumed.every(x => typeof x === 'string' && x.length <= 129) &&
-    state.admissions.every(x => x && ID.test(x.subjectNodeId ?? '') &&
-      Array.isArray(x.issuerNodeIds) && x.issuerNodeIds.every(id => ID.test(id))));
+  if (!state || state.version !== 1 || !Array.isArray(state.consumed) ||
+    !Array.isArray(state.admissions) || state.consumed.length > MAX_RECORDS ||
+    state.admissions.length > MAX_RECORDS ||
+    !state.consumed.every(x => typeof x === 'string' && CONSUMED_INVITATION.test(x)) ||
+    new Set(state.consumed).size !== state.consumed.length ||
+    !state.admissions.every(x => x && ID.test(x.subjectNodeId ?? '') &&
+      Array.isArray(x.issuerNodeIds) && x.issuerNodeIds.length > 0 &&
+      x.issuerNodeIds.every(id => ID.test(id)) &&
+      new Set(x.issuerNodeIds).size === x.issuerNodeIds.length)) return false;
+  return new Set(state.admissions.map(x => x.subjectNodeId)).size === state.admissions.length;
 }
 const emptyState = () => ({ version: 1, consumed: [], admissions: [] });
 
