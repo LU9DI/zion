@@ -22,7 +22,7 @@ npm run demo
 npm run client:demo
 ```
 
-The repository includes a root npm lockfile and CI installs with `npm ci`; the Rust workspace still lacks a committed `Cargo.lock`. The test suite verifies prototype behavior; passing tests do not certify a secure public network, production deployment, power-loss durability across filesystems, or resistance to a coordinated distributed attack.
+The repository commits both `package-lock.json` and `Cargo.lock`; CI installs JavaScript dependencies with `npm ci` and runs Rust tests with `cargo test --locked`. Outbound peer connection/TLS handshakes are bounded, and the Rust store syncs its containing directory after publishing a chunk on Unix. These improve reproducibility and local crash behavior but do not certify a secure public network, cross-platform power-loss durability, or resistance to coordinated distributed attacks.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), [SECURITY.md](SECURITY.md), and [AUDIT_CURRENT_ZION.md](AUDIT_CURRENT_ZION.md) for implementation boundaries and remaining blockers.
 
