@@ -17,8 +17,8 @@ test('detects same-parent forks and blocks writes until explicit resolution',asy
  const fork=await store.ingestRemote(remote,{authenticated:true});
  assert.equal(fork.reason,'fork-detected');
  await assert.rejects(store.write({key:'doc',parentHash:local.record.hash,deviceId:'laptop',value:{v:3}}),{code:'ZION_CONFLICT_UNRESOLVED'});
- const resolution=store.resolveConflict('doc',{keepHashes:fork.conflict.branches,mergedValue:{v:3},deviceId:'laptop'});
- assert.equal(resolution.branches.length,2);assert.equal(store.getConflict('doc'),null);
+ const resolution=await store.resolveConflict('doc',{keepHashes:fork.conflict.branches,mergedValue:{v:3},deviceId:'laptop'});
+ assert.equal(resolution.parentHashes.length,2);assert.equal(store.getConflict('doc'),null);assert.equal(store.get('doc').value.v,3);
 });
 
 test('rejects unauthenticated remote records',async()=>{
