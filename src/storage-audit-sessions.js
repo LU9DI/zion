@@ -1,4 +1,4 @@
-import { createHash, createPublicKey, sign, verify, randomBytes } from 'node:crypto';
+import { createHash, createPublicKey, sign, verify } from 'node:crypto';
 import { createStorageChallenge, verifyStorageChallengeResponse } from './storage-challenge.js';
 
 const ID = /^[a-f0-9]{64}$/;
@@ -11,7 +11,7 @@ function nodeIdFromPublicKey(pem) {
 function challengePayload(envelope) {
   const c = envelope.challenge;
   return JSON.stringify({ version:envelope.version, auditorNodeId:envelope.auditorNodeId,
-    auditorPublicKeyPem:envelope.auditorPublicKeyPem, challenge:{
+    auditorPublicKeyPem:envelope.auditorPublicKeyPem, expiresAt:envelope.expiresAt, challenge:{
       version:c.version, challengeId:c.challengeId, root:c.root, byteLength:c.byteLength,
       leafSize:c.leafSize, leafCount:c.leafCount, indices:c.indices
     } });
@@ -22,20 +22,20 @@ function responsePayload({ version, peerNodeId, response }) {
 function validId(value) { return typeof value === 'string' && ID.test(value); }
 
 /** Sign an audit challenge so peers can authenticate who requested the proof. */
-export function signStorageAuditChallenge({ challenge, auditorIdentity } = {}) {
-  if (!challenge || !auditorIdentity?.privateKey || !validId(auditorIdentity.nodeId) ||
+export function signStorageAuditChallenge({ challenge, auditorIdentity, expiresAt } = {}) {
+  if (!challenge || !Number.isSafeInteger(expiresAt) || expiresAt <= 0 || !auditorIdentity?.privateKey || !validId(auditorIdentity.nodeId) ||
       nodeIdFromPublicKey(auditorIdentity.publicKeyPem) !== auditorIdentity.nodeId) {
     throw new TypeError('Invalid auditor identity or challenge');
   }
   const envelope = { version:1, auditorNodeId:auditorIdentity.nodeId,
-    auditorPublicKeyPem:auditorIdentity.publicKeyPem, challenge };
+    auditorPublicKeyPem:auditorIdentity.publicKeyPem, expiresAt, challenge };
   return Object.freeze({ ...envelope, signature:sign(null, Buffer.from(challengePayload(envelope)), auditorIdentity.privateKey).toString('base64') });
 }
 
 /** Verify challenge signature and bind the claimed auditor ID to its Ed25519 public key. */
-export function verifyStorageAuditChallenge(envelope, { isTrustedAuditor = () => false } = {}) {
+export function verifyStorageAuditChallenge(envelope, { isTrustedAuditor = () => false, now = Date.now() } = {}) {
   if (!envelope || envelope.version !== 1 || !envelope.challenge ||
-      !validId(envelope.auditorNodeId) || typeof envelope.auditorPublicKeyPem !== 'string' ||
+      !validId(envelope.auditorNodeId) || !Number.isSafeInteger(envelope.expiresAt) || envelope.expiresAt <= now || typeof envelope.auditorPublicKeyPem !== 'string' ||
       envelope.auditorPublicKeyPem.length > 8192 || typeof envelope.signature !== 'string' ||
       envelope.signature.length > 1024 || typeof isTrustedAuditor !== 'function') return { ok:false, reason:'invalid-envelope' };
   try {
@@ -86,7 +86,7 @@ export class StorageAuditSessions {
     if (this.pending.has(challenge.challengeId) || this.consumed.has(challenge.challengeId)) throw new Error('Challenge ID collision');
     const expiresAt = now + this.ttlMs;
     this.pending.set(challenge.challengeId, { challenge, peerNodeId, issuedAt:now, expiresAt });
-    return Object.freeze({ ...signStorageAuditChallenge({ challenge, auditorIdentity:this.auditorIdentity }), expiresAt });
+    return Object.freeze(signStorageAuditChallenge({ challenge, auditorIdentity:this.auditorIdentity, expiresAt }));
   }
   verify({ envelope, signedResponse } = {}) {
     const now = this.now(); this.#prune(now);
