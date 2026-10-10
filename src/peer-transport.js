@@ -30,7 +30,7 @@ export class PeerTransport {
     maxFrameBytes = MAX_FRAME_BYTES, allowedTypes = DEFAULT_TYPES, trustedPeerIds = null,
     onMessage = async () => {}, replayGuard = new ReplayGuard(),
     rateLimiter = new PeerRateLimiter({ capacity: 64, refillPerSecond: 20 }), transferScheduler = null,
-    protocolGenesis = null, networkMode = 'legacy', integrityGuard = null, tlsOptions = null, tlsHandshakeTimeoutMs = 10_000, now = () => Date.now() } = {}) {
+    protocolGenesis = null, networkMode = 'legacy', integrityGuard = null, admissionController = null, admissionVouchers = [], tlsOptions = null, tlsHandshakeTimeoutMs = 10_000, now = () => Date.now() } = {}) {
     if (!identity?.privateKey || typeof identity.nodeId !== 'string') throw new TypeError('A node identity is required');
     if (typeof host !== 'string' || !host || !Number.isInteger(port) || port < 0 || port > 65535) throw new RangeError('Invalid bind address');
     if (!Number.isSafeInteger(maxConnections) || maxConnections < 1 || !Number.isSafeInteger(maxFrameBytes) || maxFrameBytes < 256) throw new RangeError('Invalid transport limits');
@@ -54,7 +54,13 @@ export class PeerTransport {
     this.genesis = protocolGenesis === null ? null : validateGenesisDocument(protocolGenesis);
     if (this.genesis && maxFrameBytes > this.genesis.limits.maxFrameBytes) throw new RangeError('Transport frame limit exceeds protocol genesis');
     if (networkMode === 'official' && (!integrityGuard || typeof integrityGuard.checkHealthy !== 'function' || typeof integrityGuard.assertHealthy !== 'function')) throw new Error('Official Zion mode requires a verified IntegrityGuard');
+    if (admissionController !== null && (networkMode !== 'official' || !protocolGenesis || typeof admissionController.admit !== 'function' || typeof admissionController.isAdmitted !== 'function')) throw new Error('Invite admission requires an official network and a compatible admission controller');
+    if (!Array.isArray(admissionVouchers) || admissionVouchers.length > 16) throw new TypeError('admissionVouchers must be an array of at most 16 vouchers');
+    if (admissionVouchers.length && !admissionController) throw new Error('Admission vouchers require an admission controller');
     this.integrityGuard = integrityGuard;
+    this.admissionController = admissionController;
+    this.admissionVouchers = Object.freeze([...admissionVouchers]);
+    this.admittedPeerIds = new Set();
     this.maxFrameBytes = maxFrameBytes; this.maxMessageBytes = this.genesis?.limits.maxMessageBytes ?? maxFrameBytes; this.allowedTypes = new Set(allowedTypes); this.trustedPeerIds = trustedPeerIds === null ? null : new Set(trustedPeerIds); this.onMessage = onMessage;
     this.replayGuard = replayGuard; this.rateLimiter = rateLimiter; this.transferScheduler = transferScheduler; this.now = now;
     this.networkId = this.genesis ? calculateNetworkId(this.genesis) : null;
@@ -164,7 +170,9 @@ export class PeerTransport {
   }
 
   #sendHandshake(socket, payload) {
-    const signed = signPeerMessage(this.identity, payload, { now: this.now() });
+    const handshakePayload = payload?.type === 'ZION_HANDSHAKE' && this.admissionVouchers.length
+      ? { ...payload, vouchers: this.admissionVouchers } : payload;
+    const signed = signPeerMessage(this.identity, handshakePayload, { now: this.now() });
     const frame = Buffer.from(`${JSON.stringify(signed)}\n`);
     if (frame.length > this.maxFrameBytes) { socket.destroy(); return; }
     socket.write(frame);
@@ -176,7 +184,10 @@ export class PeerTransport {
     try { message = JSON.parse(frame.toString('utf8')); }
     catch { socket.destroy(); return; }
     const checked = verifyPeerMessage(message, { now: this.now(), maxBytes: this.maxFrameBytes });
-    if (!checked.ok || (this.trustedPeerIds && !this.trustedPeerIds.has(checked.nodeId))) { socket.destroy(); return; }
+    if (!checked.ok) { socket.destroy(); return; }
+    const trustedByAllowlist = !this.trustedPeerIds || this.trustedPeerIds.has(checked.nodeId);
+    const previouslyAdmitted = this.admittedPeerIds.has(checked.nodeId) || this.admissionController?.isAdmitted(checked.nodeId) === true;
+    if (!trustedByAllowlist && !previouslyAdmitted && !this.admissionController) { socket.destroy(); return; }
     // Admission control applies to handshake frames as well as application traffic.
     if (!this.rateLimiter.allow(checked.nodeId) || !this.replayGuard.accept(message, this.now())) { socket.destroy(); return; }
     let payloadBytes;
@@ -188,6 +199,13 @@ export class PeerTransport {
       if (payload?.type === 'ZION_HANDSHAKE' && payload.networkId === this.networkId &&
           payload.protocolMajor === this.genesis.protocolMajor && typeof payload.nonce === 'string' && /^[a-f0-9]{64}$/.test(payload.nonce) &&
           payload.nonce !== session.localNonce && (!session.remoteNonce || session.remoteNonce === payload.nonce)) {
+        if (!trustedByAllowlist && !previouslyAdmitted) {
+          let admission;
+          try { admission = await this.admissionController.admit({ subjectNodeId: checked.nodeId, vouchers: payload.vouchers }); }
+          catch { socket.destroy(); return; }
+          if (!admission?.ok && !this.admissionController.isAdmitted(checked.nodeId)) { socket.destroy(); return; }
+          this.admittedPeerIds.add(checked.nodeId);
+        }
         session.remoteNonce = payload.nonce;
         this.#sendHandshake(socket, { type: 'ZION_HANDSHAKE_ACK', networkId: this.networkId, protocolMajor: this.genesis.protocolMajor, nonce: session.localNonce, echo: session.remoteNonce });
         return;
