@@ -29,6 +29,7 @@ export class LocalFirstStore {
   async ingestRemote(record,{authenticated=false}={}) {
     if(!authenticated)return {ok:false,reason:'unauthenticated-record'};
     if(!record||typeof record.key!=='string'||!ID.test(record.key)||typeof record.hash!=='string'||!/^[a-f0-9]{64}$/.test(record.hash)||(record.parentHash!==null&&typeof record.parentHash!=='string'))return {ok:false,reason:'invalid-record'};
+    try{if(hashLocalFirstRecord(record)!==record.hash)return {ok:false,reason:'record-hash-mismatch'};}catch{return {ok:false,reason:'invalid-record'};}
     const current=this.heads.get(record.key)??null;
     if(record.parentHash!==current&&record.hash!==current){
       const branches=new Set([current,record.hash].filter(Boolean));
