@@ -6,7 +6,7 @@ Audited revision at start: `d79e60fe38a59b8a7b8cfc2460cd4abe571fb6ac`; documenta
 
 ## Verdict
 
-**Not production-ready.** The source archive is now in GitHub and the full AGPL-3.0-only license text has been committed. The codebase contains useful local primitives and tests, but does not yet constitute a working public decentralized cloud. The validation workflow passed on the hardening revision: Node tests, demos, Rust unit tests, release build, and real Node-to-Rust storage integration all succeeded. CodeQL passed for JavaScript/TypeScript; Rust analysis was still running when this audit was updated. Passing tests are not a security certification.
+**Not production-ready.** The source archive is now in GitHub and the full AGPL-3.0-only license text has been committed. The codebase contains useful local primitives and tests, but does not yet constitute a working public decentralized cloud. The validation workflow passed on the hardening revision: Node tests, demos, Rust unit tests, release build, and real Node-to-Rust storage integration all succeeded. CodeQL passed for both JavaScript/TypeScript and Rust on the latest admission-hardening change (PR #23). Passing tests are not a security certification.
 
 ## Issues fixed in this pass
 
@@ -80,4 +80,6 @@ Until P0 blockers are closed and independently reviewed, use Zion only for local
 - PR #20 merged: admission persistence awaits synchronous or asynchronous `save()` and does not publish success before persistence finishes.
 - PR #21 merged: any admission state-store save error marks the controller unavailable for the rest of that process, preventing retries against a stale in-memory snapshot after an ambiguous commit.
 - Validation and CodeQL passed for PR #21, including the Node/Rust repository validation workflow and both JavaScript/TypeScript and Rust CodeQL jobs.
-- Added [the transactional peer-admission backend contract](docs/TRANSACTIONAL_PEER_ADMISSION_CONTRACT.md). This specifies the required database transaction boundary, uniqueness/quota/capacity invariants, and real multi-process integration tests. **It is a design contract, not a deployed database adapter.** The current file-backed controller remains single-process only; distributed admission is still a production blocker.
+- PR #22 merged: added [the transactional peer-admission backend contract](docs/TRANSACTIONAL_PEER_ADMISSION_CONTRACT.md). This specifies the required database transaction boundary, uniqueness/quota/capacity invariants, and real multi-process integration tests. **It is a design contract, not a deployed database adapter.**
+- PR #23 merged: reject malformed and duplicate consumed-invitation keys, duplicate admission subjects, empty issuer lists, and duplicate issuer IDs in persisted/controller state. Updated regression fixtures to remain structurally valid while testing size limits. Validation and both CodeQL analyses passed.
+- The current file-backed controller remains single-process only; distributed admission is still a production blocker. The next safe implementation step is a real transactional adapter plus schema/migrations and independent-process integration tests—not a wrapper around the existing `load()`/`save()` API.
