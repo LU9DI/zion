@@ -155,7 +155,7 @@ export class PostgresPeerAdmissionStore {
 
   async releaseAdmission(subjectNodeId, status = 'released') {
     if (this.commitOutcomeUnknown) return { ok: false, reason: 'admission-state-unavailable' };
-    if (!NODE_ID.test(subjectNodeId ?? '') || !['released', 'revoked'].includes(status))
+    if (!NODE_ID.test(subjectNodeId ?? '') || !['released', 'revoked'].includes(status)) {
       return { ok: false, reason: 'invalid-input' };
     }
     return this.#transaction(async client => {
