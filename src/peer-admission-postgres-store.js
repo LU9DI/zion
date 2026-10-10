@@ -30,7 +30,7 @@ function validateInput(input) {
  */
 export class PostgresPeerAdmissionStore {
   constructor({ pool, maxTransactionRetries = 3 } = {}) {
-    if (!pool || typeof pool.connect !== 'function' || typeof pool.query !== 'function' ||
+    if (!pool || typeof pool.connect !== 'function' ||
       !Number.isSafeInteger(maxTransactionRetries) ||
       maxTransactionRetries < 0 || maxTransactionRetries > 10) {
       throw new TypeError('Invalid PostgreSQL peer-admission store configuration');
@@ -158,6 +158,9 @@ export class PostgresPeerAdmissionStore {
 
   async isAdmitted(subjectNodeId) {
     if (this.commitOutcomeUnknown || !NODE_ID.test(subjectNodeId ?? '')) return false;
+    if (typeof this.pool.query !== 'function') {
+      throw new TypeError('Pool must expose query() for authoritative state reads');
+    }
     const result = await this.pool.query(
       "SELECT 1 FROM peer_admissions WHERE subject_node_id = $1 AND status = 'active' LIMIT 1",
       [subjectNodeId],
@@ -166,6 +169,9 @@ export class PostgresPeerAdmissionStore {
   }
 
   async snapshot() {
+    if (typeof this.pool.query !== 'function') {
+      throw new TypeError('Pool must expose query() for authoritative state reads');
+    }
     if (this.commitOutcomeUnknown) {
       throw Object.assign(new Error('Admission state requires authoritative reconciliation'), {
         code: 'ZION_ADMISSION_COMMIT_OUTCOME_UNKNOWN',
