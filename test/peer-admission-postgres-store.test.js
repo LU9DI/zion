@@ -16,9 +16,10 @@ const input = () => ({
   maxAdmissionsPerIssuer: 5,
 });
 
-function fakePool({ failInvitationInsert = false, retryOnce = false } = {}) {
+function fakePool({ failInvitationInsert = false, retryOnce = false, failCommit = false } = {}) {
   const calls = [];
   let retryPending = retryOnce;
+  let commitPending = failCommit;
   return {
     calls,
     async connect() {
@@ -103,4 +104,19 @@ test('release is idempotent and updates reservation count only when active row c
   assert.equal(result.changed, true);
   assert.ok(pool.calls.some(x => x.sql.includes('GREATEST(0, active_reservations - 1)')));
   assert.ok(pool.calls.some(x => x.sql === 'COMMIT'));
+});
+
+
+test('ambiguous commit outcome fails closed and is never automatically retried', async () => {
+  const pool = fakePool({ failCommit: true });
+  const store = new PostgresPeerAdmissionStore({ pool, maxTransactionRetries: 3 });
+  assert.deepEqual(await store.commitAdmission(input()), {
+    ok: false, reason: 'admission-state-unavailable',
+  });
+  const beginsAfterFirst = pool.calls.filter(x => x.sql === 'BEGIN ISOLATION LEVEL SERIALIZABLE').length;
+  assert.equal(beginsAfterFirst, 1);
+  assert.deepEqual(await store.commitAdmission({ ...input(), subjectNodeId: id('b') }), {
+    ok: false, reason: 'admission-state-unavailable',
+  });
+  assert.equal(pool.calls.filter(x => x.sql === 'BEGIN ISOLATION LEVEL SERIALIZABLE').length, 1);
 });
