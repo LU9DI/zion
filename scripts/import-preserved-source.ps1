@@ -32,15 +32,15 @@ try {
   git clone --branch $Branch $Repository $checkout
   if ($LASTEXITCODE -ne 0) { throw "git clone failed; verify network access and GitHub permission." }
 
-  # Copy the source tree into the checkout without touching its .git directory.
-  Get-ChildItem -LiteralPath $source.FullName -Force | ForEach-Object {
-    $destination = Join-Path $checkout $_.Name
+  # Merge every source file by relative path, including dotfiles, without touching .git.
+  Get-ChildItem -LiteralPath $source.FullName -Force -Recurse | ForEach-Object {
+    $relative = $_.FullName.Substring($source.FullName.Length).TrimStart([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $destination = Join-Path $checkout $relative
     if ($_.PSIsContainer) {
-      if (-not (Test-Path -LiteralPath $destination)) {
-        New-Item -ItemType Directory -Path $destination -Force | Out-Null
-      }
-      Copy-Item -LiteralPath $_.FullName -Destination $destination -Recurse -Force
+      New-Item -ItemType Directory -Path $destination -Force | Out-Null
     } else {
+      $parent = Split-Path -Parent $destination
+      New-Item -ItemType Directory -Path $parent -Force | Out-Null
       Copy-Item -LiteralPath $_.FullName -Destination $destination -Force
     }
   }
