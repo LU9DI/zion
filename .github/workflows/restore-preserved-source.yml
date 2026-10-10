@@ -1,11 +1,16 @@
 name: Restore preserved Zion source
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/restore-preserved-source.yml'
   workflow_dispatch:
+    inputs:
+      confirm_restore:
+        description: 'Type RESTORE_SOURCE only when intentionally restoring the preserved ZIP over the current tree'
+        required: true
+        type: choice
+        options:
+          - NO
+          - RESTORE_SOURCE
+        default: NO
 
 permissions:
   contents: write
@@ -16,6 +21,7 @@ concurrency:
 
 jobs:
   restore:
+    if: ${{ inputs.confirm_restore == 'RESTORE_SOURCE' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
