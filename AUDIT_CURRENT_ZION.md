@@ -23,7 +23,7 @@ Audited revision at start: `d79e60fe38a59b8a7b8cfc2460cd4abe571fb6ac`; documenta
 - Persisted the Rust sidecar's local quota configuration atomically on initialization and first write; later runs with a mismatched chunk/storage quota now fail closed instead of silently changing policy. This remains an application-level quota, not an OS-enforced disk quota.
 - Added Unix stale-lock recovery for the Rust store: a lock is reclaimed only when its recorded PID is definitively gone (or owner metadata has been absent for 30 seconds), and the lock directory is atomically quarantined before cleanup. Non-Unix builds fail closed rather than guessing process liveness.
 - Extended the real Node-to-Rust integration test to create a fresh adapter against the same root, read the previously committed ciphertext back, and re-check quota exhaustion after reinitialization.
-- Added a filesystem-store regression test that reopens the replica store, verifies previously stored ciphertext remains readable, and confirms the persisted quota remains enforced after reinitialization. This covers the Node filesystem store only; it does not claim the Rust sidecar's restart behavior is fully validated.
+- Added restart regression coverage for both the Node filesystem store and the Rust sidecar. The Rust integration test now verifies read-back and quota enforcement after recreating the adapter against the same root; its result remains unconfirmed until CI runs.
 
 ## Remaining blockers (ordered by risk)
 
