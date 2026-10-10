@@ -131,3 +131,18 @@ test('Rust adapter rejects a put receipt with a mismatched byte count', async ()
   const fake = fakeSpawn({ stdout: 'OK 70 0\n' });
   await assert.rejects(() => config(fake.spawn).put(id, envelope), error => error.code === 'INVALID_RESPONSE');
 });
+
+test('Rust adapter rejects oversized stderr and kills the child', async () => {
+  let killed = false;
+  const spawn = () => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.stdin = new PassThrough();
+    child.kill = signal => { killed = signal === 'SIGKILL'; };
+    queueMicrotask(() => child.stderr.write(Buffer.alloc(4097, 1)));
+    return child;
+  };
+  await assert.rejects(() => config(spawn).init(), error => error.code === 'SIDECAR_OUTPUT_LIMIT');
+  assert.equal(killed, true);
+});
