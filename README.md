@@ -7,7 +7,7 @@
 - **Available for local experiments:** Node.js modules and automated tests; the cloud UI is a local-only preview.
 - **Not wired as a complete network:** no running libp2p/Kademlia deployment, bootstrap network, NAT traversal, or validated internet connectivity.
 - **Storage caveat:** the Rust storage core is opt-in and not integrated into the active JavaScript replica path. The default in-memory ciphertext adapter is for tests/demos; a durable authenticated adapter is required for real use.
-- **Security caveat:** remote peer transport now fails closed unless mutual TLS key/certificate/CA material is configured, but certificate lifecycle/trust distribution, production key management/key sharing, distributed Sybil/DDoS defense, and cross-platform hard resource quotas remain incomplete. CI also performs a real mutual-TLS handshake using ephemeral test certificates and checks rejection of an untrusted CA; this is not a substitute for production certificate operations. Plaintext transport is restricted to loopback. Do not store sensitive data or the only copy of important files.
+- **Security caveat:** remote peer transport now fails closed unless mutual TLS key/certificate/CA material is configured, but certificate lifecycle/trust distribution, production key management/key sharing, distributed Sybil/DDoS defense, and cross-platform hard resource quotas remain incomplete. CI performs real mutual-TLS handshakes using ephemeral test certificates and rejects an untrusted CA; this is not a substitute for production certificate operations. The local resource governor now treats zero CPU/memory/disk/concurrency limits as a disabled contribution and reports disk budgets, but it still cannot enforce OS-level quotas. Plaintext transport is restricted to loopback. Do not store sensitive data or the only copy of important files.
 - **Witness caveat:** recovery depends on an integrator-supplied live-session validator and trusted publisher keys. Local signatures and fsync calls do not prove an external authority or device-level durability.
 - **Validation:** The baseline suite previously passed 168 JavaScript module syntax checks, 533 Node tests, both demos, and 3 Rust tests. The newer mutual-TLS integration tests also passed in [validation run for commit `e9e8bd9`](https://github.com/LU9DI/zion/actions/runs/38066430962). Check the [latest Actions runs](https://github.com/LU9DI/zion/actions) for the current branch status.
 
@@ -22,7 +22,7 @@ npm run demo
 npm run client:demo
 ```
 
-The test suite verifies prototype behavior; passing tests do not certify a secure public network, production deployment, power-loss durability across filesystems, or resistance to a coordinated distributed attack.
+The repository includes a root npm lockfile and CI installs with `npm ci`; the Rust workspace still lacks a committed `Cargo.lock`. The test suite verifies prototype behavior; passing tests do not certify a secure public network, production deployment, power-loss durability across filesystems, or resistance to a coordinated distributed attack.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), [SECURITY.md](SECURITY.md), and [AUDIT_CURRENT_ZION.md](AUDIT_CURRENT_ZION.md) for implementation boundaries and remaining blockers.
 
