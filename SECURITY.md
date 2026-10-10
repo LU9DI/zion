@@ -2,7 +2,7 @@
 
 This is an early research prototype and is not suitable for production or sole-copy storage. Please do not upload sensitive data to experimental nodes.
 
-For responsible disclosure, open a private security advisory in the GitHub repository once it exists. Until a repository is published, no official security-reporting channel is configured.
+For responsible disclosure, use the repository's Security tab and submit a private vulnerability report if that feature is enabled. Do not publish exploit details in a public issue before coordinating remediation. If private reporting is unavailable, contact the repository maintainer through GitHub to arrange a private disclosure channel.
 
 ### Remote freshness challenges
 
