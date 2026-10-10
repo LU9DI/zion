@@ -106,7 +106,12 @@ export class RustStorageAdapter {
       });
       child.stderr.on('data', chunk => {
         stderrBytes += chunk.length;
-        if (stderrBytes <= 4096) stderr.push(chunk);
+        if (stderrBytes > 4096) {
+          child.kill('SIGKILL');
+          finish(reject, new RustStorageError('SIDECAR_OUTPUT_LIMIT', 'Rust storage sidecar exceeded stderr output limit'));
+          return;
+        }
+        stderr.push(chunk);
       });
       child.on('error', error => finish(reject, new RustStorageError('SIDECAR_START_FAILED', 'Could not run Rust storage sidecar', { cause: error })));
       child.on('close', code => {
