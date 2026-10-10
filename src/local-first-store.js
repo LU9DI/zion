@@ -27,7 +27,7 @@ export class LocalFirstStore {
   /** Import an authenticated remote record. Same-parent siblings are preserved as an explicit conflict. */
   async ingestRemote(record,{authenticated=false}={}) {
     if(!authenticated)return {ok:false,reason:'unauthenticated-record'};
-    if(!record||typeof record.key!=='string'||!ID.test(record.key)||typeof record.hash!=='string'||!/^[a-f0-9]{64}$/.test(record.hash)||typeof record.parentHash!=='string')return {ok:false,reason:'invalid-record'};
+    if(!record||typeof record.key!=='string'||!ID.test(record.key)||typeof record.hash!=='string'||!/^[a-f0-9]{64}$/.test(record.hash)||(record.parentHash!==null&&typeof record.parentHash!=='string'))return {ok:false,reason:'invalid-record'};
     const current=this.heads.get(record.key)??null;
     if(record.parentHash!==current&&record.hash!==current){
       const branches=new Set([current,record.hash].filter(Boolean));
@@ -38,13 +38,16 @@ export class LocalFirstStore {
     await this.persistLocal(record);this.records.set(record.hash,Object.freeze({...record}));this.heads.set(record.key,record.hash);
     return {ok:true};
   }
-  resolveConflict(key,{keepHashes,mergedValue,deviceId}={}) {
+  async resolveConflict(key,{keepHashes,mergedValue,deviceId}={}) {
     const conflict=this.conflicts.get(key);
     if(!conflict)throw new Error('No unresolved conflict for key');
     if(!Array.isArray(keepHashes)||keepHashes.length<1||keepHashes.some(h=>!conflict.branches.includes(h)))throw new TypeError('Resolution must explicitly reference known branches');
-    const resolution=Object.freeze({key,branches:Object.freeze([...new Set(keepHashes)]),mergedValue:mergedValue??null,deviceId,createdAt:Date.now(),resolutionId:randomBytes(16).toString('hex')});
-    this.conflicts.delete(key);this.heads.set(key,sha(encode(resolution).toString('base64')));
-    return resolution;
+    if(typeof deviceId!=='string'||!ID.test(deviceId))throw new TypeError('Resolution deviceId is required');
+    if(this.records.size>=this.maxRecords)throw new Error('Local-first record capacity reached');
+    const base={version:1,key,parentHash:null,parentHashes:Object.freeze([...new Set(keepHashes)]),deviceId,createdAt:Date.now(),recordId:randomBytes(16).toString('hex'),value:mergedValue??null,resolution:true};
+    const record=Object.freeze({...base,hash:sha(encode(base).toString('base64'))});
+    await this.persistLocal(record);this.records.set(record.hash,record);this.heads.set(key,record.hash);this.conflicts.delete(key);
+    return record;
   }
   get(key){const head=this.heads.get(key);return head?this.records.get(head)??null:null;}
   getConflict(key){return this.conflicts.get(key)??null;}
