@@ -1,0 +1,31 @@
+{
+  "name": "zion",
+  "version": "0.33.32",
+  "private": false,
+  "description": "Privacy-first peer-to-peer storage and social messaging",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test --test-concurrency=1",
+    "demo": "node src/demo.js",
+    "check": "node scripts/check-syntax.js",
+    "manifest:sign": "node scripts/create-release-manifest.js",
+    "cloud:preview": "node scripts/serve-cloud.js",
+    "anchor:diagnose": "node src/notification-recovery-anchor-diagnostics.js",
+    "anchor:verify-history": "node src/notification-recovery-anchor-diagnostics.js",
+    "anchor:create-witness-challenge": "node scripts/create-witness-challenge.js",
+    "anchor:serve-witness": "node scripts/serve-remote-witness.js",
+    "anchor:request-witness": "node scripts/request-remote-witness.js",
+    "anchor:diagnose-witness-evidence": "node scripts/diagnose-witness-evidence.js",
+    "anchor:verify-witness-evidence": "node scripts/verify-witness-evidence.js",
+    "anchor:verify-trusted-history": "node scripts/verify-trusted-checkpoint-history-cli.js",
+    "anchor:diagnose-trusted-state": "node scripts/diagnose-trusted-history-state.js",
+    "anchor:verify-external-trust-receipt": "node scripts/verify-external-trust-receipt.js",
+    "content:screen-local": "node scripts/screen-content-local.js",
+    "content:verify-uploader": "node scripts/verify-uploader-attribution.js",
+    "client:demo": "node scripts/demo-consumer-client.js"
+  },
+  "license": "AGPL-3.0-only"
+}
