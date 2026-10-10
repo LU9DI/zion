@@ -1,6 +1,6 @@
 # Transactional peer-admission backend contract
 
-Status: design contract only — **no multi-process-safe backend is implemented by this document**.
+Status: design contract plus an initial PostgreSQL schema migration. **No transactional adapter is implemented, and the migration has not been applied to a production database.**
 
 ## Why the file store is insufficient
 
@@ -34,7 +34,7 @@ A generic `load()` + `save()` pair is not a substitute for this interface. Neith
 
 ## PostgreSQL reference model
 
-The following is a design reference, not a migration already applied to Zion. All identifiers are parameters, never string-interpolated SQL.
+The executable schema draft is committed at `migrations/postgres/0001_peer_admission.sql`; it creates normalized issuer membership, unique consumed invitation keys, policy/capacity singleton rows, and subject uniqueness. It is not automatically applied and is not sufficient without the transactional adapter. The SQL below remains a conceptual reference; all runtime SQL identifiers/values must be safely handled and values parameterized.
 
 ```sql
 CREATE TABLE peer_admission_capacity (
@@ -108,4 +108,4 @@ A concrete adapter is not ready until integration tests with a real database dem
 
 ## Acceptance gate
 
-This contract is complete only when a real adapter implements the transaction boundary and all concurrency/failure tests above pass in CI. Until then, the controller's documented guarantee remains single-process only, and Zion remains not production-ready.
+The migration is a schema foundation only. It does not provide runtime locking, quota enforcement, active-capacity lifecycle, or atomic admission by itself. This contract is complete only when a real adapter implements the transaction boundary and all concurrency/failure tests above pass in CI. Until then, the controller's documented guarantee remains single-process only, and Zion remains not production-ready.
