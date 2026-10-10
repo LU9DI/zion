@@ -104,7 +104,7 @@ export class P2PBootstrapCoordinator {
       await this.startPromise?.catch(() => {});
     }
     if (this.state === 'stopped') return this.getStatus();
-    if (this.state !== 'running') throw new Error('Cannot stop bootstrap coordinator from state ' + this.state);
+    if (!['running', 'failed'].includes(this.state)) throw new Error('Cannot stop bootstrap coordinator from state ' + this.state);
     this.state = 'stopping';
     const peers = [...this.connected.values()];
     const operation = (async () => {
@@ -181,7 +181,8 @@ export class P2PBootstrapCoordinator {
           if (typeof result?.peerId === 'string') await this.disconnectPeer(result.peerId).catch(() => {});
           throw new Error('Bootstrap connection completed after cancellation');
         }
-        if (!result || result.authenticated !== true || typeof result.peerId !== 'string') {
+        if (!result || typeof result.peerId !== 'string' || result.authenticated !== true) {
+          if (typeof result?.peerId === 'string') await this.disconnectPeer(result.peerId).catch(() => {});
           throw new Error('Bootstrap dial did not return an authenticated peer identity');
         }
         if (result.peerId !== peer.peerId) {
