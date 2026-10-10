@@ -79,10 +79,13 @@ export class ResourceGovernor {
 
     const scaled = n => Math.floor(n * factor);
     const decision = Object.freeze({
-      enabled: factor > 0 && this.limits.maxConcurrentJobs > 0,
+      // A zero owner limit is a hard opt-out, not an enabled worker with a zero budget.
+      enabled: factor > 0 && this.limits.maxConcurrentJobs > 0 &&
+        this.limits.maxCpuPercent > 0 && this.limits.maxMemoryMiB > 0 && this.limits.maxDiskMiB > 0,
       factor,
-      cpuPercentBudget: Math.min(this.limits.maxCpuPercent, scaled(this.limits.maxCpuPercent)),
+      cpuPercentBudget: this.limits.maxCpuPercent * factor,
       memoryMiBBudget: scaled(this.limits.maxMemoryMiB),
+      diskMiBBudget: scaled(this.limits.maxDiskMiB),
       uploadKiBps: scaled(this.limits.maxUploadKiBps),
       downloadKiBps: scaled(this.limits.maxDownloadKiBps),
       concurrentJobs: factor > 0 ? Math.min(this.limits.maxConcurrentJobs, factor < 0.2 ? 1 : this.limits.maxConcurrentJobs) : 0,
