@@ -330,6 +330,25 @@ test('mutual TLS peer transport completes a real verified handshake and exchange
   assert.equal(received.payload.nonce, 'verified-mtls');
 });
 
+test('mutual TLS server closes clients that never finish the handshake', { skip: !opensslAvailable }, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'zion-mtls-timeout-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const material = createTlsTestMaterial(directory);
+  const server = new PeerTransport({
+    identity: createNodeIdentity(),
+    host: '127.0.0.1',
+    tlsOptions: material.server,
+    tlsHandshakeTimeoutMs: 250
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const socket = connect(address.port, '127.0.0.1');
+  t.after(() => socket.destroy());
+  await once(socket, 'connect');
+  await waitFor(() => socket.destroyed, 2_000);
+  assert.equal(socket.destroyed, true, 'incomplete TLS handshake must be closed');
+});
+
 test('mutual TLS rejects a server certificate signed by an untrusted CA', { skip: !opensslAvailable }, async t => {
   const directory = mkdtempSync(join(tmpdir(), 'zion-mtls-untrusted-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
