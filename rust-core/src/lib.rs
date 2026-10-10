@@ -271,6 +271,18 @@ mod tests {
     }
 
     #[test]
+    fn persists_quota_configuration_and_rejects_silent_changes() {
+        let root = temp_root();
+        let first = StorageCore::new(&root, 1024, 2048).unwrap();
+        first.init().unwrap();
+        let same = StorageCore::new(&root, 1024, 2048).unwrap();
+        assert!(same.init().is_ok());
+        let changed = StorageCore::new(&root, 1024, 4096).unwrap();
+        assert!(matches!(changed.init(), Err(StorageError::InvalidConfiguration)));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn rejects_unexpected_hidden_root_entries_in_quota_scan() {
         let root = temp_root();
         let store = StorageCore::new(&root, 1024, 2048).unwrap();
