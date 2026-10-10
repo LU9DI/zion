@@ -35,7 +35,7 @@ Audited revision at start: `d79e60fe38a59b8a7b8cfc2460cd4abe571fb6ac`; documenta
 
 ### P1 — CI and release integrity
 
-11. **Fresh CI is not green.** The GitHub Actions run for the license commit reports failure. The GitHub API returned no jobs for that run, so the failure cause cannot be attributed to a test without logs. Historical audit reports record 533 tests passing locally, but that result is not current CI evidence.
+11. **CI failure was a workflow-gating issue, now fixed.** The old job-level `hashFiles(...)` gate left the validation workflow with no jobs; the failed run did not demonstrate a code/test failure. After removing that gate, GitHub Actions passed on commits `8551fee078af62d374620ebedfb02b097e1dd865` and `cd135ce4cba926b22160549103c5dbd44a156813`: syntax checks, all 533 Node tests, and both demos passed. [Latest passing run](https://github.com/LU9DI/zion/actions/runs/38062968893). This does not certify production security.
 12. **Dependency reproducibility is limited.** There is no `package-lock.json`; npm currently has no declared JS runtime dependencies, but future dependencies must be locked. Rust has a Cargo dependency but no committed `Cargo.lock` was found in the repository tree.
 13. **Supply-chain/release verification is incomplete.** Checksums establish integrity of the bytes hashed, not trusted provenance. Add release signing, dependency/security scanning, reproducible builds where feasible, and independent verification of published artifacts.
 14. **Archive and source can diverge.** The preserved ZIP is committed alongside the expanded source. A manifest/check step should compare the archive's intended source snapshot to the repository without automatically overwriting newer work.
@@ -59,6 +59,6 @@ npm run client:demo
 cargo test --manifest-path rust-core/Cargo.toml
 ```
 
-The Rust test requires Cargo and first-time access to the `sha2` crate. A failure to download the dependency is an environment/network failure, not a passing test.
+The Rust test requires Cargo and first-time access to the `sha2` crate. A failure to download the dependency is an environment/network failure, not a passing test. The current GitHub Actions workflow validates Node.js only; the Rust crate has not yet been verified by that CI workflow.
 
 Until P0 blockers are closed and independently reviewed, use Zion only for local experiments on non-sensitive data. Do not advertise it as a public cloud, a Tor replacement, or a production-safe decentralized network.
