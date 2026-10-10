@@ -61,3 +61,14 @@ test('validates policy inputs and rejects conflicting duplicate ids', async () =
   const original = Buffer.from('one'); await capacity.put(idFor(original), original);
   await assert.rejects(capacity.put(idFor(original), Buffer.from('two')), /Existing replica content mismatch/);
 });
+
+test('concurrent writes cannot race past the adaptive capacity ceiling', async () => {
+  const store = memoryStore();
+  const capacity = new AdaptiveStorageCapacity({ store, baseCapacityBytes: 80, minCapacityBytes: 10 });
+  capacity.evaluate({ telemetryHealthy: true, contributionRatio: 0.1 }); // target: 20 bytes
+  const a = Buffer.alloc(12, 1), b = Buffer.alloc(12, 2);
+  const outcomes = await Promise.allSettled([capacity.put(idFor(a), a), capacity.put(idFor(b), b)]);
+  assert.equal(outcomes.filter(result => result.status === 'fulfilled').length, 1);
+  assert.equal(outcomes.filter(result => result.status === 'rejected' && result.reason.code === 'ZION_ADAPTIVE_CAPACITY_REACHED').length, 1);
+  assert.equal(await store.sizeBytes(), 12);
+});
