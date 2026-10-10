@@ -2,7 +2,8 @@ import { createHash, randomBytes } from 'node:crypto';
 
 const ID=/^[a-zA-Z0-9._:-]{1,128}$/;
 const sha=value=>createHash('sha256').update(value).digest('hex');
-const encode=value=>Buffer.from(JSON.stringify(value));
+function canonical(value){if(value===null||typeof value==='string'||typeof value==='boolean')return JSON.stringify(value);if(typeof value==='number'){if(!Number.isFinite(value))throw new TypeError('Non-finite record number');return JSON.stringify(value);}if(Array.isArray(value))return '['+value.map(canonical).join(',')+']';if(typeof value==='object'){if(Object.getPrototypeOf(value)!==Object.prototype&&Object.getPrototypeOf(value)!==null)throw new TypeError('Only plain record objects are supported');return '{'+Object.keys(value).sort().map(k=>JSON.stringify(k)+':'+canonical(value[k])).join(',')+'}';}throw new TypeError('Unsupported record value');}
+export function hashLocalFirstRecord(record){if(!record||typeof record!=='object')throw new TypeError('Invalid record');const {hash,...body}=record;return sha(canonical(body));}
 /** Small local-first append-only record store. Persistence/encryption are injected, not implied. */
 export class LocalFirstStore {
   constructor({persistLocal=async()=>{},replicateAsync=async()=>{},maxRecords=100_000,onReplicationError=()=>{}}={}) {
@@ -16,7 +17,7 @@ export class LocalFirstStore {
     if(parentHash!==current)throw Object.assign(new Error('Write parent does not match current local head'),{code:'ZION_STALE_PARENT',expectedParent:current});
     if(this.records.size>=this.maxRecords)throw new Error('Local-first record capacity reached');
     const record={version:1,key,parentHash,deviceId,createdAt:Date.now(),recordId:randomBytes(16).toString('hex'),value};
-    record.hash=sha(encode(record).toString('base64'));
+    record.hash=hashLocalFirstRecord(record);
     Object.freeze(record);
     await this.persistLocal(record); // local durability precedes network replication
     this.records.set(record.hash,record);this.heads.set(key,record.hash);
@@ -45,7 +46,7 @@ export class LocalFirstStore {
     if(typeof deviceId!=='string'||!ID.test(deviceId))throw new TypeError('Resolution deviceId is required');
     if(this.records.size>=this.maxRecords)throw new Error('Local-first record capacity reached');
     const base={version:1,key,parentHash:null,parentHashes:Object.freeze([...new Set(keepHashes)]),deviceId,createdAt:Date.now(),recordId:randomBytes(16).toString('hex'),value:mergedValue??null,resolution:true};
-    const record=Object.freeze({...base,hash:sha(encode(base).toString('base64'))});
+    const record=Object.freeze({...base,hash:hashLocalFirstRecord(base)});
     await this.persistLocal(record);this.records.set(record.hash,record);this.heads.set(key,record.hash);this.conflicts.delete(key);
     return record;
   }
