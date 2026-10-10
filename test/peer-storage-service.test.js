@@ -46,6 +46,26 @@ test('stores opaque encrypted chunks over signed segmented transport and verifie
   assert.deepEqual(recovered, bytes);
 });
 
+test('recovers persisted opaque chunks and quota after store reinitialization', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'rea-peer-store-restart-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const first = new OpaqueReplicaStore(root, { maxChunkBytes: 64, maxStorageBytes: 64 });
+  await first.init();
+  const bytes = envelope(10);
+  const id = createHash('sha256').update(bytes).digest('hex');
+  await first.put(id, bytes);
+
+  const reopened = new OpaqueReplicaStore(root, { maxChunkBytes: 64, maxStorageBytes: 128 });
+  await reopened.init();
+  assert.deepEqual(await reopened.get(id), bytes);
+  assert.equal(await reopened.sizeBytes(), bytes.length);
+  assert.equal((await reopened.usage()).quotaBytes, 64);
+
+  const another = envelope(20);
+  const anotherId = createHash('sha256').update(another).digest('hex');
+  await assert.rejects(reopened.put(anotherId, another), error => error.code === 'REA_CAPACITY_EXHAUSTED');
+});
+
 test('rejects a mismatched chunk digest and does not persist it', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'rea-peer-store-bad-'));
   t.after(() => rm(root, { recursive: true, force: true }));
