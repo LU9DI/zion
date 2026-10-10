@@ -317,6 +317,20 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn reaps_lock_owned_by_a_process_that_no_longer_exists() {
+        let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
+        let lock = root.join(".rea-rust-storage-lock");
+        fs::create_dir(&lock).unwrap();
+        fs::write(lock.join("owner"), format!("{}:1\\n", i32::MAX)).unwrap();
+        let store = StorageCore::new(&root, 1024, 2048).unwrap();
+        store.reap_stale_lock(&lock);
+        assert!(!lock.exists(), "a lock owned by a definitively dead process should be recoverable");
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn persists_quota_configuration_and_rejects_silent_changes() {
         let root = temp_root();
