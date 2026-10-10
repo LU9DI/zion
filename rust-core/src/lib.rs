@@ -146,6 +146,7 @@ impl StorageCore {
     pub fn quota_bytes(&self) -> u64 { self.max_storage_bytes }
 
     fn put_locked(&self, chunk_id: &str, envelope: &[u8]) -> Result<PutReceipt, StorageError> {
+        self.sync_config_locked()?;
         let target = self.chunk_path(chunk_id);
         let parent = target.parent().ok_or(StorageError::UnsafePath)?;
         fs::create_dir_all(parent)?;
