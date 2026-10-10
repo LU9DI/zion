@@ -14,7 +14,7 @@ Audited revision at start: `d79e60fe38a59b8a7b8cfc2460cd4abe571fb6ac`; documenta
 - Added this current audit so the principal blockers are discoverable without reading every historical audit.
 - Restricted the restoration workflow to explicit manual invocation plus a confirmation phrase, preventing ordinary workflow edits from automatically re-copying an old archive over the repository.
 - Activated CI for every push/PR, extended syntax checks to `.js`, `.mjs`, and `.cjs`, added a root Cargo workspace and Rust tests, and fixed the Rust quota test fixture exposed by CI.
-- Changed peer transport so non-loopback listeners and outbound connections fail closed unless mutual TLS material is configured; outbound TLS now waits for `secureConnect` before attaching the protocol parser. Added regression tests for fail-closed policy and malformed loopback addresses.
+- Changed peer transport so non-loopback listeners and outbound connections fail closed unless mutual TLS material is configured; outbound TLS now waits for `secureConnect` before attaching the protocol parser, and the server closes incomplete TLS handshakes after a configurable bounded timeout. Added regression tests for fail-closed policy and malformed loopback addresses.
 - Added weekly Dependabot monitoring for npm, Cargo, and GitHub Actions, plus scheduled CodeQL analysis for JavaScript/TypeScript and Rust. These scanners complement but do not replace review and runtime tests.
 
 ## Remaining blockers (ordered by risk)
