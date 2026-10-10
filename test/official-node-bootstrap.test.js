@@ -8,7 +8,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-function fixture({ verifyOk = true, failSecondCheck = false, listenFails = false, failCloseCount = 0, failStopStorageCount = 0, listenGate = null, storageGate = null, stopStorageGate = null, notificationDeliveryWorker = null } = {}) {
+function fixture({ verifyOk = true, failSecondCheck = false, listenFails = false, failCloseCount = 0, failStopStorageCount = 0, listenGate = null, storageGate = null, stopStorageGate = null, notificationDeliveryWorker = null, idleParticipationScheduler = null } = {}) {
   const events = [];
   let checks = 0;
   let closeFailuresRemaining = failCloseCount;
@@ -60,7 +60,8 @@ function fixture({ verifyOk = true, failSecondCheck = false, listenFails = false
       } finally { activeStopStorage--; }
     },
     async getStorageStatus() { return { running: storageRunning }; },
-    notificationDeliveryWorker
+    notificationDeliveryWorker,
+    idleParticipationScheduler
   });
   return { bootstrap, events, guard, transport, get maxActiveStopStorage() { return maxActiveStopStorage; } };
 }
@@ -441,4 +442,31 @@ test('official bootstrap rejects malformed notification API lifecycle adapter', 
   const state = fixture();
   assert.throws(() => new OfficialNodeBootstrap({ integrityGuard: state.guard, transport: state.transport,
     startStorage: async () => {}, notificationApi: { listen() {} } }), /notificationApi must expose/u);
+});
+
+
+test('starts idle participation scheduler only after the official network is healthy and drains it on close', async () => {
+  const events = [];
+  const idleParticipationScheduler = {
+    start(options) { events.push(['idle-start', options]); },
+    async stop() { events.push(['idle-stop']); },
+  };
+  const { bootstrap, events: bootstrapEvents } = fixture({ idleParticipationScheduler });
+  const result = await bootstrap.start();
+  assert.equal(result.idleParticipation, 'scheduled');
+  assert.deepEqual(events, [['idle-start', { runImmediately: false }]]);
+  assert.ok(bootstrapEvents.indexOf('listen') >= 0);
+  await bootstrap.close();
+  assert.deepEqual(events, [['idle-start', { runImmediately: false }], ['idle-stop']]);
+});
+
+test('idle participation scheduler failure rolls back startup', async () => {
+  const idleParticipationScheduler = {
+    start() { throw new Error('idle scheduler failed'); },
+    async stop() {},
+  };
+  const { bootstrap, events } = fixture({ idleParticipationScheduler });
+  await assert.rejects(bootstrap.start(), /idle scheduler failed/);
+  assert.ok(events.includes('close'));
+  assert.ok(events.includes('stopStorage'));
 });

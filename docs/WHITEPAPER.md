@@ -161,3 +161,12 @@ O repositório também não deve ser divulgado como pronto para produção enqua
 ## Admission cost, gossip, and bandwidth policy
 
 The reference tree now includes experimental building blocks for a public-key-bound proof-of-work admission puzzle, bounded gossip hints, and adaptive application-level bandwidth budgets. These do not yet constitute a production network: proof difficulty must be calibrated and governed network-wide; gossip events require authenticated origins; and bandwidth budgets must be enforced by a verified transport/OS adapter. A fixed 1–2 minute proof target is not portable across hardware. The DHT and gossip layers are discovery hints, not proof of durable storage or global consensus.
+
+
+## Pausa por inatividade e capacidade de armazenamento adaptativa
+
+A política de participação deve reduzir consumo quando o computador não está sendo utilizado, sem confundir inatividade do usuário com autorização para apagar dados. O controlador experimental `src/idle-participation-controller.js` solicita pausa após um intervalo configurado sem atividade, aguarda a conclusão de operações em andamento e exige hooks do runtime para interromper novas admissões e desconectar o transporte. Telemetria ausente ou inconsistente bloqueia a participação. O armazenamento local deve permanecer intacto durante a pausa.
+
+A capacidade de armazenamento anunciada também pode variar segundo a contribuição verificada. O controlador experimental `src/adaptive-storage-capacity.js` limita a admissão de novas réplicas por degraus de contribuição e, quando a telemetria é inválida, desativa novas admissões. Uma redução de capacidade nunca deve provocar exclusão automática de réplicas existentes: se o uso atual superar o novo limite, o nó preserva os dados e recusa novas réplicas únicas até que haja espaço ou uma migração/reparação segura.
+
+**Limite de implementação:** estes controladores e seus testes são building blocks, não prova de integração com todos os transportes, anúncios de provedores, supervisores de nuvem ou runtime oficial. Antes de declarar o comportamento completo, é necessário conectar os hooks reais do nó e verificar a pausa e retomada ponta a ponta. Consulte `docs/IDLE_AND_ADAPTIVE_CAPACITY.md` para os degraus iniciais e os critérios de validação.

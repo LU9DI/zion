@@ -4,7 +4,7 @@
  * from paths writable by the running node. This is not an OS secure-boot boundary.
  */
 export class OfficialNodeBootstrap {
-  constructor({ integrityGuard, transport, startStorage, stopStorage = async () => {}, getStorageStatus, inactivityScheduler = null, notificationDeliveryWorker = null, notificationApi = null, recordContainmentEvent, maxContainmentHistory = 100 } = {}) {
+  constructor({ integrityGuard, transport, startStorage, stopStorage = async () => {}, getStorageStatus, inactivityScheduler = null, idleParticipationScheduler = null, notificationDeliveryWorker = null, notificationApi = null, recordContainmentEvent, maxContainmentHistory = 100 } = {}) {
     if (!integrityGuard || typeof integrityGuard.verify !== 'function' ||
       typeof integrityGuard.checkHealthy !== 'function' || typeof integrityGuard.assertHealthy !== 'function' ||
       typeof integrityGuard.addQuarantineListener !== 'function' ||
@@ -27,6 +27,11 @@ export class OfficialNodeBootstrap {
     }
     this.inactivityScheduler = inactivityScheduler;
     this.inactivitySchedulerStarted = false;
+    if (idleParticipationScheduler !== null && (typeof idleParticipationScheduler.start !== 'function' || typeof idleParticipationScheduler.stop !== 'function')) {
+      throw new TypeError('idleParticipationScheduler must expose start() and stop()');
+    }
+    this.idleParticipationScheduler = idleParticipationScheduler;
+    this.idleParticipationSchedulerStarted = false;
     if (notificationDeliveryWorker !== null && (typeof notificationDeliveryWorker.start !== 'function' || typeof notificationDeliveryWorker.stop !== 'function')) {
       throw new TypeError('notificationDeliveryWorker must expose start() and stop()');
     }
@@ -122,6 +127,10 @@ export class OfficialNodeBootstrap {
     // close(), quarantine containment, rollback, and retry are requested together.
     const operation = this.adapterCleanupQueue.then(async () => {
       const errors = [];
+      if (this.idleParticipationSchedulerStarted && this.idleParticipationScheduler) {
+        try { await this.idleParticipationScheduler.stop(); this.idleParticipationSchedulerStarted = false; }
+        catch (error) { errors.push(error); }
+      }
       if (this.notificationDeliveryWorkerStarted && this.notificationDeliveryWorker) {
         try { await this.notificationDeliveryWorker.stop(); this.notificationDeliveryWorkerStarted = false; }
         catch (error) { errors.push(error); }
@@ -245,6 +254,10 @@ export class OfficialNodeBootstrap {
         this.inactivityScheduler.start({ runImmediately: false });
         this.inactivitySchedulerStarted = true;
       }
+      if (this.idleParticipationScheduler) {
+        this.idleParticipationScheduler.start({ runImmediately: false });
+        this.idleParticipationSchedulerStarted = true;
+      }
       if (this.notificationDeliveryWorker) {
         this.notificationDeliveryWorker.start({ runImmediately: false });
         this.notificationDeliveryWorkerStarted = true;
@@ -252,6 +265,7 @@ export class OfficialNodeBootstrap {
       this.started = true;
       return Object.freeze({ ok: true, address, integrity: this.integrityGuard.status,
         inactivityPolicy: this.inactivityScheduler ? 'scheduled' : 'not-configured',
+        idleParticipation: this.idleParticipationScheduler ? 'scheduled' : 'not-configured',
         notificationDelivery: this.notificationDeliveryWorker ? 'scheduled' : 'not-configured',
         notificationApi: this.notificationApi ? 'listening' : 'not-configured' });
     } catch (error) {
