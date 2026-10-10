@@ -89,3 +89,34 @@ test('cancelling startup aborts bootstrap dials and leaves the coordinator stopp
   await assert.rejects(start, /cancelled/);
   assert.equal(coordinator.getStatus().state, 'stopped');
 });
+
+
+test('retries shutdown after a disconnect failure', async () => {
+  let failOnce = true;
+  const coordinator = new P2PBootstrapCoordinator({
+    bootstrapPeers: peers.slice(0, 2),
+    dialPeer: async peer => ({ peerId: peer.peerId, authenticated: true }),
+    disconnectPeer: async peerId => {
+      if (peerId === 'peer-a' && failOnce) {
+        failOnce = false;
+        throw new Error('temporary disconnect failure');
+      }
+    },
+  });
+  await coordinator.start();
+  await assert.rejects(coordinator.stop(), /Could not disconnect every bootstrap peer/);
+  assert.equal(coordinator.getStatus().state, 'failed');
+  assert.equal((await coordinator.stop()).state, 'stopped');
+});
+
+test('disconnects a peer when the dial adapter returns an unauthenticated connection', async () => {
+  const disconnected = [];
+  const coordinator = new P2PBootstrapCoordinator({
+    bootstrapPeers: peers.slice(0, 2),
+    dialPeer: async peer => ({ peerId: peer.peerId, authenticated: peer.peerId !== 'peer-a' }),
+    disconnectPeer: async peerId => disconnected.push(peerId),
+  });
+  await assert.rejects(coordinator.start(), /enough independent bootstrap peers/);
+  assert.ok(disconnected.includes('peer-a'));
+  assert.ok(disconnected.includes('peer-b'));
+});
