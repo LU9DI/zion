@@ -33,6 +33,7 @@ export class LocalFirstStore {
     try{if(hashLocalFirstRecord(record)!==record.hash)return {ok:false,reason:'record-hash-mismatch'};}catch{return {ok:false,reason:'invalid-record'};}
     const current=this.heads.get(record.key)??null;
     if(record.parentHash!==current&&record.hash!==current){
+      if(!this.records.has(record.hash)){await this.persistLocal(record);this.records.set(record.hash,Object.freeze({...record}));}
       const branches=new Set([current,record.hash].filter(Boolean));
       this.conflicts.set(record.key,Object.freeze({key:record.key,branches:Object.freeze([...branches]),detectedAt:Date.now(),status:'unresolved'}));
       return {ok:false,reason:'fork-detected',conflict:this.conflicts.get(record.key)};
