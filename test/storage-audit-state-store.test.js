@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { FileStorageAuditStateStore } from '../src/storage-audit-state-store.js';
 
 function fixture(t) {
@@ -26,6 +26,7 @@ test('rejects corrupted snapshots instead of silently resetting replay state', t
 test('rejects oversized snapshots on read and write', t => {
   const path = fixture(t), store = new FileStorageAuditStateStore(path, { maxBytes:1024 });
   assert.throws(() => store.save({ pending:[{ data:'x'.repeat(2000) }], consumed:[] }), { code:'ZION_AUDIT_STATE_TOO_LARGE' });
+  mkdirSync(dirname(path), { recursive:true });
   writeFileSync(path, 'x'.repeat(1025));
   assert.throws(() => store.load(), { code:'ZION_AUDIT_STATE_TOO_LARGE' });
 });
