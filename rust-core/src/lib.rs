@@ -88,7 +88,7 @@ impl StorageCore {
         options.read(true);
         #[cfg(unix)]
         options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
-        let mut file = options.open(&path)?;
+        let file = options.open(&path)?;
         let metadata = file.metadata()?;
         if !metadata.is_file() || metadata.len() < MIN_ENVELOPE_BYTES as u64 || metadata.len() > self.max_chunk_bytes {
             return Err(StorageError::UnsafePath);
