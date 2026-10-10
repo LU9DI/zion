@@ -12,6 +12,9 @@ permissions:
 
 jobs:
   validate:
+    # The repository is being reconstructed from the preserved ZIP. Keep this
+    # workflow dormant until the source tree is actually imported.
+    if: ${{ hashFiles('src/**', 'test/**') != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
