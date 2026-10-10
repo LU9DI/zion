@@ -15,6 +15,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const MAGIC: &[u8; 5] = b"REAC1";
 const MIN_ENVELOPE_BYTES: usize = 33;
+const MAX_CHUNK_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum StorageError {
@@ -53,7 +54,7 @@ pub struct StorageCore {
 
 impl StorageCore {
     pub fn new(root: impl AsRef<Path>, max_chunk_bytes: u64, max_storage_bytes: u64) -> Result<Self, StorageError> {
-        if max_chunk_bytes < MIN_ENVELOPE_BYTES as u64 || max_storage_bytes < max_chunk_bytes {
+        if max_chunk_bytes < MIN_ENVELOPE_BYTES as u64 || max_chunk_bytes > MAX_CHUNK_BYTES || max_storage_bytes < max_chunk_bytes {
             return Err(StorageError::InvalidConfiguration);
         }
         Ok(Self { root: root.as_ref().to_path_buf(), max_chunk_bytes, max_storage_bytes, lock_wait: Duration::from_secs(5) })
@@ -176,7 +177,9 @@ impl StorageCore {
         for shard in fs::read_dir(&self.root)? {
             let shard = shard?;
             let name = shard.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') { continue; }
+            // Only the active lock directory is metadata. Silently skipping every
+            // dotfile would let unexpected root entries evade quota accounting.
+            if name == ".rea-rust-storage-lock" { continue; }
             let meta = fs::symlink_metadata(shard.path())?;
             if !meta.is_dir() || meta.file_type().is_symlink() || name.len() != 2 || !name.bytes().all(is_hex) { return Err(StorageError::UnsafePath); }
             for entry in fs::read_dir(shard.path())? {
@@ -232,6 +235,24 @@ mod tests {
     }
     fn envelope(fill: u8) -> Vec<u8> { let mut value = b"REAC1".to_vec(); value.extend(std::iter::repeat(fill).take(64)); value }
     fn id(bytes: &[u8]) -> String { hex(&Sha256::digest(bytes)) }
+
+    #[test]
+    fn rejects_chunk_limits_above_the_supported_ceiling() {
+        assert!(matches!(
+            StorageCore::new(temp_root(), MAX_CHUNK_BYTES + 1, MAX_CHUNK_BYTES + 1),
+            Err(StorageError::InvalidConfiguration)
+        ));
+    }
+
+    #[test]
+    fn rejects_unexpected_hidden_root_entries_in_quota_scan() {
+        let root = temp_root();
+        let store = StorageCore::new(&root, 1024, 2048).unwrap();
+        store.init().unwrap();
+        fs::write(root.join(".unexpected-data"), b"hidden data").unwrap();
+        assert!(matches!(store.used_bytes(), Err(StorageError::UnsafePath)));
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn stores_and_reads_verified_envelope() {
