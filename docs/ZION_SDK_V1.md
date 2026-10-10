@@ -34,15 +34,13 @@ const restored = await zion.download({
 ## Verify a storage receipt
 
 ```js
-const result = zion.verify(signedReceipt, originalStoreRequest, {
-  now: Date.now(),
-});
+const result = zion.verify(signedReceipt, originalStoreRequest);
 if (!result.ok) {
   throw new Error(`Invalid storage receipt: ${result.reason}`);
 }
 ```
 
-Verification checks the peer signature, derives the signer identity from its public key, and binds the signed acknowledgement to the exact store request (request ID, target node, chunk digest, byte count, and validity window). Keep the original request alongside the receipt.
+Verification checks the peer signature, derives the signer identity from its public key, and binds the signed acknowledgement to the exact store request (request ID, target node, chunk digest, byte count, and validity window). Historical receipts remain verifiable offline; live freshness and replay rejection are handled by the receipt tracker when accepting new network messages. Keep the original request alongside the receipt.
 
 A valid receipt proves only that the identified peer signed a matching storage acknowledgement. It is **not** a cryptographic proof that the peer still retains the bytes, that the data is physically durable, or that the peer will be online later. Read-back verification, periodic challenges, independent peers, and repair/re-replication remain separate work.
 
