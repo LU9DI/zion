@@ -101,4 +101,5 @@ test('historical receipts remain verifiable after the live freshness window', as
   const request = createStoreRequest({ chunkId: hash('9'), bytes: 50, targetNodeId: target.nodeId, now: 1_000 });
   const receipt = createStoreReceipt(target, request, { storedBytes: 50, now: 1_001 });
   assert.equal(verifyStoreReceipt(receipt, request).ok, true);
+  assert.equal(verifyStoreReceipt({ ...receipt, extra: true }, request).reason, 'invalid-receipt-envelope');
 });
