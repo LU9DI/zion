@@ -449,6 +449,6 @@ test('official transport rejects an unknown peer with no valid invite vouchers',
   });
   const socket = await client.connect('127.0.0.1', address.port);
   t.after(() => { socket.destroy(); client.close(); });
-  await waitFor(() => socket.destroyed || !server.admittedPeerIds.has(newcomer.nodeId));
+  await waitFor(() => socket.destroyed);
   assert.equal(admissionController.isAdmitted(newcomer.nodeId), false);
 });
