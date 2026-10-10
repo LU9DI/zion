@@ -88,3 +88,38 @@ test('Rust adapter verifies returned envelope digest independently', async () =>
   const fake = fakeSpawn({ stdout: envelope });
   await assert.rejects(() => config(fake.spawn).get(otherId), error => error.code === 'DIGEST_MISMATCH');
 });
+
+
+test('Rust adapter kills a sidecar that exceeds its operation deadline', async () => {
+  let killed = false;
+  const spawn = () => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.stdin = new PassThrough();
+    child.kill = signal => { killed = signal === 'SIGKILL'; };
+    return child;
+  };
+  const adapter = new RustStorageAdapter({
+    binaryPath: './rea-storage-cli', root: './test-data', maxChunkBytes: 4096,
+    maxStorageBytes: 16384, timeoutMs: 100, spawn,
+  });
+  await assert.rejects(() => adapter.init(), error => error.code === 'SIDECAR_TIMEOUT');
+  assert.equal(killed, true);
+});
+
+test('Rust adapter rejects oversized sidecar output and kills the child', async () => {
+  let killed = false;
+  const spawn = () => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.stdin = new PassThrough();
+    child.kill = signal => { killed = signal === 'SIGKILL'; };
+    queueMicrotask(() => child.stdout.write(Buffer.alloc(4097, 1)));
+    return child;
+  };
+  const adapter = config(spawn);
+  await assert.rejects(() => adapter.get('a'.repeat(64)), error => error.code === 'SIDECAR_OUTPUT_LIMIT');
+  assert.equal(killed, true);
+});
