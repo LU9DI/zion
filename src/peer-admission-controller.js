@@ -25,6 +25,9 @@ export class PeerAdmissionController {
     maxVouchers = 16, now = () => Date.now(), capacityProvider,
     stateStore, maxRecords = MAX_RECORDS, rolloutPolicy = null,
   } = {}) {
+    if (stateStore && (stateStore.load?.constructor?.name === 'AsyncFunction' || stateStore.save?.constructor?.name === 'AsyncFunction')) {
+      throw Object.assign(new TypeError('Peer admission stateStore.load()/save() must be synchronous'), { code: 'ZION_ADMISSION_ASYNC_STORE_UNSUPPORTED' });
+    }
     if (!Array.isArray(trustedIssuerNodeIds) || trustedIssuerNodeIds.some(id => !ID.test(id)) ||
       !Number.isSafeInteger(threshold) || threshold < 1 || threshold > 16 ||
       !Number.isSafeInteger(maxActivePeers) || maxActivePeers < 1 ||
@@ -49,6 +52,9 @@ export class PeerAdmissionController {
     this.stateStore = stateStore;
     this.maxRecords = maxRecords;
     const loaded = stateStore.load();
+    if (loaded && typeof loaded.then === 'function') {
+      throw Object.assign(new TypeError('Peer admission stateStore.load() must be synchronous'), { code: 'ZION_ADMISSION_ASYNC_STORE_UNSUPPORTED' });
+    }
     if (loaded === null || loaded === undefined) this.state = emptyState();
     else if (validState(loaded)) this.state = {
       version: 1, consumed: [...loaded.consumed],
@@ -116,7 +122,12 @@ export class PeerAdmissionController {
       }],
     };
     // Persist before reporting success; fail closed if durable state cannot be written.
-    this.stateStore.save(next);
+    const persisted = this.stateStore.save(next);
+    if (persisted && typeof persisted.then === 'function') {
+      // The transport must never accept a peer before persistence is confirmed.
+      // Async stores need an explicit transactional adapter rather than this sync contract.
+      throw Object.assign(new TypeError('Peer admission stateStore.save() must be synchronous'), { code: 'ZION_ADMISSION_ASYNC_STORE_UNSUPPORTED' });
+    }
     this.state = next;
     return { ok: true, subjectNodeId, trustedIntroductions: accepted.size,
       issuerNodeIds: [...accepted.keys()] };
