@@ -104,6 +104,7 @@ test('non-loopback binding requires an explicit trusted peer allowlist', () => {
   assert.throws(() => new PeerTransport({ identity: createNodeIdentity(), host: '0.0.0.0' }), /trustedPeerIds allowlist/);
   assert.throws(() => new PeerTransport({ identity: createNodeIdentity(), host: '0.0.0.0', trustedPeerIds: ['bad-id'] }), /trustedPeerIds/);
   assert.throws(() => new PeerTransport({ identity: createNodeIdentity(), host: '0.0.0.0', trustedPeerIds: ['a'.repeat(64)] }), /mutual TLS options/);
+  assert.throws(() => new PeerTransport({ identity: createNodeIdentity(), host: '0.0.0.0', trustedPeerIds: ['a'.repeat(64)], tlsOptions: { key: '', cert: '', ca: [] } }), /mutual TLS options/);
   assert.doesNotThrow(() => new PeerTransport({ identity: createNodeIdentity(), host: '0.0.0.0', trustedPeerIds: ['a'.repeat(64)], tlsOptions: { key: 'test-key', cert: 'test-cert', ca: 'test-ca' } }));
 });
 
