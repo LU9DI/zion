@@ -198,7 +198,11 @@ export class PeerTransport {
         return;
       }
     }
-    const previouslyAdmitted = this.admittedPeerIds.has(checked.nodeId) || controllerAdmitted === true;
+    // With a persistent controller, its fresh authoritative result must override
+    // any process-local cache so a released/revoked admission cannot linger.
+    const previouslyAdmitted = this.admissionController
+      ? controllerAdmitted === true
+      : this.admittedPeerIds.has(checked.nodeId);
     if (!trustedByAllowlist && !previouslyAdmitted && !this.admissionController) { socket.destroy(); return; }
     // Admission control applies to handshake frames as well as application traffic.
     if (!this.rateLimiter.allow(checked.nodeId) || !this.replayGuard.accept(message, this.now())) { socket.destroy(); return; }
