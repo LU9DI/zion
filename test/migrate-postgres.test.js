@@ -11,7 +11,7 @@ function fakePool({ initial = {}, failMigration = false } = {}) {
   let released = false;
   const client = {
     async query(sql, params = []) {
-      const normalized = sql.replace(/\\s+/g, ' ').trim();
+      const normalized = sql.replace(/\s+/g, ' ').trim();
       calls.push({ sql: normalized, params });
       if (normalized.startsWith('SELECT sha256 FROM zion_schema_migrations')) {
         const sha256 = ledger.get(params[0]);
