@@ -2,6 +2,17 @@
 
 This runbook is an execution gate, not evidence that a production environment has already been exercised. Run every destructive drill only against an isolated disposable deployment and test database.
 
+## Repository wiring audit
+
+The repository audit at commit `e6c13486f22898b9dafcbd297b3b83cf91bbdd07` found a composition boundary, but no official-node executable entry point:
+
+- `package.json` exposes local test/demo and cloud-preview scripts, but no official-node start/deploy script.
+- `src/official-postgres-admission-transport.js` composes PostgreSQL admission, the verified admission service, and the official peer transport.
+- `src/official-node-bootstrap.js` validates and orchestrates a supplied transport and storage adapters; it does not construct production identity, trust roots, PostgreSQL pool, storage adapter, or capacity provider.
+- `cloud/README.md` identifies the cloud UI as a static local preview, not a connected cloud service.
+
+Therefore, the factory is **not yet wired into a real deployment launcher**. Do not interpret unit tests, the CI PostgreSQL integration test, or this runbook as proof that an official node can be deployed. The next integration step requires a real launcher and deployment-owned configuration for identity/key material, database lifecycle and migrations, reviewed genesis, bootstrap peers, trusted voucher issuers, storage adapter, and capacity/headroom measurements. Do not add placeholder values or silently fall back to in-memory admission to make startup appear successful.
+
 ## 1. Preflight — do not open the listener yet
 
 - [ ] Pin the release commit and record its SHA in the change record.
@@ -62,7 +73,7 @@ Only run against a disposable environment with snapshots and an explicit cleanup
 
 Do not enable an official deployment until all are true:
 
-- [ ] The factory is wired into the actual deployment entry point and its configuration is reviewed.
+- [ ] A real official-node launcher wires the factory and bootstrap together and its configuration is reviewed.
 - [ ] All admission correctness and failure drills above have recorded passing evidence.
 - [ ] Backup restore and migration recovery have been demonstrated by someone other than the implementer where feasible.
 - [ ] Database credentials, genesis, allowlists, and issuer trust are provisioned outside the repository.
