@@ -280,6 +280,23 @@ export class PostgresPeerAdmissionStore {
           code: 'ZION_ADMISSION_STATE_INCONSISTENT',
         });
       }
+      // Also reject consumed invitation evidence whose issuer is not part of
+      // that subject's admission. The previous left-join check intentionally
+      // starts from issuer rows and cannot see these extra/orphaned records.
+      const unexpectedEvidenceResult = await client.query(
+        `SELECT c.subject_node_id
+         FROM consumed_peer_invitations c
+         JOIN peer_admissions a ON a.subject_node_id = c.subject_node_id
+         LEFT JOIN peer_admission_issuers i
+           ON i.subject_node_id = c.subject_node_id AND i.issuer_node_id = c.issuer_node_id
+         WHERE a.status = 'active' AND i.issuer_node_id IS NULL
+         LIMIT 1`,
+      );
+      if (unexpectedEvidenceResult.rows?.length) {
+        throw Object.assign(new Error('An active admission has consumed-invitation evidence from an unrecorded issuer'), {
+          code: 'ZION_ADMISSION_STATE_INCONSISTENT',
+        });
+      }
       await client.query('COMMIT');
       began = false;
       return Object.freeze({ ok: true, activeAdmissions: activeCount, activeReservations, policyVersion });
