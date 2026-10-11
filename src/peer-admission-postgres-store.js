@@ -45,6 +45,7 @@ export class PostgresPeerAdmissionStore {
       const client = await this.pool.connect();
       let began = false;
       let commitStarted = false;
+      let releaseError;
       try {
         await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
         began = true;
@@ -56,6 +57,8 @@ export class PostgresPeerAdmissionStore {
         if (commitStarted) {
           // COMMIT may have reached PostgreSQL even when the connection failed.
           // Never replay this transaction automatically; reconcile from authoritative state.
+          // Destroy the client rather than returning a session with unknown transaction state.
+          releaseError = error;
           if (typeof subjectNodeId === 'string' && NODE_ID.test(subjectNodeId)) {
             // A unique marker prevents an older in-flight read from clearing a newer
             // ambiguous outcome for the same subject.
@@ -65,13 +68,25 @@ export class PostgresPeerAdmissionStore {
             code: 'ZION_ADMISSION_COMMIT_OUTCOME_UNKNOWN', cause: error,
           });
         }
-        if (began) {
-          try { await client.query('ROLLBACK'); } catch { /* preserve original error */ }
+        if (!began) {
+          // BEGIN is fixed SQL; a failure here is treated as a potentially broken
+          // connection and must not return the client to the pool.
+          releaseError = error;
+        } else {
+          try {
+            await client.query('ROLLBACK');
+          } catch (rollbackError) {
+            // A failed rollback leaves transaction/session state uncertain. Preserve
+            // the original operation error, but discard the unsafe pooled connection.
+            releaseError = rollbackError;
+          }
         }
-        if (RETRYABLE.has(error?.code) && attempt < this.maxTransactionRetries) continue;
+        if (!releaseError && RETRYABLE.has(error?.code) && attempt < this.maxTransactionRetries) continue;
         throw error;
       } finally {
-        client.release();
+        // node-postgres destroys a client released with an error instead of pooling
+        // a connection whose transaction state may be uncertain.
+        client.release(releaseError);
       }
     }
   }
