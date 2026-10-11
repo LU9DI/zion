@@ -197,6 +197,12 @@ export class PeerTransport {
         socket.destroy();
         return;
       }
+      // Admission state is a security decision, not a truthy/falsy hint. Reject
+      // malformed backend values so e.g. the string "false" cannot authorize a peer.
+      if (controllerAdmitted !== true && controllerAdmitted !== false) {
+        socket.destroy();
+        return;
+      }
     }
     // With a persistent controller, its fresh authoritative result must override
     // any process-local cache so a released/revoked admission cannot linger.
@@ -237,7 +243,7 @@ export class PeerTransport {
           // The post-write authoritative read is the final admission decision. A
           // successful write response alone cannot authorize a session if the row
           // is already absent/revoked by the time the read completes.
-          if (!admittedAfterAttempt) { socket.destroy(); return; }
+          if (admittedAfterAttempt !== true) { socket.destroy(); return; }
           this.admittedPeerIds.add(checked.nodeId);
         }
         session.remoteNonce = payload.nonce;
