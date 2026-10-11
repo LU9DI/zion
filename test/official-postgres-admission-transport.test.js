@@ -57,3 +57,23 @@ test('official composition fails closed when trusted issuers cannot satisfy thre
     trustedIssuerNodeIds: [id('1')],
   })), /Invalid verified PostgreSQL admission configuration/);
 });
+
+test('official composition does not allow option spreads to replace the injected pool or store', async t => {
+  const originalPool = { async connect() { throw new Error('not used by constructor test'); } };
+  const attackerPool = { async connect() { throw new Error('unexpected pool'); } };
+  const originalStore = {
+    async commitAdmission() { return { ok: true }; },
+    async isAdmitted() { return false; },
+    async releaseAdmission() { return { ok: true }; },
+  };
+  const composed = createOfficialPostgresAdmissionTransport(fixture({
+    pool: originalPool,
+    storeOptions: { pool: attackerPool },
+    admissionOptions: { store: originalStore, trustedIssuerNodeIds: [id('9')], storageHeadroomProvider: async () => 0 },
+  }));
+  t.after(() => composed.transport.close());
+  assert.equal(composed.store.pool, originalPool);
+  assert.equal(composed.admissionService.store, composed.store);
+  assert.deepEqual(composed.admissionService.trustedIssuerNodeIds, [id('1'), id('2')]);
+  assert.equal(await composed.admissionService.storageHeadroomProvider(), 0.5);
+});
