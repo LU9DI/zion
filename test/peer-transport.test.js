@@ -364,6 +364,45 @@ test('outbound TLS handshake timeout closes an unresponsive peer', { skip: !open
   await client.close();
 });
 
+test('official transport honors persistent admission revocation over its local cache', async t => {
+  const seed = createNodeIdentity();
+  const newcomer = createNodeIdentity();
+  const guard = {
+    status: { verified: true, quarantined: false },
+    async checkHealthy() {},
+    assertHealthy() {},
+    addQuarantineListener: () => () => {},
+  };
+  const admissionController = {
+    async admit() { return { ok: false, reason: 'subject-not-admitted' }; },
+    async isAdmitted() { return false; },
+    async releaseAdmission() {},
+  };
+  const server = new PeerTransport({
+    identity: seed,
+    networkMode: 'official',
+    protocolGenesis: testGenesis(),
+    integrityGuard: guard,
+    trustedPeerIds: ['a'.repeat(64)],
+    admissionController,
+  });
+  // Simulate stale process-local state after an operator releases the admission.
+  server.admittedPeerIds.add(newcomer.nodeId);
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({
+    identity: newcomer,
+    networkMode: 'official',
+    protocolGenesis: testGenesis(),
+    integrityGuard: guard,
+    trustedPeerIds: [seed.nodeId],
+  });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(async () => { socket.destroy(); await client.close(); });
+  await waitFor(() => socket.destroyed);
+  assert.equal(server.admittedPeerIds.has(newcomer.nodeId), true, 'test keeps stale cache to prove it cannot override database state');
+});
+
 test('official transport closes a peer when authoritative admission reads fail', async t => {
   const seed = createNodeIdentity();
   const newcomer = createNodeIdentity();
