@@ -15,5 +15,6 @@ An ambiguous `COMMIT` is never automatically replayed. The store marks the affec
 - Exercise real PostgreSQL restart, crash-after-COMMIT, restore, and migration rollback/recovery drills; the existing integration suite runs only when `ZION_POSTGRES_TEST_URL` is configured.
 - Integrate this factory into the actual deployment entry point and ensure no official-mode path constructs `PeerTransport` with the in-memory admission controller or without an admission controller.
 - Define operational handling for policy changes, capacity reconciliation, backup/restore, and stale active admission rows.
+- Follow [`VERIFIED_POSTGRES_ADMISSION_DEPLOYMENT_RUNBOOK.md`](./VERIFIED_POSTGRES_ADMISSION_DEPLOYMENT_RUNBOOK.md) for preflight, correctness checks, failure drills, go/no-go criteria, and evidence capture.
 
 This change provides a tested composition helper and transaction boundary, but it does not by itself certify a production deployment. Keep PR #33 in draft until the remaining deployment and recovery gates are evidenced.
