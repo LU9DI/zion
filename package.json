@@ -26,7 +26,8 @@
     "content:screen-local": "node scripts/screen-content-local.js",
     "content:verify-uploader": "node scripts/verify-uploader-attribution.js",
     "client:demo": "node scripts/demo-consumer-client.js",
-    "db:migrate": "node scripts/migrate-postgres.js"
+    "db:migrate": "node scripts/migrate-postgres.js",
+    "start:official": "node scripts/start-official-node.js"
   },
   "license": "AGPL-3.0-only",
   "dependencies": {
