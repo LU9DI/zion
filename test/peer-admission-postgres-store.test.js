@@ -16,7 +16,7 @@ const input = () => ({
   maxAdmissionsPerIssuer: 5,
 });
 
-function fakePool({ failInvitationInsert = false, retryOnce = false, failCommit = false, failRollback = false } = {}) {
+function fakePool({ failInvitationInsert = false, retryOnce = false, failCommit = false, failRollback = false, failAdmissionRead = false } = {}) {
   const calls = [];
   let retryPending = retryOnce;
   let commitPending = failCommit;
@@ -26,6 +26,7 @@ function fakePool({ failInvitationInsert = false, retryOnce = false, failCommit 
       return {
         async query(sql, params = []) {
           calls.push({ sql: sql.replace(/\s+/g, ' ').trim(), params });
+          if (sql.includes('SELECT 1 AS admitted FROM peer_admissions') && failAdmissionRead) throw Object.assign(new Error('connection lost during admission read'), { code: '08006' });
           if (sql === 'ROLLBACK' && failRollback) throw Object.assign(new Error('connection lost during ROLLBACK'), { code: '08006' });
           if (sql === 'COMMIT' && commitPending) {
             commitPending = false;
@@ -37,6 +38,7 @@ function fakePool({ failInvitationInsert = false, retryOnce = false, failCommit 
           }
           if (sql.startsWith('SELECT active_reservations')) return { rows: [{ active_reservations: 0 }] };
           if (sql.includes('count(*)::integer')) return { rows: [{ count: 0 }] };
+          if (sql.includes('count(*)::bigint AS active_count')) return { rows: [{ active_count: '0' }] };
           if (sql.startsWith('INSERT INTO consumed_peer_invitations') && failInvitationInsert) {
             throw Object.assign(new Error('duplicate invitation'), {
               code: '23505', constraint: 'consumed_peer_invitations_pkey',
@@ -195,4 +197,19 @@ test('failed rollback discards the connection instead of returning uncertain tra
   assert.deepEqual(result, { ok: false, reason: 'invitation-already-used' });
   const release = pool.calls.find(call => call.sql === 'RELEASE');
   assert.equal(release?.releaseError, 'connection lost during ROLLBACK');
+});
+
+
+test('failed authoritative admission read discards the unhealthy connection', async () => {
+  const pool = fakePool({ failAdmissionRead: true });
+  const store = new PostgresPeerAdmissionStore({ pool });
+  await assert.rejects(store.isAdmitted(id('a')), /connection lost during admission read/);
+  assert.equal(pool.calls.find(call => call.sql === 'RELEASE')?.releaseError, 'connection lost during admission read');
+});
+
+test('failed startup-preflight COMMIT discards its uncertain database session', async () => {
+  const pool = fakePool({ failCommit: true });
+  const store = new PostgresPeerAdmissionStore({ pool });
+  await assert.rejects(store.verifyPersistentState(), /commit outcome is unknown|connection lost during COMMIT/);
+  assert.equal(pool.calls.find(call => call.sql === 'RELEASE')?.releaseError, 'connection lost during COMMIT');
 });
