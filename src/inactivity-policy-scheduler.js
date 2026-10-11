@@ -55,14 +55,19 @@ export class InactivityPolicyScheduler {
     return this.policy.markActivity(at);
   }
 
-  stop() {
-    if (this.closed) return false;
-    this.closed = true;
-    if (this.timer !== null) {
-      this.clearIntervalFn(this.timer);
-      this.timer = null;
+  async stop() {
+    const wasRunning = !this.closed;
+    if (wasRunning) {
+      this.closed = true;
+      if (this.timer !== null) {
+        this.clearIntervalFn(this.timer);
+        this.timer = null;
+      }
     }
-    return true;
+    // Drain an evaluation that may still be using storage adapters before the
+    // official bootstrap proceeds to stop storage.
+    if (this.inFlight) await this.inFlight;
+    return wasRunning;
   }
 
   snapshot() {
