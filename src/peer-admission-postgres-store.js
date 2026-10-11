@@ -37,10 +37,10 @@ export class PostgresPeerAdmissionStore {
     }
     this.pool = pool;
     this.maxTransactionRetries = maxTransactionRetries;
-    this.commitOutcomeUnknown = false;
+    this.unknownCommitSubjects = new Set();
   }
 
-  async #transaction(work) {
+  async #transaction(work, subjectNodeId) {
     for (let attempt = 0; ; attempt++) {
       const client = await this.pool.connect();
       let began = false;
@@ -56,7 +56,7 @@ export class PostgresPeerAdmissionStore {
         if (commitStarted) {
           // COMMIT may have reached PostgreSQL even when the connection failed.
           // Never replay this transaction automatically; reconcile from authoritative state.
-          this.commitOutcomeUnknown = true;
+          if (typeof subjectNodeId === 'string' && NODE_ID.test(subjectNodeId)) this.unknownCommitSubjects.add(subjectNodeId);
           throw Object.assign(new Error('PostgreSQL commit outcome is unknown; reconcile authoritative state before retrying'), {
             code: 'ZION_ADMISSION_COMMIT_OUTCOME_UNKNOWN', cause: error,
           });
@@ -73,7 +73,7 @@ export class PostgresPeerAdmissionStore {
   }
 
   async commitAdmission(input) {
-    if (this.commitOutcomeUnknown) return { ok: false, reason: 'admission-state-unavailable' };
+    if (this.unknownCommitSubjects.has(input?.subjectNodeId)) return { ok: false, reason: 'admission-state-unavailable' };
     if (!validateInput(input)) return { ok: false, reason: 'invalid-input' };
     try {
       return await this.#transaction(async client => {
@@ -134,7 +134,7 @@ export class PostgresPeerAdmissionStore {
           trustedIntroductions: input.issuerNodeIds.length,
           issuerNodeIds: [...input.issuerNodeIds],
         };
-      });
+      }, input.subjectNodeId);
     } catch (error) {
       if (error?.code === '23505') {
         if (error.constraint === 'peer_admissions_pkey') {
@@ -165,14 +165,19 @@ export class PostgresPeerAdmissionStore {
         "SELECT 1 AS admitted FROM peer_admissions WHERE subject_node_id = $1 AND status = 'active' LIMIT 1",
         [subjectNodeId],
       );
-      return Boolean(result.rows?.length);
+      const admitted = Boolean(result.rows?.length);
+      // PostgreSQL transactions are atomic: the authoritative row resolves whether
+      // the ambiguous COMMIT for this subject took effect. Clear only after a
+      // successful read; if the query fails, retain the fail-closed marker.
+      this.unknownCommitSubjects.delete(subjectNodeId);
+      return admitted;
     } finally {
       client.release();
     }
   }
 
   async releaseAdmission(subjectNodeId, status = 'released') {
-    if (this.commitOutcomeUnknown) return { ok: false, reason: 'admission-state-unavailable' };
+    if (this.unknownCommitSubjects.has(subjectNodeId)) return { ok: false, reason: 'admission-state-unavailable' };
     if (!NODE_ID.test(subjectNodeId ?? '') || !['released', 'revoked'].includes(status)) {
       return { ok: false, reason: 'invalid-input' };
     }
@@ -193,7 +198,7 @@ export class PostgresPeerAdmissionStore {
         );
       }
       return { ok: true, changed: Boolean(updated.rows?.length), subjectNodeId, status };
-    }).catch(error => {
+    }, subjectNodeId).catch(error => {
       if (error?.code === 'ZION_ADMISSION_CONFIG_MISSING' ||
         error?.code === 'ZION_ADMISSION_COMMIT_OUTCOME_UNKNOWN') {
         return { ok: false, reason: 'admission-state-unavailable' };
