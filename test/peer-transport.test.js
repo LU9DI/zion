@@ -662,3 +662,25 @@ test('official transport rejects a successful admission write when authoritative
   await waitFor(() => socket.destroyed);
   assert.equal(server.admittedPeerIds.has(newcomer.nodeId), false);
 });
+
+
+test('official transport rejects an incomplete admission controller contract', () => {
+  const guard = {
+    status: { verified: true, quarantined: false },
+    async checkHealthy() {},
+    assertHealthy() {},
+    addQuarantineListener: () => () => {},
+  };
+  assert.throws(() => new PeerTransport({
+    identity: createNodeIdentity(),
+    networkMode: 'official',
+    protocolGenesis: testGenesis(),
+    integrityGuard: guard,
+    trustedPeerIds: ['a'.repeat(64)],
+    admissionController: {
+      async admit() { return { ok: true }; },
+      async isAdmitted() { return true; },
+      // Missing releaseAdmission: official lifecycle contract is incomplete.
+    },
+  }), /complete admission controller/);
+});
