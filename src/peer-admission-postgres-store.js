@@ -186,6 +186,83 @@ export class PostgresPeerAdmissionStore {
     }
   }
 
+  /**
+   * Fail-closed startup preflight. Locks the policy/capacity rows in the same
+   * order as admission transactions and verifies the reservation counter against
+   * authoritative active rows before an official listener is opened.
+   */
+  async verifyPersistentState() {
+    const client = await this.pool.connect();
+    let began = false;
+    try {
+      await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+      began = true;
+      const policyResult = await client.query(
+        'SELECT max_active_peers, max_admissions_per_issuer, min_storage_headroom_ratio, policy_version FROM peer_admission_policy WHERE singleton = true FOR UPDATE',
+      );
+      const capacityResult = await client.query(
+        'SELECT active_reservations FROM peer_admission_capacity WHERE singleton = true FOR UPDATE',
+      );
+      const policy = policyResult.rows?.[0];
+      const capacity = capacityResult.rows?.[0];
+      if (!policy || !capacity) {
+        throw Object.assign(new Error('Admission policy/capacity row missing during startup preflight'), {
+          code: 'ZION_ADMISSION_CONFIG_MISSING',
+        });
+      }
+      const maxActivePeers = Number(policy.max_active_peers);
+      const maxAdmissionsPerIssuer = Number(policy.max_admissions_per_issuer);
+      const minHeadroom = Number(policy.min_storage_headroom_ratio);
+      const policyVersion = Number(policy.policy_version);
+      const activeReservations = Number(capacity.active_reservations);
+      if (!Number.isSafeInteger(maxActivePeers) || maxActivePeers < 1 ||
+          !Number.isSafeInteger(maxAdmissionsPerIssuer) || maxAdmissionsPerIssuer < 1 ||
+          !Number.isFinite(minHeadroom) || minHeadroom < 0 || minHeadroom > 1 ||
+          !Number.isSafeInteger(policyVersion) || policyVersion < 1 ||
+          !Number.isSafeInteger(activeReservations) || activeReservations < 0) {
+        throw Object.assign(new Error('Admission policy/capacity values are invalid'), {
+          code: 'ZION_ADMISSION_STATE_INCONSISTENT',
+        });
+      }
+      const countResult = await client.query(
+        "SELECT count(*)::bigint AS active_count FROM peer_admissions WHERE status = 'active'",
+      );
+      const activeCount = Number(countResult.rows?.[0]?.active_count);
+      if (!Number.isSafeInteger(activeCount) || activeCount < 0 || activeCount !== activeReservations) {
+        throw Object.assign(new Error('Active admission rows do not match the capacity reservation counter'), {
+          code: 'ZION_ADMISSION_STATE_INCONSISTENT',
+        });
+      }
+      const malformedResult = await client.query(
+        `SELECT a.subject_node_id
+         FROM peer_admissions a
+         LEFT JOIN peer_admission_issuers i ON i.subject_node_id = a.subject_node_id
+         LEFT JOIN consumed_peer_invitations c
+           ON c.subject_node_id = a.subject_node_id AND c.issuer_node_id = i.issuer_node_id
+         WHERE a.status = 'active'
+         GROUP BY a.subject_node_id
+         HAVING count(DISTINCT i.issuer_node_id) = 0
+            OR count(DISTINCT i.issuer_node_id) <> count(DISTINCT c.issuer_node_id)
+         LIMIT 1`,
+      );
+      if (malformedResult.rows?.length) {
+        throw Object.assign(new Error('An active admission has inconsistent issuer/invitation records'), {
+          code: 'ZION_ADMISSION_STATE_INCONSISTENT',
+        });
+      }
+      await client.query('COMMIT');
+      began = false;
+      return Object.freeze({ ok: true, activeAdmissions: activeCount, activeReservations, policyVersion });
+    } catch (error) {
+      if (began) {
+        try { await client.query('ROLLBACK'); } catch { /* preserve preflight failure */ }
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async releaseAdmission(subjectNodeId, status = 'released') {
     if (this.unknownCommitSubjects.has(subjectNodeId)) return { ok: false, reason: 'admission-state-unavailable' };
     if (!NODE_ID.test(subjectNodeId ?? '') || !['released', 'revoked'].includes(status)) {
