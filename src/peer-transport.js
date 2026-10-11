@@ -203,6 +203,14 @@ export class PeerTransport {
     const previouslyAdmitted = this.admissionController
       ? controllerAdmitted === true
       : this.admittedPeerIds.has(checked.nodeId);
+    // Recheck every frame, and terminate an established session immediately after
+    // authoritative revocation/release. The initial handshake is exempt so a new
+    // peer can present vouchers; allowlisted bootstrap peers remain trusted.
+    if (this.admissionController && socket.__zionSession?.authenticated &&
+      !trustedByAllowlist && !controllerAdmitted) {
+      socket.destroy();
+      return;
+    }
     if (!trustedByAllowlist && !previouslyAdmitted && !this.admissionController) { socket.destroy(); return; }
     // Admission control applies to handshake frames as well as application traffic.
     if (!this.rateLimiter.allow(checked.nodeId) || !this.replayGuard.accept(message, this.now())) { socket.destroy(); return; }
