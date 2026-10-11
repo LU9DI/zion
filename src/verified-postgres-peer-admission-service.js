@@ -84,6 +84,13 @@ export class VerifiedPostgresPeerAdmissionService {
     });
   }
 
+  verifyPersistentState() {
+    if (typeof this.store.verifyPersistentState !== 'function') {
+      throw new TypeError('Admission store does not support persistent-state startup verification');
+    }
+    return this.store.verifyPersistentState();
+  }
+
   isAdmitted(subjectNodeId) {
     if (typeof this.store.isAdmitted !== 'function') {
       throw new TypeError('Admission store does not support authoritative isAdmitted()');
