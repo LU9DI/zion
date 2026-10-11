@@ -31,6 +31,10 @@ export async function runPostgresMigrations({ pool, migrations = DEFAULT_MIGRATI
     typeof item.path !== 'string')) {
     throw new TypeError('Migrations must have safe IDs and file paths');
   }
+  const migrationIds = migrations.map(item => item.id);
+  if (new Set(migrationIds).size !== migrationIds.length) {
+    throw new TypeError('Migration IDs must be unique within one run');
+  }
   const client = await pool.connect();
   let locked = false;
   try {
