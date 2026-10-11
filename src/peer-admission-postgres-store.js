@@ -37,7 +37,7 @@ export class PostgresPeerAdmissionStore {
     }
     this.pool = pool;
     this.maxTransactionRetries = maxTransactionRetries;
-    this.unknownCommitSubjects = new Set();
+    this.unknownCommitSubjects = new Map();
   }
 
   async #transaction(work, subjectNodeId) {
@@ -56,7 +56,11 @@ export class PostgresPeerAdmissionStore {
         if (commitStarted) {
           // COMMIT may have reached PostgreSQL even when the connection failed.
           // Never replay this transaction automatically; reconcile from authoritative state.
-          if (typeof subjectNodeId === 'string' && NODE_ID.test(subjectNodeId)) this.unknownCommitSubjects.add(subjectNodeId);
+          if (typeof subjectNodeId === 'string' && NODE_ID.test(subjectNodeId)) {
+            // A unique marker prevents an older in-flight read from clearing a newer
+            // ambiguous outcome for the same subject.
+            this.unknownCommitSubjects.set(subjectNodeId, {});
+          }
           throw Object.assign(new Error('PostgreSQL commit outcome is unknown; reconcile authoritative state before retrying'), {
             code: 'ZION_ADMISSION_COMMIT_OUTCOME_UNKNOWN', cause: error,
           });
@@ -159,6 +163,9 @@ export class PostgresPeerAdmissionStore {
    */
   async isAdmitted(subjectNodeId) {
     if (!NODE_ID.test(subjectNodeId ?? '')) return false;
+    // Capture the exact unresolved outcome before starting the query. A read that
+    // began before a later ambiguous COMMIT must never clear that newer marker.
+    const unresolvedMarker = this.unknownCommitSubjects.get(subjectNodeId);
     const client = await this.pool.connect();
     try {
       const result = await client.query(
@@ -169,7 +176,10 @@ export class PostgresPeerAdmissionStore {
       // PostgreSQL transactions are atomic: the authoritative row resolves whether
       // the ambiguous COMMIT for this subject took effect. Clear only after a
       // successful read; if the query fails, retain the fail-closed marker.
-      this.unknownCommitSubjects.delete(subjectNodeId);
+      if (unresolvedMarker !== undefined &&
+        this.unknownCommitSubjects.get(subjectNodeId) === unresolvedMarker) {
+        this.unknownCommitSubjects.delete(subjectNodeId);
+      }
       return admitted;
     } finally {
       client.release();
