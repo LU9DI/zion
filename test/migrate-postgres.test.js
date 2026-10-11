@@ -43,7 +43,7 @@ async function withMigration(sql, callback) {
 }
 
 test('migration runner applies SQL and records checksum in the same transaction', async () => {
-  await withMigration('-- migration header\\nBEGIN; CREATE TABLE example (id integer); COMMIT;', async path => {
+  await withMigration('-- migration header\nBEGIN; CREATE TABLE example (id integer); COMMIT;', async path => {
     const pool = fakePool();
     const result = await runPostgresMigrations({ pool, migrations: [{ id: '0001_example', path }] });
     assert.deepEqual(result, { ok: true, migrations: [{ id: '0001_example', status: 'applied' }] });
