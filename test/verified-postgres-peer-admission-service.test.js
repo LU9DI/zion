@@ -71,9 +71,10 @@ test('rejects admission configurations that cannot satisfy transport voucher lim
     storageHeadroomProvider: async () => 0.5,
   };
   assert.throws(() => new VerifiedPostgresPeerAdmissionService(options), /Invalid verified PostgreSQL admission configuration/);
+  const secondIssuer = createNodeIdentity();
   assert.throws(() => new VerifiedPostgresPeerAdmissionService({
     ...options,
-    trustedIssuerNodeIds: [issuer.nodeId, issuer.nodeId],
+    trustedIssuerNodeIds: [issuer.nodeId, secondIssuer.nodeId],
     maxVouchers: 17,
   }), /Invalid verified PostgreSQL admission configuration/);
 });
