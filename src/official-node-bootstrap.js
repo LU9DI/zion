@@ -19,8 +19,9 @@ export class OfficialNodeBootstrap {
     }
     const admission = transport.admissionController;
     if (!admission || typeof admission.admit !== 'function' ||
-      typeof admission.isAdmitted !== 'function' || typeof admission.releaseAdmission !== 'function') {
-      throw new TypeError('Official node bootstrap requires a verified persistent admission controller');
+      typeof admission.isAdmitted !== 'function' || typeof admission.releaseAdmission !== 'function' ||
+      typeof admission.verifyPersistentState !== 'function') {
+      throw new TypeError('Official node bootstrap requires a persistent admission controller with startup-state verification');
     }
     if (typeof startStorage !== 'function' || typeof stopStorage !== 'function') {
       throw new TypeError('Storage startup and shutdown adapters are required');
@@ -226,6 +227,10 @@ export class OfficialNodeBootstrap {
       if (this.integrityGuard.status.verified !== true || this.integrityGuard.status.quarantined === true) {
         throw Object.assign(new Error('Official node integrity state is not healthy'), { code: 'ZION_STARTUP_INTEGRITY_FAILED' });
       }
+
+      // Reconcile database policy, active rows, issuer evidence, and capacity before opening any listener.
+      await this.transport.admissionController.verifyPersistentState();
+      this.#assertLifecycle(epoch);
 
       // Storage may create/open persistent state, so it is not touched before verification.
       this.storageState = 'starting';
