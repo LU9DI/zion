@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runPostgresMigrations } from '../scripts/migrate-postgres.js';
 
-function fakePool({ initial = {}, failMigration = false, failUnlock = false } = {}) {
+function fakePool({ initial = {}, failMigration = false, failLock = false, failUnlock = false } = {}) {
   const calls = [];
   const ledger = new Map(Object.entries(initial));
   let released = false;
@@ -14,6 +14,10 @@ function fakePool({ initial = {}, failMigration = false, failUnlock = false } = 
     async query(sql, params = []) {
       const normalized = sql.replace(/\s+/g, ' ').trim();
       calls.push({ sql: normalized, params });
+      if (normalized.startsWith('SELECT pg_advisory_lock')) {
+        if (failLock) throw new Error('simulated advisory lock acquisition failure');
+        return { rows: [{ pg_advisory_lock: null }] };
+      }
       if (normalized.startsWith('SELECT pg_advisory_unlock')) {
         if (failUnlock) throw new Error('simulated advisory unlock failure');
         return { rows: [{ pg_advisory_unlock: true }] };
@@ -135,5 +139,19 @@ test('migration runner discards a client when advisory lock release cannot be co
     assert.equal(pool.released, true);
     assert.match(pool.releaseError?.message ?? '', /advisory unlock failure/);
     assert.ok(pool.ledger.has('0001_example'));
+  });
+});
+
+
+test('migration runner discards a client when advisory lock acquisition is ambiguous', async () => {
+  await withMigration('BEGIN; CREATE TABLE example (id integer); COMMIT;', async path => {
+    const pool = fakePool({ failLock: true });
+    await assert.rejects(
+      runPostgresMigrations({ pool, migrations: [{ id: '0001_example', path }] }),
+      /simulated advisory lock acquisition failure/,
+    );
+    assert.equal(pool.released, true);
+    assert.match(pool.releaseError?.message ?? '', /acquisition was not confirmed/);
+    assert.ok(!pool.ledger.has('0001_example'));
   });
 });
