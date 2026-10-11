@@ -234,7 +234,10 @@ export class PeerTransport {
             socket.destroy();
             return;
           }
-          if (!admission?.ok && !admittedAfterAttempt) { socket.destroy(); return; }
+          // The post-write authoritative read is the final admission decision. A
+          // successful write response alone cannot authorize a session if the row
+          // is already absent/revoked by the time the read completes.
+          if (!admittedAfterAttempt) { socket.destroy(); return; }
           this.admittedPeerIds.add(checked.nodeId);
         }
         session.remoteNonce = payload.nonce;
