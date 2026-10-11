@@ -27,10 +27,7 @@ function runAdmissionWorker(input) {
     const child = spawn(process.execPath, [
       new URL('./fixtures/postgres-admission-worker.js', import.meta.url).pathname,
     ], {
-      env: {
-        ...process.env,
-        ZION_ADMISSION_INPUT_JSON: JSON.stringify(input),
-      },
+      env: { ...process.env, ZION_ADMISSION_INPUT_JSON: JSON.stringify(input) },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -49,7 +46,7 @@ function runAdmissionWorker(input) {
   });
 }
 
-test('real PostgreSQL migration, independent-process capacity race, and release lifecycle', {
+test('real PostgreSQL serializes independent-process capacity, nonce replay, subject, and release operations', {
   skip: !enabled && 'set ZION_POSTGRES_TEST_URL to run real PostgreSQL integration tests',
 }, async () => {
   const { Pool } = await import('pg');
@@ -78,23 +75,20 @@ test('real PostgreSQL migration, independent-process capacity race, and release 
       'UPDATE peer_admission_policy SET max_active_peers = 1, max_admissions_per_issuer = 5, min_storage_headroom_ratio = 0.1, policy_version = policy_version + 1 WHERE singleton = true',
     );
 
-    // Separate Node processes force separate pools/connections; a local promise queue
-    // cannot make this race pass accidentally.
-    const attempts = await Promise.all([
+    // Different Node processes and pools ensure process-local queues cannot mask races.
+    const capacityRace = await Promise.all([
       runAdmissionWorker(admissionInput('a', ['1', '2'], ['a', 'b'])),
       runAdmissionWorker(admissionInput('b', ['3', '4'], ['c', 'd'])),
     ]);
-
-    assert.equal(attempts.filter(result => result.ok).length, 1,
+    assert.equal(capacityRace.filter(result => result.ok).length, 1,
       'serializable transactions must not overbook a one-peer capacity');
-    assert.equal(attempts.filter(result => !result.ok && result.reason === 'peer-capacity-reached').length, 1);
+    assert.equal(capacityRace.filter(result => !result.ok && result.reason === 'peer-capacity-reached').length, 1);
 
     const { rows: active } = await pool.query(
       "SELECT subject_node_id FROM peer_admissions WHERE status = 'active'",
     );
     assert.equal(active.length, 1);
     const winner = active[0].subject_node_id.trim();
-
     const { rows: capacity } = await pool.query(
       'SELECT active_reservations FROM peer_admission_capacity WHERE singleton = true',
     );
@@ -107,11 +101,49 @@ test('real PostgreSQL migration, independent-process capacity race, and release 
       { ok: true, changed: true, status: 'released' },
     );
 
-    const { rows: after } = await pool.query(
+    let state = await pool.query(
       "SELECT c.active_reservations, count(a.subject_node_id)::integer AS active_admissions FROM peer_admission_capacity c LEFT JOIN peer_admissions a ON a.status = 'active' WHERE c.singleton = true GROUP BY c.active_reservations",
     );
-    assert.equal(Number(after[0].active_reservations), 0);
-    assert.equal(after[0].active_admissions, 0);
+    assert.equal(Number(state.rows[0].active_reservations), 0);
+    assert.equal(state.rows[0].active_admissions, 0);
+
+    await pool.query(
+      'UPDATE peer_admission_policy SET max_active_peers = 10, policy_version = policy_version + 1 WHERE singleton = true',
+    );
+
+    // Two processes attempt to consume the same issuer+nonce, while their other
+    // vouchers differ. Exactly one transaction may commit that nonce.
+    const nonceRace = await Promise.all([
+      runAdmissionWorker(admissionInput('c', ['1', '5'], ['e', 'f'])),
+      runAdmissionWorker(admissionInput('d', ['1', '6'], ['e', 'g'])),
+    ]);
+    assert.equal(nonceRace.filter(result => result.ok).length, 1,
+      'the unique consumed-invitation key must prevent concurrent replay');
+    assert.equal(nonceRace.filter(result => !result.ok && result.reason === 'invitation-already-used').length, 1);
+
+    const { rows: nonceWinnerRows } = await pool.query(
+      "SELECT subject_node_id FROM peer_admissions WHERE status = 'active'",
+    );
+    assert.equal(nonceWinnerRows.length, 1);
+    const nonceWinner = nonceWinnerRows[0].subject_node_id.trim();
+    const nonceRelease = await store.releaseAdmission(nonceWinner, 'released');
+    assert.equal(nonceRelease.ok, true);
+    assert.equal(nonceRelease.changed, true);
+
+    // Two processes race the same subject but use different invitation keys.
+    const subjectRace = await Promise.all([
+      runAdmissionWorker(admissionInput('e', ['7', '8'], ['h', 'i'])),
+      runAdmissionWorker(admissionInput('e', ['9', 'a'], ['j', 'k'])),
+    ]);
+    assert.equal(subjectRace.filter(result => result.ok).length, 1,
+      'subject primary key must prevent duplicate concurrent admission');
+    assert.equal(subjectRace.filter(result => !result.ok && result.reason === 'subject-already-admitted').length, 1);
+
+    state = await pool.query(
+      "SELECT c.active_reservations, count(a.subject_node_id)::integer AS active_admissions FROM peer_admission_capacity c LEFT JOIN peer_admissions a ON a.status = 'active' WHERE c.singleton = true GROUP BY c.active_reservations",
+    );
+    assert.equal(Number(state.rows[0].active_reservations), 1);
+    assert.equal(state.rows[0].active_admissions, 1);
   } finally {
     await pool.end();
   }
