@@ -37,12 +37,12 @@ export function createOfficialPostgresAdmissionTransport({
     throw new TypeError('Security-critical transport options must be supplied through the factory arguments');
   }
 
-  const store = new PostgresPeerAdmissionStore({ pool, ...storeOptions });
+  const store = new PostgresPeerAdmissionStore({ ...storeOptions, pool });
   const admissionService = new VerifiedPostgresPeerAdmissionService({
+    ...admissionOptions,
     store,
     trustedIssuerNodeIds,
     storageHeadroomProvider,
-    ...admissionOptions,
   });
   const transport = new PeerTransport({
     ...transportOptions,
