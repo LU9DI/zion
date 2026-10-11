@@ -87,6 +87,17 @@ test('PostgreSQL migration and independent-process admission races enforce capac
     );
     assert.equal(before[0].admissions, 0);
     assert.equal(Number(before[0].active_reservations), 0);
+    const store = new PostgresPeerAdmissionStore({ pool, maxTransactionRetries: 5 });
+    assert.deepEqual(await store.verifyPersistentState(), {
+      ok: true, activeAdmissions: 0, activeReservations: 0, policyVersion: 1,
+    });
+    await pool.query(
+      'UPDATE peer_admission_capacity SET active_reservations = 1 WHERE singleton = true',
+    );
+    await assert.rejects(store.verifyPersistentState(), { code: 'ZION_ADMISSION_STATE_INCONSISTENT' });
+    await pool.query(
+      'UPDATE peer_admission_capacity SET active_reservations = 0 WHERE singleton = true',
+    );
 
     // Scenario 1: two independent processes compete for the only available slot.
     await pool.query(
@@ -103,7 +114,6 @@ test('PostgreSQL migration and independent-process admission races enforce capac
     );
     assert.equal(active.length, 1);
     const winner = active[0].subject_node_id.trim();
-    const store = new PostgresPeerAdmissionStore({ pool, maxTransactionRetries: 5 });
     assert.equal(await store.isAdmitted(winner), true);
     const { rows: capacity } = await pool.query(
       'SELECT active_reservations FROM peer_admission_capacity WHERE singleton = true',
