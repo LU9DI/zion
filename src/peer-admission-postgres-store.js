@@ -272,6 +272,7 @@ export class PostgresPeerAdmissionStore {
          GROUP BY a.subject_node_id
          HAVING count(DISTINCT i.issuer_node_id) = 0
             OR count(DISTINCT i.issuer_node_id) <> count(DISTINCT c.issuer_node_id)
+            OR count(c.issuer_node_id) <> count(DISTINCT c.issuer_node_id)
          LIMIT 1`,
       );
       if (malformedResult.rows?.length) {
