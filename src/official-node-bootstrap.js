@@ -14,6 +14,14 @@ export class OfficialNodeBootstrap {
     if (!transport || transport.networkMode !== 'official' || typeof transport.listen !== 'function' || typeof transport.close !== 'function') {
       throw new TypeError('Official node bootstrap requires an official-mode transport');
     }
+    if (transport.integrityGuard !== integrityGuard) {
+      throw new TypeError('Official node bootstrap and transport must share the same IntegrityGuard instance');
+    }
+    const admission = transport.admissionController;
+    if (!admission || typeof admission.admit !== 'function' ||
+      typeof admission.isAdmitted !== 'function' || typeof admission.releaseAdmission !== 'function') {
+      throw new TypeError('Official node bootstrap requires a verified persistent admission controller');
+    }
     if (typeof startStorage !== 'function' || typeof stopStorage !== 'function') {
       throw new TypeError('Storage startup and shutdown adapters are required');
     }
