@@ -1,6 +1,6 @@
 # Transactional peer-admission backend contract
 
-Status: PostgreSQL schema migration plus an initial injected-pool transaction store. **The store is not wired into `PeerAdmissionController`; real-PostgreSQL multi-process integration tests and production migration/application are still missing.**
+Status (2026-10-10): PostgreSQL schema migration, initial injected-pool transaction store, CI PostgreSQL 16 service, and a real-database integration test using independent Node.js processes are committed. The test verifies capacity serialization and release accounting. **The store is still not wired into `PeerAdmissionController`; production rollout, restart reconciliation, same-nonce/subject races, quota races, and operational migration/restore remain incomplete.**
 
 ## Why the file store is insufficient
 
@@ -34,7 +34,7 @@ A generic `load()` + `save()` pair is not a substitute for this interface. Neith
 
 ## PostgreSQL reference model
 
-The executable schema draft is committed at `migrations/postgres/0001_peer_admission.sql`. `src/peer-admission-postgres-store.js` now provides an initial transaction-bound persistence API for a node-postgres-compatible injected pool, with serializable transactions, singleton-row locks, uniqueness handling, issuer-quota checks, capacity reservation, bounded serialization/deadlock retries, and release/revoke operations. Unit tests with a fake pool cover transaction boundaries and rollback behavior, but do not prove PostgreSQL semantics or cross-process safety. The store is not yet integrated into `PeerAdmissionController`; the migration is not automatically applied. The SQL below remains a conceptual reference; all runtime SQL identifiers/values must be safely handled and values parameterized.
+The executable schema draft is committed at `migrations/postgres/0001_peer_admission.sql`. `src/peer-admission-postgres-store.js` now provides an initial transaction-bound persistence API for a node-postgres-compatible injected pool, with serializable transactions, singleton-row locks, uniqueness handling, issuer-quota checks, capacity reservation, bounded serialization/deadlock retries, and release/revoke operations. Fake-pool unit tests cover transaction boundaries and rollback behavior. In addition, `test/peer-admission-postgres-integration.test.js` applies the migration against PostgreSQL 16 in CI, races admissions from independent Node.js processes against a one-peer limit, and verifies release/capacity accounting. The migration is applied by the integration test, not automatically by the runtime. The store is not yet integrated into `PeerAdmissionController`. The SQL below remains a conceptual reference; all runtime SQL identifiers/values must be safely handled and values parameterized.
 
 ```sql
 CREATE TABLE peer_admission_capacity (
@@ -88,15 +88,15 @@ Use a real serializable transaction or a carefully reviewed locking strategy tha
 
 A concrete adapter is not ready until integration tests with a real database demonstrate:
 
-- Two independent processes racing the same nonce: exactly one transaction commits.
-- Two processes racing the same subject: exactly one admission exists.
-- Concurrent admissions cannot exceed any issuer's quota.
-- Concurrent admissions cannot exceed capacity reservations.
+- Two independent processes racing the same nonce: exactly one transaction commits. (Still outstanding.)
+- Two processes racing the same subject: exactly one admission exists. (Still outstanding.)
+- Concurrent admissions cannot exceed any issuer's quota. (Still outstanding.)
+- Concurrent admissions cannot exceed capacity reservations. (Basic one-slot race is covered by the PostgreSQL CI test; broader race/failure permutations remain outstanding.)
 - Rollback leaves no consumed nonce, membership row, or capacity reservation behind.
-- Simulated connection loss during commit is treated as ambiguous; the client re-reads authoritative state before retrying.
+- Simulated connection loss during commit is treated as ambiguous; the client re-reads authoritative state before retrying. (Fail-closed latch exists, but durable restart reconciliation is outstanding.)
 - Database restart preserves admission, nonce, quota, and capacity invariants.
 - Serialization/deadlock retries are bounded and rerun the complete transaction.
-- Tests use independent database connections/processes, not only concurrent promises in one Node process.
+- The capacity race now uses independent Node.js processes and database pools; same-nonce/subject and quota races still need dedicated multi-process tests.
 
 ## Rollout and security constraints
 
