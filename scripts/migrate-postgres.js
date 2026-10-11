@@ -36,9 +36,11 @@ export async function runPostgresMigrations({ pool, migrations = DEFAULT_MIGRATI
     throw new TypeError('Migration IDs must be unique within one run');
   }
   const client = await pool.connect();
+  let lockAttempted = false;
   let locked = false;
   let operationError;
   try {
+    lockAttempted = true;
     await client.query('SELECT pg_advisory_lock($1)', [MIGRATION_LOCK_ID]);
     locked = true;
     await client.query(`CREATE TABLE IF NOT EXISTS zion_schema_migrations (
@@ -95,6 +97,10 @@ export async function runPostgresMigrations({ pool, migrations = DEFAULT_MIGRATI
       } catch (error) {
         releaseError = error;
       }
+    } else if (lockAttempted) {
+      // A rejected lock query can have an ambiguous outcome if the connection
+      // failed after PostgreSQL acquired the session lock but before its reply.
+      releaseError = new Error('PostgreSQL migration advisory lock acquisition was not confirmed');
     }
     // node-postgres destroys a client released with an error instead of returning
     // a possibly still-locked session to the pool.
