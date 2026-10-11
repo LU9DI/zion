@@ -4,15 +4,16 @@ This runbook is an execution gate, not evidence that a production environment ha
 
 ## Repository wiring audit
 
-The repository audit at commit `e6c13486f22898b9dafcbd297b3b83cf91bbdd07` found a composition boundary, but no official-node executable entry point:
+The initial repository audit at commit `e6c13486f22898b9dafcbd297b3b83cf91bbdd07` found a composition boundary but no executable entry point. Since then, `scripts/start-official-node.js` and `npm run start:official` have been added:
 
-- `package.json` exposes local test/demo and cloud-preview scripts, but no official-node start/deploy script.
 - `src/official-postgres-admission-transport.js` composes PostgreSQL admission, the verified admission service, and the official peer transport.
-- `src/official-node-bootstrap.js` validates and orchestrates a supplied transport and storage adapters; it does not construct production identity, trust roots, PostgreSQL pool, storage adapter, or capacity provider.
+- `src/official-node-bootstrap.js` verifies release integrity and persistent admission state, then orchestrates storage/listener lifecycle.
+- `scripts/start-official-node.js` loads an absolute-path, deployment-owned adapter module, creates a bounded PostgreSQL pool, validates the adapter contract, wires the factory into `OfficialNodeBootstrap`, and closes the pool during shutdown or startup failure. It deliberately does not run migrations automatically; migrations remain a controlled release operation.
+- The deployment adapter must export `createOfficialNodeDependencies({ env, pool })` and return the identity, complete `IntegrityGuard`, reviewed genesis, bootstrap peer allowlist, trusted issuer IDs, storage-headroom provider, and real storage lifecycle/status adapters. Trust material and adapter code must be provisioned outside the repository and must not be writable by the node account.
 - `cloud/README.md` identifies the cloud UI as a static local preview, not a connected cloud service.
-- `package.json` declares `pg` as a runtime dependency. `package-lock.json` has now been generated from npm registry metadata and includes the `pg` dependency graph and integrity hashes. CI uses `npm ci --no-audit --no-fund` and separately runs `npm audit --omit=dev --audit-level=high`; both passed on commit `9419b9348081c612b031abaa8abc48b470f7e1ec`. A checksum-tracked PostgreSQL migration runner and `npm run db:migrate` command are also present. Keep validating the exact committed lockfile in CI whenever dependency metadata changes.
+- `package.json` declares `pg` as a runtime dependency. `package-lock.json` includes the registry-backed dependency graph and integrity hashes. CI uses `npm ci --no-audit --no-fund` and separately runs `npm audit --omit=dev --audit-level=high`. A checksum-tracked PostgreSQL migration runner and `npm run db:migrate` command are also present.
 
-Therefore, the factory is **not yet wired into a real deployment launcher**. Do not interpret unit tests, the CI PostgreSQL integration test, or this runbook as proof that an official node can be deployed. The next integration step requires a real launcher and deployment-owned configuration for identity/key material, database lifecycle and migrations, reviewed genesis, bootstrap peers, trusted voucher issuers, storage adapter, and capacity/headroom measurements. Do not add placeholder values or silently fall back to in-memory admission to make startup appear successful.
+The executable composition gap is now partially addressed, but this is **not a turnkey production deployment**: no deployment-specific adapter, trust bundle, real storage backend, capacity telemetry, credentials, or operational recovery evidence is included in the repository. Do not interpret unit tests, the CI PostgreSQL integration test, or this runbook as proof that a production node can be safely deployed. Do not add placeholder trust values or silently fall back to in-memory admission to make startup appear successful.
 
 ## 1. Preflight — do not open the listener yet
 
@@ -75,7 +76,7 @@ Only run against a disposable environment with snapshots and an explicit cleanup
 
 Do not enable an official deployment until all are true:
 
-- [ ] A real official-node launcher wires the factory and bootstrap together and its configuration is reviewed.
+- [ ] The `start:official` launcher is exercised with the actual deployment-owned adapter module, and that adapter/configuration is independently reviewed.
 - [ ] All admission correctness and failure drills above have recorded passing evidence.
 - [ ] Backup restore and migration recovery have been demonstrated by someone other than the implementer where feasible.
 - [ ] Database credentials, genesis, allowlists, and issuer trust are provisioned outside the repository.
