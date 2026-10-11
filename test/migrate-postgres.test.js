@@ -5,14 +5,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runPostgresMigrations } from '../scripts/migrate-postgres.js';
 
-function fakePool({ initial = {}, failMigration = false } = {}) {
+function fakePool({ initial = {}, failMigration = false, failUnlock = false } = {}) {
   const calls = [];
   const ledger = new Map(Object.entries(initial));
   let released = false;
+  let releaseError;
   const client = {
     async query(sql, params = []) {
       const normalized = sql.replace(/\s+/g, ' ').trim();
       calls.push({ sql: normalized, params });
+      if (normalized.startsWith('SELECT pg_advisory_unlock')) {
+        if (failUnlock) throw new Error('simulated advisory unlock failure');
+        return { rows: [{ pg_advisory_unlock: true }] };
+      }
       if (normalized.startsWith('SELECT sha256 FROM zion_schema_migrations')) {
         const sha256 = ledger.get(params[0]);
         return { rows: sha256 ? [{ sha256 }] : [] };
@@ -26,10 +31,10 @@ function fakePool({ initial = {}, failMigration = false } = {}) {
       }
       return { rows: [] };
     },
-    release() { released = true; },
+    release(error) { released = true; releaseError = error; },
   };
   return {
-    calls, ledger, get released() { return released; },
+    calls, ledger, get released() { return released; }, get releaseError() { return releaseError; },
     async connect() { return client; },
   };
 }
@@ -118,4 +123,15 @@ test('migration runner rejects duplicate migration IDs before connecting', async
     /IDs must be unique/,
   );
   assert.equal(connected, false);
+});
+
+test('migration runner discards a client when advisory lock release cannot be confirmed', async () => {
+  await withMigration('BEGIN; CREATE TABLE example (id integer); COMMIT;', async path => {
+    const pool = fakePool({ failUnlock: true });
+    const result = await runPostgresMigrations({ pool, migrations: [{ id: '0001_example', path }] });
+    assert.equal(result.ok, true);
+    assert.equal(pool.released, true);
+    assert.match(pool.releaseError?.message ?? '', /advisory unlock failure/);
+    assert.ok(pool.ledger.has('0001_example'));
+  });
 });
