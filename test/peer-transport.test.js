@@ -622,3 +622,43 @@ test('official transport closes an established session immediately after persist
   client.send(socket, { type: 'PING', nonce: 'after-revocation' });
   await waitFor(() => socket.destroyed);
 });
+
+test('official transport rejects a successful admission write when authoritative reconciliation says not admitted', async t => {
+  const seed = createNodeIdentity();
+  const issuer = createNodeIdentity();
+  const newcomer = createNodeIdentity();
+  const { createPeerIntroductionVoucher } = await import('../src/peer-introduction-vouchers.js');
+  const guard = {
+    status: { verified: true, quarantined: false },
+    async checkHealthy() {},
+    assertHealthy() {},
+    addQuarantineListener: () => () => {},
+  };
+  const admissionController = {
+    async admit() { return { ok: true }; },
+    async isAdmitted() { return false; },
+    async releaseAdmission() {},
+  };
+  const server = new PeerTransport({
+    identity: seed,
+    networkMode: 'official',
+    protocolGenesis: testGenesis(),
+    integrityGuard: guard,
+    trustedPeerIds: [issuer.nodeId],
+    admissionController,
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({
+    identity: newcomer,
+    networkMode: 'official',
+    protocolGenesis: testGenesis(),
+    integrityGuard: guard,
+    trustedPeerIds: [seed.nodeId],
+    admissionVouchers: [createPeerIntroductionVoucher({ issuerIdentity: issuer, subjectNodeId: newcomer.nodeId })],
+  });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(async () => { socket.destroy(); await client.close(); });
+  await waitFor(() => socket.destroyed);
+  assert.equal(server.admittedPeerIds.has(newcomer.nodeId), false);
+});
