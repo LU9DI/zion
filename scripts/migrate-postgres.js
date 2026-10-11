@@ -37,6 +37,7 @@ export async function runPostgresMigrations({ pool, migrations = DEFAULT_MIGRATI
   }
   const client = await pool.connect();
   let locked = false;
+  let operationError;
   try {
     await client.query('SELECT pg_advisory_lock($1)', [MIGRATION_LOCK_ID]);
     locked = true;
@@ -80,6 +81,9 @@ export async function runPostgresMigrations({ pool, migrations = DEFAULT_MIGRATI
       applied.push({ id: migration.id, status: 'applied' });
     }
     return Object.freeze({ ok: true, migrations: Object.freeze(applied) });
+  } catch (error) {
+    operationError = error;
+    throw error;
   } finally {
     let releaseError;
     if (locked) {
@@ -95,6 +99,12 @@ export async function runPostgresMigrations({ pool, migrations = DEFAULT_MIGRATI
     // node-postgres destroys a client released with an error instead of returning
     // a possibly still-locked session to the pool.
     client.release(releaseError);
+    if (releaseError && !operationError) {
+      throw Object.assign(new Error('PostgreSQL migration completed but advisory lock release could not be confirmed; the database state must be inspected before retrying'), {
+        code: 'ZION_MIGRATION_LOCK_RELEASE_FAILED',
+        cause: releaseError,
+      });
+    }
   }
 }
 
