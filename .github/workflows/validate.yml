@@ -43,8 +43,8 @@ jobs:
           test -f package.json
           test -d src
           test -d test
-      - name: Install dependencies (lockfile reconciliation pending)
-        run: npm install --no-package-lock --no-audit --no-fund
+      - name: Install locked Node dependencies
+        run: npm ci --no-audit --no-fund
       - name: Syntax checks
         run: npm run check
       - name: Test suite including real PostgreSQL integration
