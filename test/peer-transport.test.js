@@ -581,3 +581,44 @@ test('official transport rejects an unknown peer with no valid invite vouchers',
   await waitFor(() => socket.destroyed);
   assert.equal(admissionController.isAdmitted(newcomer.nodeId), false);
 });
+
+test('official transport closes an established session immediately after persistent admission revocation', async t => {
+  const seed = createNodeIdentity();
+  const newcomer = createNodeIdentity();
+  const guard = {
+    status: { verified: true, quarantined: false },
+    async checkHealthy() {},
+    assertHealthy() {},
+    addQuarantineListener: () => () => {},
+  };
+  let admitted = true;
+  const admissionController = {
+    async admit() { return { ok: true }; },
+    async isAdmitted(nodeId) { return nodeId === newcomer.nodeId && admitted; },
+    async releaseAdmission() { admitted = false; return { ok: true }; },
+  };
+  const server = new PeerTransport({
+    identity: seed,
+    networkMode: 'official',
+    protocolGenesis: testGenesis(),
+    integrityGuard: guard,
+    trustedPeerIds: [seed.nodeId],
+    admissionController,
+    onMessage: async () => {},
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({
+    identity: newcomer,
+    networkMode: 'official',
+    protocolGenesis: testGenesis(),
+    integrityGuard: guard,
+    trustedPeerIds: [seed.nodeId],
+  });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(async () => { socket.destroy(); await client.close(); });
+  await waitFor(() => socket.__zionSession?.authenticated && [...server.connections].some(peer => peer.__zionSession?.authenticated));
+  admitted = false;
+  client.send(socket, { type: 'PING', nonce: 'after-revocation' });
+  await waitFor(() => socket.destroyed);
+});
