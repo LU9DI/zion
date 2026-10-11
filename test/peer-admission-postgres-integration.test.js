@@ -100,12 +100,13 @@ test('PostgreSQL migration and independent-process admission races enforce capac
     );
     assert.equal(active.length, 1);
     const winner = active[0].subject_node_id.trim();
+    const store = new PostgresPeerAdmissionStore({ pool, maxTransactionRetries: 5 });
+    assert.equal(await store.isAdmitted(winner), true);
     const { rows: capacity } = await pool.query(
       'SELECT active_reservations FROM peer_admission_capacity WHERE singleton = true',
     );
     assert.equal(Number(capacity[0].active_reservations), 1);
 
-    const store = new PostgresPeerAdmissionStore({ pool, maxTransactionRetries: 5 });
     const released = await store.releaseAdmission(winner, 'released');
     assert.deepEqual(
       { ok: released.ok, changed: released.changed, status: released.status },
@@ -116,6 +117,7 @@ test('PostgreSQL migration and independent-process admission races enforce capac
     );
     assert.equal(Number(after[0].active_reservations), 0);
     assert.equal(after[0].active_admissions, 0);
+    assert.equal(await store.isAdmitted(winner), false);
 
     // Scenario 2: the same invitation nonces cannot be consumed by two subjects.
     await clearAdmissions(pool);
