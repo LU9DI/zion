@@ -1,0 +1,39 @@
+name: Reconcile Node dependency lockfile
+
+on:
+  push:
+    branches:
+      - feat/verified-postgres-admission-boundary
+    paths:
+      - .github/workflows/reconcile-node-lockfile.yml
+
+permissions:
+  contents: write
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/verified-postgres-admission-boundary
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Generate genuine npm lockfile from registry metadata
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+      - name: Commit lockfile only when changed
+        run: |
+          if git diff --quiet -- package-lock.json; then
+            echo "package-lock.json is already reconciled"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package-lock.json
+          git commit -m "Generate reproducible Node dependency lockfile"
+          git push origin HEAD:feat/verified-postgres-admission-boundary
