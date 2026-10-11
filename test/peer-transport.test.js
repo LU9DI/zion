@@ -364,6 +364,88 @@ test('outbound TLS handshake timeout closes an unresponsive peer', { skip: !open
   await client.close();
 });
 
+test('official transport closes a peer when authoritative admission reads fail', async t => {
+  const seed = createNodeIdentity();
+  const newcomer = createNodeIdentity();
+  const guard = {
+    status: { verified: true, quarantined: false },
+    async checkHealthy() {},
+    assertHealthy() {},
+    addQuarantineListener: () => () => {},
+  };
+  const admissionController = {
+    async admit() { return { ok: false, reason: 'admission-state-unavailable' }; },
+    async isAdmitted() { throw new Error('database unavailable'); },
+    async releaseAdmission() {},
+  };
+  const server = new PeerTransport({
+    identity: seed,
+    networkMode: 'official',
+    protocolGenesis: testGenesis(),
+    integrityGuard: guard,
+    trustedPeerIds: ['a'.repeat(64)],
+    admissionController,
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({
+    identity: newcomer,
+    networkMode: 'official',
+    protocolGenesis: testGenesis(),
+    integrityGuard: guard,
+    trustedPeerIds: [seed.nodeId],
+  });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(async () => { socket.destroy(); await client.close(); });
+  await waitFor(() => socket.destroyed);
+  assert.equal(server.admittedPeerIds.has(newcomer.nodeId), false);
+});
+
+test('official transport closes a peer when post-admission reconciliation read fails', async t => {
+  const seed = createNodeIdentity();
+  const issuer = createNodeIdentity();
+  const newcomer = createNodeIdentity();
+  const { createPeerIntroductionVoucher } = await import('../src/peer-introduction-vouchers.js');
+  const guard = {
+    status: { verified: true, quarantined: false },
+    async checkHealthy() {},
+    assertHealthy() {},
+    addQuarantineListener: () => () => {},
+  };
+  let reads = 0;
+  const admissionController = {
+    async admit() { return { ok: false, reason: 'admission-state-unavailable' }; },
+    async isAdmitted() {
+      reads++;
+      if (reads > 1) throw new Error('database unavailable after admission attempt');
+      return false;
+    },
+    async releaseAdmission() {},
+  };
+  const server = new PeerTransport({
+    identity: seed,
+    networkMode: 'official',
+    protocolGenesis: testGenesis(),
+    integrityGuard: guard,
+    trustedPeerIds: [issuer.nodeId],
+    admissionController,
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({
+    identity: newcomer,
+    networkMode: 'official',
+    protocolGenesis: testGenesis(),
+    integrityGuard: guard,
+    trustedPeerIds: [seed.nodeId],
+    admissionVouchers: [],
+  });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(async () => { socket.destroy(); await client.close(); });
+  await waitFor(() => socket.destroyed);
+  assert.equal(server.admittedPeerIds.has(newcomer.nodeId), false);
+});
+
 test('official transport admits an unknown peer only when its signed handshake carries valid invite vouchers', async t => {
   const { calculateNetworkId } = await import('../src/protocol-genesis.js');
   const { createPeerIntroductionVoucher } = await import('../src/peer-introduction-vouchers.js');
