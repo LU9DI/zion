@@ -8,7 +8,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-function fixture({ verifyOk = true, failSecondCheck = false, failAdmissionPreflight = false, listenFails = false, failCloseCount = 0, failStopStorageCount = 0, listenGate = null, storageGate = null, stopStorageGate = null, notificationDeliveryWorker = null, idleParticipationScheduler = null } = {}) {
+function fixture({ verifyOk = true, failSecondCheck = false, failAdmissionPreflight = false, listenFails = false, failCloseCount = 0, failStopStorageCount = 0, listenGate = null, storageGate = null, stopStorageGate = null, notificationDeliveryWorker = null, idleParticipationScheduler = null, inactivityScheduler = null } = {}) {
   const events = [];
   let checks = 0;
   let closeFailuresRemaining = failCloseCount;
@@ -68,7 +68,8 @@ function fixture({ verifyOk = true, failSecondCheck = false, failAdmissionPrefli
     },
     async getStorageStatus() { return { running: storageRunning }; },
     notificationDeliveryWorker,
-    idleParticipationScheduler
+    idleParticipationScheduler,
+    inactivityScheduler
   });
   return { bootstrap, events, guard, transport, get maxActiveStopStorage() { return maxActiveStopStorage; } };
 }
@@ -510,4 +511,26 @@ test('official bootstrap refuses a transport wired to a different integrity guar
     startStorage: async () => {},
     stopStorage: async () => {},
   }), /same IntegrityGuard instance/);
+});
+
+
+test('async inactivity scheduler shutdown is awaited and failures remain visible', async () => {
+  const gate = deferred();
+  let stopCalls = 0;
+  const scheduler = {
+    start() {},
+    async stop() { stopCalls++; await gate.promise; throw new Error('scheduler stop failed'); }
+  };
+  const { bootstrap, events } = fixture({ inactivityScheduler: scheduler });
+  await bootstrap.start();
+  let settled = false;
+  const closing = bootstrap.close().finally(() => { settled = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false, 'close must wait for asynchronous scheduler shutdown');
+  assert.equal(events.includes('close'), false, 'later adapters must not shut down ahead of scheduler completion');
+  gate.resolve();
+  await assert.rejects(closing, /Official node shutdown was incomplete/);
+  assert.equal(stopCalls, 1);
+  assert.ok(events.includes('close'), 'remaining adapters are still cleaned up after scheduler failure');
+  assert.ok(events.includes('stopStorage'), 'storage cleanup continues after scheduler failure');
 });
