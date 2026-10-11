@@ -8,7 +8,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-function fixture({ verifyOk = true, failSecondCheck = false, listenFails = false, failCloseCount = 0, failStopStorageCount = 0, listenGate = null, storageGate = null, stopStorageGate = null, notificationDeliveryWorker = null, idleParticipationScheduler = null } = {}) {
+function fixture({ verifyOk = true, failSecondCheck = false, failAdmissionPreflight = false, listenFails = false, failCloseCount = 0, failStopStorageCount = 0, listenGate = null, storageGate = null, stopStorageGate = null, notificationDeliveryWorker = null, idleParticipationScheduler = null } = {}) {
   const events = [];
   let checks = 0;
   let closeFailuresRemaining = failCloseCount;
@@ -48,6 +48,7 @@ function fixture({ verifyOk = true, failSecondCheck = false, listenFails = false
       async admit() { return { ok: true }; },
       async isAdmitted() { return false; },
       async releaseAdmission() { return { ok: true }; },
+      async verifyPersistentState() { events.push('verifyAdmissionState'); if (failAdmissionPreflight) throw new Error('admission database state inconsistent'); return { ok: true }; },
     },
     async listen() { events.push('listen'); if (listenGate) { listenGate.entered?.(); await listenGate.promise; } if (listenFails) throw new Error('bind failed'); transportListening = true; return { host: '127.0.0.1', port: 1234 }; },
     async close() { events.push('close'); if (closeFailuresRemaining-- > 0) throw new Error('transport close failed'); transportListening = false; },
@@ -76,11 +77,20 @@ test('official bootstrap verifies release before opening storage and network', a
   const { bootstrap, events } = fixture();
   const result = await bootstrap.start();
   assert.equal(result.ok, true);
-  assert.ok(events.indexOf('verify') < events.indexOf('startStorage'));
+  assert.ok(events.indexOf('verify') < events.indexOf('verifyAdmissionState'));
+  assert.ok(events.indexOf('verifyAdmissionState') < events.indexOf('startStorage'));
   assert.ok(events.indexOf('startStorage') < events.indexOf('listen'));
   assert.equal(events.filter(e => e === 'listen').length, 1);
   await bootstrap.close();
   assert.ok(events.includes('stopStorage'));
+});
+
+test('inconsistent persistent admission state prevents storage and network startup', async () => {
+  const { bootstrap, events } = fixture({ failAdmissionPreflight: true });
+  await assert.rejects(bootstrap.start(), /admission database state inconsistent/);
+  assert.ok(events.includes('verifyAdmissionState'));
+  assert.equal(events.includes('startStorage'), false);
+  assert.equal(events.includes('listen'), false);
 });
 
 test('invalid release manifest prevents storage and network startup', async () => {
