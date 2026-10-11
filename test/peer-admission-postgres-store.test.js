@@ -124,3 +124,13 @@ test('ambiguous commit outcome fails closed and is never automatically retried',
   });
   assert.equal(pool.calls.filter(x => x.sql === 'BEGIN ISOLATION LEVEL SERIALIZABLE').length, 1);
 });
+
+
+test('authoritative admission lookup queries active PostgreSQL state', async () => {
+  const pool = fakePool();
+  const store = new PostgresPeerAdmissionStore({ pool });
+  assert.equal(await store.isAdmitted(id('a')), false);
+  assert.ok(pool.calls.some(call =>
+    call.sql.includes("SELECT 1 AS admitted FROM peer_admissions WHERE subject_node_id = $1 AND status = 'active' LIMIT 1")));
+  assert.equal(await store.isAdmitted('invalid'), false);
+});
