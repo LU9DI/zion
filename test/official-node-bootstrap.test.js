@@ -43,6 +43,12 @@ function fixture({ verifyOk = true, failSecondCheck = false, listenFails = false
   };
   const transport = {
     networkMode: 'official',
+    integrityGuard: guard,
+    admissionController: {
+      async admit() { return { ok: true }; },
+      async isAdmitted() { return false; },
+      async releaseAdmission() { return { ok: true }; },
+    },
     async listen() { events.push('listen'); if (listenGate) { listenGate.entered?.(); await listenGate.promise; } if (listenFails) throw new Error('bind failed'); transportListening = true; return { host: '127.0.0.1', port: 1234 }; },
     async close() { events.push('close'); if (closeFailuresRemaining-- > 0) throw new Error('transport close failed'); transportListening = false; },
     async getStatus() { return { listening: transportListening }; }
@@ -469,4 +475,29 @@ test('idle participation scheduler failure rolls back startup', async () => {
   await assert.rejects(bootstrap.start(), /idle scheduler failed/);
   assert.ok(events.includes('close'));
   assert.ok(events.includes('stopStorage'));
+});
+
+test('official bootstrap refuses a transport that bypasses persistent admission', () => {
+  const { guard, transport } = fixture();
+  assert.throws(() => new OfficialNodeBootstrap({
+    integrityGuard: guard,
+    transport: { ...transport, admissionController: null },
+    startStorage: async () => {},
+    stopStorage: async () => {},
+  }), /persistent admission controller/);
+});
+
+test('official bootstrap refuses a transport wired to a different integrity guard', () => {
+  const { guard, transport } = fixture();
+  const otherGuard = {
+    ...guard,
+    status: { verified: false, quarantined: false },
+    addQuarantineListener() { return () => {}; },
+  };
+  assert.throws(() => new OfficialNodeBootstrap({
+    integrityGuard: otherGuard,
+    transport,
+    startStorage: async () => {},
+    stopStorage: async () => {},
+  }), /same IntegrityGuard instance/);
 });
