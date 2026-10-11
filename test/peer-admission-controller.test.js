@@ -132,3 +132,38 @@ test('fails closed after uncertain persistence and requires restart to reconcile
   );
   assert.equal(saveCalls, 1);
 });
+
+
+test('releaseAdmission persists revocation, preserves consumed vouchers, and serializes with admission', async () => {
+  const x = setup();
+  assert.equal((await x.controller.admit({ subjectNodeId: x.subject.nodeId, vouchers: x.vouchers })).ok, true);
+  assert.equal(x.controller.isAdmitted(x.subject.nodeId), true);
+  const released = await x.controller.releaseAdmission(x.subject.nodeId, 'revoked');
+  assert.deepEqual(released, { ok: true, released: true, subjectNodeId: x.subject.nodeId, status: 'revoked' });
+  assert.equal(x.controller.isAdmitted(x.subject.nodeId), false);
+  assert.deepEqual(x.controller.snapshot(), { consumedInvitations: x.vouchers.length, admittedPeers: 0 });
+  const restarted = new PeerAdmissionController(x.config);
+  assert.equal(restarted.isAdmitted(x.subject.nodeId), false);
+  assert.deepEqual(await restarted.releaseAdmission(x.subject.nodeId), {
+    ok: true, released: false, subjectNodeId: x.subject.nodeId,
+  });
+});
+
+test('releaseAdmission fails closed after uncertain persistence', async () => {
+  const x = setup();
+  assert.equal((await x.controller.admit({ subjectNodeId: x.subject.nodeId, vouchers: x.vouchers })).ok, true);
+  const controller = new PeerAdmissionController({
+    ...x.config,
+    stateStore: {
+      load: () => ({ version: 1, consumed: x.vouchers.map(v => `${v.issuerNodeId}:${v.nonce}`), admissions: [{
+        subjectNodeId: x.subject.nodeId, issuerNodeIds: x.vouchers.map(v => v.issuerNodeId),
+      }] }),
+      save: async () => { throw new Error('release persistence uncertain'); },
+    },
+  });
+  await assert.rejects(controller.releaseAdmission(x.subject.nodeId, 'revoked'), /release persistence uncertain/);
+  assert.equal(controller.isAdmitted(x.subject.nodeId), false);
+  assert.deepEqual(await controller.releaseAdmission(x.subject.nodeId, 'revoked'), {
+    ok: false, reason: 'admission-state-unavailable',
+  });
+});
