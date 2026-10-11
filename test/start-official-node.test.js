@@ -167,6 +167,7 @@ test('official launcher closes composed transport and PostgreSQL pool when integ
   };
   class FailurePool {
     constructor() { this.ended = false; }
+    async connect() { throw new Error('database must not be touched before integrity verification'); }
     async end() { this.ended = true; lifecycle.poolEnded = true; }
   }
   let pool;
