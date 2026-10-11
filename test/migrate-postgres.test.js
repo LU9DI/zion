@@ -128,8 +128,10 @@ test('migration runner rejects duplicate migration IDs before connecting', async
 test('migration runner discards a client when advisory lock release cannot be confirmed', async () => {
   await withMigration('BEGIN; CREATE TABLE example (id integer); COMMIT;', async path => {
     const pool = fakePool({ failUnlock: true });
-    const result = await runPostgresMigrations({ pool, migrations: [{ id: '0001_example', path }] });
-    assert.equal(result.ok, true);
+    await assert.rejects(
+      runPostgresMigrations({ pool, migrations: [{ id: '0001_example', path }] }),
+      { code: 'ZION_MIGRATION_LOCK_RELEASE_FAILED' },
+    );
     assert.equal(pool.released, true);
     assert.match(pool.releaseError?.message ?? '', /advisory unlock failure/);
     assert.ok(pool.ledger.has('0001_example'));
