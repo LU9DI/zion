@@ -10,7 +10,7 @@ const DEFAULT_MIGRATIONS = Object.freeze([
 const MIGRATION_LOCK_ID = 741_029_331;
 
 function migrationBody(sql, id) {
-  const match = /^\\s*BEGIN;\\s*([\\s\\S]*?)\\s*COMMIT;\\s*$/i.exec(sql);
+  const match = /^\s*BEGIN;\s*([\s\S]*?)\s*COMMIT;\s*$/i.exec(sql);
   if (!match) {
     throw new Error(`Migration ${id} must have one outer BEGIN/COMMIT transaction wrapper`);
   }
@@ -94,7 +94,7 @@ async function main() {
   try {
     const result = await runPostgresMigrations({ pool });
     for (const migration of result.migrations) {
-      process.stdout.write(`${migration.status}: ${migration.id}\\n`);
+      process.stdout.write(`${migration.status}: ${migration.id}\n`);
     }
   } finally {
     await pool.end();
@@ -103,7 +103,7 @@ async function main() {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch(error => {
-    process.stderr.write(`PostgreSQL migration failed: ${error.message}\\n`);
+    process.stderr.write(`PostgreSQL migration failed: ${error.message}\n`);
     process.exitCode = 1;
   });
 }
