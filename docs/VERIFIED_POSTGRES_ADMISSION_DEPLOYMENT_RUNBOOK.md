@@ -15,6 +15,21 @@ The initial repository audit at commit `e6c13486f22898b9dafcbd297b3b83cf91bbdd07
 
 The executable composition gap is now partially addressed, but this is **not a turnkey production deployment**: no deployment-specific adapter, trust bundle, real storage backend, capacity telemetry, credentials, or operational recovery evidence is included in the repository. Do not interpret unit tests, the CI PostgreSQL integration test, or this runbook as proof that a production node can be safely deployed. Do not add placeholder trust values or silently fall back to in-memory admission to make startup appear successful.
 
+## Official launcher invocation
+
+Provision the adapter module and every trust/configuration file it reads through a deployment-controlled channel with read-only permissions for the node account. Then set the following environment variables in the service manager (do not commit credentials or secrets):
+
+```sh
+ZION_OFFICIAL_ADAPTER_MODULE=/etc/zion/official-adapter.mjs
+ZION_POSTGRES_URL=<deployment-injected PostgreSQL connection string>
+ZION_POSTGRES_POOL_MAX=10
+npm run start:official
+```
+
+The adapter module must export `createOfficialNodeDependencies({ env, pool })`. It must return `integrityGuard`, `identity`, `protocolGenesis`, `trustedPeerIds`, `trustedIssuerNodeIds`, `storageHeadroomProvider`, `startStorage`, and `stopStorage`. It may also return `getStorageStatus`, `recordContainmentEvent`, `storeOptions`, `admissionOptions`, `transportOptions`, and `bootstrapOptions`. The launcher rejects missing core dependencies and closes the pool if adapter initialization or startup fails. The PostgreSQL pool size is bounded to 1–100 connections (default 10).
+
+This command does **not** run database migrations. Apply and verify migrations as a controlled release operation first. The launcher is only as trustworthy as the adapter module and the external trust/configuration it supplies; do not use a module or configuration writable by the node process itself. Confirm startup and shutdown against the actual deployment adapter before routing external traffic.
+
 ## 1. Preflight — do not open the listener yet
 
 - [ ] Pin the release commit and record its SHA in the change record.
