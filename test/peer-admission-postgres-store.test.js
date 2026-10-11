@@ -111,18 +111,25 @@ test('release is idempotent and updates reservation count only when active row c
 });
 
 
-test('ambiguous commit outcome fails closed and is never automatically retried', async () => {
+test('ambiguous commit blocks only the affected subject until authoritative reconciliation', async () => {
   const pool = fakePool({ failCommit: true });
   const store = new PostgresPeerAdmissionStore({ pool, maxTransactionRetries: 3 });
   assert.deepEqual(await store.commitAdmission(input()), {
     ok: false, reason: 'admission-state-unavailable',
   });
-  const beginsAfterFirst = pool.calls.filter(x => x.sql === 'BEGIN ISOLATION LEVEL SERIALIZABLE').length;
-  assert.equal(beginsAfterFirst, 1);
-  assert.deepEqual(await store.commitAdmission({ ...input(), subjectNodeId: id('b') }), {
+  assert.deepEqual(await store.commitAdmission(input()), {
     ok: false, reason: 'admission-state-unavailable',
   });
   assert.equal(pool.calls.filter(x => x.sql === 'BEGIN ISOLATION LEVEL SERIALIZABLE').length, 1);
+
+  // An unrelated subject is not held hostage by the ambiguous outcome.
+  assert.equal((await store.commitAdmission({ ...input(), subjectNodeId: id('b') })).ok, true);
+  assert.equal(pool.calls.filter(x => x.sql === 'BEGIN ISOLATION LEVEL SERIALIZABLE').length, 2);
+
+  // The authoritative lookup resolves this subject's atomic transaction outcome.
+  assert.equal(await store.isAdmitted(id('a')), false);
+  assert.equal((await store.commitAdmission(input())).ok, true);
+  assert.equal(pool.calls.filter(x => x.sql === 'BEGIN ISOLATION LEVEL SERIALIZABLE').length, 3);
 });
 
 
