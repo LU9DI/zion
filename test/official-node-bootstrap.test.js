@@ -8,7 +8,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-function fixture({ verifyOk = true, failSecondCheck = false, failAdmissionPreflight = false, listenFails = false, failCloseCount = 0, failStopStorageCount = 0, listenGate = null, storageGate = null, stopStorageGate = null, notificationDeliveryWorker = null, idleParticipationScheduler = null, inactivityScheduler = null } = {}) {
+function fixture({ verifyOk = true, failSecondCheck = false, failAdmissionPreflight = false, listenFails = false, failCloseCount = 0, failStopStorageCount = 0, listenGate = null, storageGate = null, stopStorageGate = null, failStartStorage = false, notificationDeliveryWorker = null, idleParticipationScheduler = null, inactivityScheduler = null } = {}) {
   const events = [];
   let checks = 0;
   let closeFailuresRemaining = failCloseCount;
@@ -56,7 +56,7 @@ function fixture({ verifyOk = true, failSecondCheck = false, failAdmissionPrefli
   };
   const bootstrap = new OfficialNodeBootstrap({
     integrityGuard: guard, transport,
-    async startStorage() { events.push('startStorage'); if (storageGate) { storageGate.entered?.(); await storageGate.promise; } storageRunning = true; },
+    async startStorage() { events.push('startStorage'); if (storageGate) { storageGate.entered?.(); await storageGate.promise; } storageRunning = true; if (failStartStorage) throw new Error('storage startup failed after partial allocation'); },
     async stopStorage() {
       events.push('stopStorage');
       activeStopStorage++; maxActiveStopStorage = Math.max(maxActiveStopStorage, activeStopStorage);
@@ -533,4 +533,15 @@ test('async inactivity scheduler shutdown is awaited and failures remain visible
   assert.equal(stopCalls, 1);
   assert.ok(events.includes('close'), 'remaining adapters are still cleaned up after scheduler failure');
   assert.ok(events.includes('stopStorage'), 'storage cleanup continues after scheduler failure');
+});
+
+
+test('storage startup failure invokes rollback after partial resource allocation', async () => {
+  const { bootstrap, events } = fixture({ failStartStorage: true });
+  await assert.rejects(bootstrap.start(), /storage startup failed after partial allocation/);
+  assert.ok(events.includes('startStorage'));
+  assert.ok(events.includes('stopStorage'), 'rollback must stop partially allocated storage');
+  assert.equal(bootstrap.storageStarted, false);
+  assert.equal(bootstrap.storageState, 'stopped');
+  assert.equal(events.includes('listen'), false);
 });
