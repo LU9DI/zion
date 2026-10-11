@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
 import { PostgresPeerAdmissionStore } from '../src/peer-admission-postgres-store.js';
 import { createNodeIdentity } from '../src/peer-security.js';
 import { createPeerIntroductionVoucher } from '../src/peer-introduction-vouchers.js';
 import { VerifiedPostgresPeerAdmissionService } from '../src/verified-postgres-peer-admission-service.js';
+import { runPostgresMigrations } from '../scripts/migrate-postgres.js';
 
 const enabled = Boolean(process.env.ZION_POSTGRES_TEST_URL);
 const id = digit => digit.repeat(64);
@@ -76,11 +76,11 @@ test('PostgreSQL migration and independent-process admission races enforce capac
   });
 
   try {
-    const migration = await readFile(
-      new URL('../migrations/postgres/0001_peer_admission.sql', import.meta.url),
-      'utf8',
-    );
-    await pool.query(migration);
+    const migrationResult = await runPostgresMigrations({ pool });
+    assert.deepEqual(migrationResult, {
+      ok: true,
+      migrations: [{ id: '0001_peer_admission', status: 'applied' }],
+    });
 
     const { rows: before } = await pool.query(
       'SELECT (SELECT count(*) FROM peer_admissions)::integer AS admissions, active_reservations FROM peer_admission_capacity WHERE singleton = true',
