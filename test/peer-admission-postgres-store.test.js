@@ -16,7 +16,7 @@ const input = () => ({
   maxAdmissionsPerIssuer: 5,
 });
 
-function fakePool({ failInvitationInsert = false, retryOnce = false, failCommit = false } = {}) {
+function fakePool({ failInvitationInsert = false, retryOnce = false, failCommit = false, failRollback = false } = {}) {
   const calls = [];
   let retryPending = retryOnce;
   let commitPending = failCommit;
@@ -26,6 +26,7 @@ function fakePool({ failInvitationInsert = false, retryOnce = false, failCommit 
       return {
         async query(sql, params = []) {
           calls.push({ sql: sql.replace(/\s+/g, ' ').trim(), params });
+          if (sql === 'ROLLBACK' && failRollback) throw Object.assign(new Error('connection lost during ROLLBACK'), { code: '08006' });
           if (sql === 'COMMIT' && commitPending) {
             commitPending = false;
             throw Object.assign(new Error('connection lost during COMMIT'), { code: '08006' });
@@ -50,7 +51,7 @@ function fakePool({ failInvitationInsert = false, retryOnce = false, failCommit 
           }
           return { rows: [] };
         },
-        release() { calls.push({ sql: 'RELEASE', params: [] }); },
+        release(error) { calls.push({ sql: 'RELEASE', params: [], releaseError: error?.message ?? null }); },
       };
     },
   };
@@ -121,6 +122,8 @@ test('ambiguous commit blocks only the affected subject until authoritative reco
     ok: false, reason: 'admission-state-unavailable',
   });
   assert.equal(pool.calls.filter(x => x.sql === 'BEGIN ISOLATION LEVEL SERIALIZABLE').length, 1);
+  assert.equal(pool.calls.find(x => x.sql === 'RELEASE')?.releaseError, 'connection lost during COMMIT',
+    'a connection with an ambiguous COMMIT must be discarded, not returned to the pool');
 
   // An unrelated subject is not held hostage by the ambiguous outcome.
   assert.equal((await store.commitAdmission({ ...input(), subjectNodeId: id('b') })).ok, true);
@@ -182,4 +185,14 @@ test('authoritative admission lookup queries active PostgreSQL state', async () 
   assert.ok(pool.calls.some(call =>
     call.sql.includes("SELECT 1 AS admitted FROM peer_admissions WHERE subject_node_id = $1 AND status = 'active' LIMIT 1")));
   assert.equal(await store.isAdmitted('invalid'), false);
+});
+
+
+test('failed rollback discards the connection instead of returning uncertain transaction state to the pool', async () => {
+  const pool = fakePool({ failInvitationInsert: true, failRollback: true });
+  const store = new PostgresPeerAdmissionStore({ pool });
+  const result = await store.commitAdmission(input());
+  assert.deepEqual(result, { ok: false, reason: 'invitation-already-used' });
+  const release = pool.calls.find(call => call.sql === 'RELEASE');
+  assert.equal(release?.releaseError, 'connection lost during ROLLBACK');
 });
