@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { PostgresPeerAdmissionStore } from '../src/peer-admission-postgres-store.js';
+import { createNodeIdentity } from '../src/peer-security.js';
+import { createPeerIntroductionVoucher } from '../src/peer-introduction-vouchers.js';
+import { VerifiedPostgresPeerAdmissionService } from '../src/verified-postgres-peer-admission-service.js';
 
 const enabled = Boolean(process.env.ZION_POSTGRES_TEST_URL);
 const id = digit => digit.repeat(64);
@@ -163,6 +166,26 @@ test('PostgreSQL migration and independent-process admission races enforce capac
       [id('1')],
     );
     assert.equal(quotaCount[0].count, 1);
+
+    // Scenario 5: real voucher verification feeds the transactional PostgreSQL store.
+    await clearAdmissions(pool);
+    await pool.query(
+      'UPDATE peer_admission_policy SET max_active_peers = 10, max_admissions_per_issuer = 5, min_storage_headroom_ratio = 0.1, policy_version = policy_version + 1 WHERE singleton = true',
+    );
+    const issuerIdentities = [createNodeIdentity(), createNodeIdentity()];
+    const subjectIdentity = createNodeIdentity();
+    const vouchers = issuerIdentities.map(issuerIdentity =>
+      createPeerIntroductionVoucher({ issuerIdentity, subjectNodeId: subjectIdentity.nodeId }));
+    const service = new VerifiedPostgresPeerAdmissionService({
+      store: new PostgresPeerAdmissionStore({ pool }),
+      trustedIssuerNodeIds: issuerIdentities.map(identity => identity.nodeId),
+      threshold: 2,
+      storageHeadroomProvider: async () => 0.5,
+    });
+    assert.equal((await service.admit({ subjectNodeId: subjectIdentity.nodeId, vouchers })).ok, true);
+    assert.equal(await service.isAdmitted(subjectIdentity.nodeId), true);
+    assert.equal((await service.releaseAdmission(subjectIdentity.nodeId)).changed, true);
+    assert.equal(await service.isAdmitted(subjectIdentity.nodeId), false);
   } finally {
     await pool.end();
   }
