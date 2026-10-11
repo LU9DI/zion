@@ -684,3 +684,40 @@ test('official transport rejects an incomplete admission controller contract', (
     },
   }), /complete admission controller/);
 });
+
+
+test('official transport fails closed when authoritative admission state is not boolean', async t => {
+  const seed = createNodeIdentity();
+  const newcomer = createNodeIdentity();
+  const guard = {
+    status: { verified: true, quarantined: false },
+    async checkHealthy() {},
+    assertHealthy() {},
+    addQuarantineListener: () => () => {},
+  };
+  const server = new PeerTransport({
+    identity: seed,
+    networkMode: 'official',
+    protocolGenesis: testGenesis(),
+    integrityGuard: guard,
+    trustedPeerIds: ['a'.repeat(64)],
+    admissionController: {
+      async admit() { return { ok: true }; },
+      async isAdmitted() { return 'false'; },
+      async releaseAdmission() {},
+    },
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({
+    identity: newcomer,
+    networkMode: 'official',
+    protocolGenesis: testGenesis(),
+    integrityGuard: guard,
+    trustedPeerIds: [seed.nodeId],
+  });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(async () => { socket.destroy(); await client.close(); });
+  await waitFor(() => socket.destroyed);
+  assert.equal(server.admittedPeerIds.has(newcomer.nodeId), false);
+});
