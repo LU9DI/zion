@@ -538,6 +538,9 @@ test('official transport admits an unknown peer only when its signed handshake c
   const socket = await client.connect('127.0.0.1', address.port);
   t.after(() => { socket.destroy(); client.close(); });
   await waitFor(() => server.admittedPeerIds.has(newcomer.nodeId));
+  // Server-side admission may complete before the client's handshake response is
+  // processed. Wait for the client session to authenticate before sending data.
+  await waitFor(() => socket.__zionSession?.authenticated === true);
   client.send(socket, { type: 'PING', nonce: 'invite-admitted' });
   await waitFor(() => received);
   assert.equal(admissionController.isAdmitted(newcomer.nodeId), true);
