@@ -234,8 +234,10 @@ export class OfficialNodeBootstrap {
 
       // Storage may create/open persistent state, so it is not touched before verification.
       this.storageState = 'starting';
-      await this.startStorage();
+      // Mark startup as attempted before awaiting the adapter: it may allocate
+      // resources and then reject, so rollback must still invoke stopStorage().
       this.storageStarted = true;
+      await this.startStorage();
       this.storageState = 'running';
       this.#assertLifecycle(epoch);
       // Recheck immediately before opening the network listener.
