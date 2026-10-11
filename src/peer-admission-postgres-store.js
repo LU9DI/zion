@@ -182,6 +182,7 @@ export class PostgresPeerAdmissionStore {
     // began before a later ambiguous COMMIT must never clear that newer marker.
     const unresolvedMarker = this.unknownCommitSubjects.get(subjectNodeId);
     const client = await this.pool.connect();
+    let releaseError;
     try {
       const result = await client.query(
         "SELECT 1 AS admitted FROM peer_admissions WHERE subject_node_id = $1 AND status = 'active' LIMIT 1",
@@ -196,8 +197,13 @@ export class PostgresPeerAdmissionStore {
         this.unknownCommitSubjects.delete(subjectNodeId);
       }
       return admitted;
+    } catch (error) {
+      // The query is fixed SQL; on failure do not return a possibly broken session
+      // to the pool, and preserve the unresolved admission marker.
+      releaseError = error;
+      throw error;
     } finally {
-      client.release();
+      client.release(releaseError);
     }
   }
 
@@ -209,6 +215,8 @@ export class PostgresPeerAdmissionStore {
   async verifyPersistentState() {
     const client = await this.pool.connect();
     let began = false;
+    let commitStarted = false;
+    let releaseError;
     try {
       await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
       began = true;
@@ -312,16 +320,27 @@ export class PostgresPeerAdmissionStore {
           code: 'ZION_ADMISSION_STATE_INCONSISTENT',
         });
       }
+      commitStarted = true;
       await client.query('COMMIT');
       began = false;
       return Object.freeze({ ok: true, activeAdmissions: activeCount, activeReservations, policyVersion });
     } catch (error) {
-      if (began) {
-        try { await client.query('ROLLBACK'); } catch { /* preserve preflight failure */ }
+      if (commitStarted) {
+        // A failed COMMIT leaves the session outcome uncertain even though this
+        // transaction only reads; never recycle that connection into the pool.
+        releaseError = error;
+      } else if (began) {
+        try {
+          await client.query('ROLLBACK');
+        } catch (rollbackError) {
+          releaseError = rollbackError;
+        }
+      } else {
+        releaseError = error;
       }
       throw error;
     } finally {
-      client.release();
+      client.release(releaseError);
     }
   }
 
