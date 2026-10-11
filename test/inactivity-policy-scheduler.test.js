@@ -18,8 +18,8 @@ test('starts only once, runs immediately, and clears its interval on stop', asyn
   assert.equal(timer.ms, 1234);
   await scheduler.runOnce();
   assert.equal(evaluations, 1);
-  assert.equal(scheduler.stop(), true);
-  assert.equal(scheduler.stop(), false);
+  assert.equal(await scheduler.stop(), true);
+  assert.equal(await scheduler.stop(), false);
   assert.equal(timer.cleared, true);
   assert.equal((await scheduler.runOnce()).status, 'stopped');
   assert.throws(() => scheduler.start(), /stopped permanently/);
@@ -68,4 +68,32 @@ test('serializes verified activity after an in-flight evaluation', async () => {
 test('rejects invalid scheduler configuration', () => {
   assert.throws(() => new InactivityPolicyScheduler({ policy: {} }), /Invalid inactivity scheduler/);
   assert.throws(() => new InactivityPolicyScheduler({ policy: { evaluate() {}, markActivity() {} }, intervalMs: 0 }), /Invalid inactivity scheduler/);
+});
+
+
+test('stop clears the timer and waits for an in-flight evaluation to finish', async () => {
+  let resolveEvaluation;
+  const events = [];
+  const timer = fakeTimer();
+  const scheduler = new InactivityPolicyScheduler({
+    policy: {
+      evaluate: () => new Promise(resolve => { events.push('evaluation-started'); resolveEvaluation = value => { events.push('evaluation-finished'); resolve(value); }; }),
+      markActivity: async () => ({ ok: true }),
+    },
+    setIntervalFn: timer.setIntervalFn.bind(timer),
+    clearIntervalFn: timer.clearIntervalFn.bind(timer),
+  });
+  scheduler.start({ runImmediately: false });
+  const run = scheduler.runOnce();
+  let stopped = false;
+  const stop = scheduler.stop().then(result => { stopped = true; return result; });
+  await Promise.resolve();
+  assert.equal(timer.cleared, true);
+  assert.equal(stopped, false, 'stop must wait for the in-flight evaluation');
+  assert.deepEqual(events, ['evaluation-started']);
+  resolveEvaluation({ ok: true });
+  await run;
+  assert.equal(await stop, true);
+  assert.deepEqual(events, ['evaluation-started', 'evaluation-finished']);
+  assert.equal(scheduler.snapshot().evaluating, false);
 });
