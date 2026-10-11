@@ -17,8 +17,9 @@ export class VerifiedPostgresPeerAdmissionService {
     if (!store || typeof store.commitAdmission !== 'function' ||
       !Array.isArray(trustedIssuerNodeIds) ||
       trustedIssuerNodeIds.some(id => !ID.test(id)) ||
+      new Set(trustedIssuerNodeIds).size < threshold ||
       !Number.isSafeInteger(threshold) || threshold < 1 || threshold > 16 ||
-      !Number.isSafeInteger(maxVouchers) || maxVouchers < threshold || maxVouchers > 64 ||
+      !Number.isSafeInteger(maxVouchers) || maxVouchers < threshold || maxVouchers > 16 ||
       !Number.isSafeInteger(maxActivePeers) || maxActivePeers < 1 ||
       !Number.isSafeInteger(maxAdmissionsPerIssuer) || maxAdmissionsPerIssuer < 1 ||
       typeof now !== 'function' || typeof storageHeadroomProvider !== 'function') {
