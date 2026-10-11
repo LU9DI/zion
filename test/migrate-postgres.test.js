@@ -103,3 +103,19 @@ test('migration runner validates migration IDs before connecting', async () => {
   );
   assert.equal(connected, false);
 });
+
+test('migration runner rejects duplicate migration IDs before connecting', async () => {
+  let connected = false;
+  const pool = { async connect() { connected = true; throw new Error('must not connect'); } };
+  await assert.rejects(
+    runPostgresMigrations({
+      pool,
+      migrations: [
+        { id: '0001_example', path: '/tmp/first.sql' },
+        { id: '0001_example', path: '/tmp/second.sql' },
+      ],
+    }),
+    /IDs must be unique/,
+  );
+  assert.equal(connected, false);
+});
