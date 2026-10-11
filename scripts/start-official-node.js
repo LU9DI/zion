@@ -85,11 +85,12 @@ export async function startOfficialNode({
     application_name: 'zion-official-node',
   });
   let bootstrap;
+  let composition;
   let closePromise;
   try {
     const dependencies = await adapterModule.createOfficialNodeDependencies({ env, pool });
     validateDependencies(dependencies);
-    const composition = createOfficialPostgresAdmissionTransport({
+    composition = createOfficialPostgresAdmissionTransport({
       pool,
       identity: dependencies.identity,
       integrityGuard: dependencies.integrityGuard,
@@ -125,6 +126,8 @@ export async function startOfficialNode({
   } catch (error) {
     if (bootstrap) {
       try { await bootstrap.close(); } catch { /* preserve startup failure */ }
+    } else if (composition) {
+      try { await composition.transport.close(); } catch { /* preserve startup failure */ }
     }
     try { await pool.end(); } catch { /* preserve startup failure */ }
     throw error;
