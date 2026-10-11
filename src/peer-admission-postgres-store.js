@@ -233,6 +233,35 @@ export class PostgresPeerAdmissionStore {
           code: 'ZION_ADMISSION_STATE_INCONSISTENT',
         });
       }
+      if (activeCount > maxActivePeers) {
+        throw Object.assign(new Error('Active admissions exceed the persisted peer-capacity policy'), {
+          code: 'ZION_ADMISSION_STATE_INCONSISTENT',
+        });
+      }
+      const issuerQuotaResult = await client.query(
+        `SELECT i.issuer_node_id
+         FROM peer_admission_issuers i
+         JOIN peer_admissions a ON a.subject_node_id = i.subject_node_id
+         WHERE a.status = 'active'
+         GROUP BY i.issuer_node_id
+         HAVING count(*) > $1
+         LIMIT 1`,
+        [maxAdmissionsPerIssuer],
+      );
+      if (issuerQuotaResult.rows?.length) {
+        throw Object.assign(new Error('Active admissions exceed a persisted issuer quota'), {
+          code: 'ZION_ADMISSION_STATE_INCONSISTENT',
+        });
+      }
+      const stalePolicyResult = await client.query(
+        'SELECT subject_node_id FROM peer_admissions WHERE status = $1 AND policy_version > $2 LIMIT 1',
+        ['active', policyVersion],
+      );
+      if (stalePolicyResult.rows?.length) {
+        throw Object.assign(new Error('An active admission references a future policy version'), {
+          code: 'ZION_ADMISSION_STATE_INCONSISTENT',
+        });
+      }
       const malformedResult = await client.query(
         `SELECT a.subject_node_id
          FROM peer_admissions a
