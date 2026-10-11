@@ -45,6 +45,8 @@ jobs:
           test -d test
       - name: Install locked Node dependencies
         run: npm ci --no-audit --no-fund
+      - name: Audit production Node dependencies
+        run: npm audit --omit=dev --audit-level=high
       - name: Syntax checks
         run: npm run check
       - name: Test suite including real PostgreSQL integration
