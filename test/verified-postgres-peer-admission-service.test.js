@@ -11,7 +11,7 @@ test('verifies vouchers before calling the PostgreSQL store', async () => {
     createPeerIntroductionVoucher({ issuerIdentity: issuer, subjectNodeId: subject.nodeId }));
   const calls = [];
   const service = new VerifiedPostgresPeerAdmissionService({
-    store: { commitAdmission: async input => { calls.push(input); return { ok: true }; } },
+    store: { commitAdmission: async input => { calls.push(input); return { ok: true }; }, isAdmitted: async id => id === subject.nodeId },
     trustedIssuerNodeIds: issuers.map(x => x.nodeId),
     threshold: 2,
     storageHeadroomProvider: async () => 0.5,
@@ -20,6 +20,7 @@ test('verifies vouchers before calling the PostgreSQL store', async () => {
   assert.equal(calls.length, 1);
   assert.deepEqual(new Set(calls[0].issuerNodeIds), new Set(issuers.slice(0, 2).map(x => x.nodeId)));
   assert.deepEqual(calls[0].invitations.map(x => x.nonce), vouchers.map(x => x.nonce));
+  assert.equal(await service.isAdmitted(subject.nodeId), true);
 });
 
 test('rejects duplicate issuers and subject-mismatched vouchers', async () => {
