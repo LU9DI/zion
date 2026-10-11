@@ -83,6 +83,13 @@ export class VerifiedPostgresPeerAdmissionService {
     });
   }
 
+  isAdmitted(subjectNodeId) {
+    if (typeof this.store.isAdmitted !== 'function') {
+      throw new TypeError('Admission store does not support authoritative isAdmitted()');
+    }
+    return this.store.isAdmitted(subjectNodeId);
+  }
+
   releaseAdmission(subjectNodeId, status = 'released') {
     if (typeof this.store.releaseAdmission !== 'function') {
       throw new TypeError('Admission store does not support releaseAdmission()');
