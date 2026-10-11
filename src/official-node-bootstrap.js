@@ -149,7 +149,7 @@ export class OfficialNodeBootstrap {
         catch (error) { errors.push(error); }
       }
       if (this.inactivitySchedulerStarted && this.inactivityScheduler) {
-        try { this.inactivityScheduler.stop(); this.inactivitySchedulerStarted = false; }
+        try { await this.inactivityScheduler.stop(); this.inactivitySchedulerStarted = false; }
         catch (error) { errors.push(error); }
       }
       this.transportState = 'stopping';
