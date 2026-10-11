@@ -133,6 +133,48 @@ test('ambiguous commit blocks only the affected subject until authoritative reco
 });
 
 
+
+test('an in-flight stale admission read cannot clear a newer ambiguous-COMMIT marker', async () => {
+  const basePool = fakePool({ failCommit: true });
+  const originalConnect = basePool.connect.bind(basePool);
+  let readStarted;
+  const started = new Promise(resolve => { readStarted = resolve; });
+  let releaseRead;
+  const readGate = new Promise(resolve => { releaseRead = resolve; });
+  basePool.connect = async () => {
+    const client = await originalConnect();
+    return {
+      ...client,
+      async query(sql, params = []) {
+        if (sql.includes("SELECT 1 AS admitted FROM peer_admissions")) {
+          readStarted();
+          await readGate;
+        }
+        return client.query(sql, params);
+      },
+    };
+  };
+  const store = new PostgresPeerAdmissionStore({ pool: basePool });
+  const staleRead = store.isAdmitted(id('a'));
+  await started;
+
+  assert.deepEqual(await store.commitAdmission(input()), {
+    ok: false, reason: 'admission-state-unavailable',
+  });
+  releaseRead();
+  assert.equal(await staleRead, false);
+
+  // The read started before the ambiguous COMMIT and therefore cannot reconcile it.
+  assert.deepEqual(await store.commitAdmission(input()), {
+    ok: false, reason: 'admission-state-unavailable',
+  });
+  assert.equal(basePool.calls.filter(x => x.sql === 'BEGIN ISOLATION LEVEL SERIALIZABLE').length, 1);
+
+  // A fresh authoritative read may now reconcile the marker.
+  assert.equal(await store.isAdmitted(id('a')), false);
+  assert.equal((await store.commitAdmission(input())).ok, true);
+});
+
 test('authoritative admission lookup queries active PostgreSQL state', async () => {
   const pool = fakePool();
   const store = new PostgresPeerAdmissionStore({ pool });
