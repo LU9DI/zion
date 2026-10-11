@@ -81,10 +81,20 @@ export async function runPostgresMigrations({ pool, migrations = DEFAULT_MIGRATI
     }
     return Object.freeze({ ok: true, migrations: Object.freeze(applied) });
   } finally {
+    let releaseError;
     if (locked) {
-      try { await client.query('SELECT pg_advisory_unlock($1)', [MIGRATION_LOCK_ID]); } catch {}
+      try {
+        const unlock = await client.query('SELECT pg_advisory_unlock($1)', [MIGRATION_LOCK_ID]);
+        if (unlock.rows?.[0]?.pg_advisory_unlock !== true) {
+          releaseError = new Error('PostgreSQL migration advisory lock release was not confirmed');
+        }
+      } catch (error) {
+        releaseError = error;
+      }
     }
-    client.release();
+    // node-postgres destroys a client released with an error instead of returning
+    // a possibly still-locked session to the pool.
+    client.release(releaseError);
   }
 }
 
