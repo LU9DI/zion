@@ -20,6 +20,7 @@ Therefore, the factory is **not yet wired into a real deployment launcher**. Do 
 - [ ] Provision PostgreSQL using deployment-managed credentials and least-privilege roles. Do not place credentials in source control or logs.
 - [ ] Verify the target database identity and connectivity from the same runtime that will host the node.
 - [ ] Apply `migrations/postgres/0001_peer_admission.sql` using the deployment migration process; verify the resulting schema before startup.
+- [ ] Confirm `OfficialNodeBootstrap.start()` completes the `verifyPersistentState()` preflight before the listener is opened; it must reject missing policy/capacity rows, invalid policy values, reservation-count drift, or active admissions with inconsistent issuer/nonce evidence.
 - [ ] Provision the reviewed protocol genesis, bootstrap peer allowlist, and trusted issuer node IDs through a trusted configuration channel.
 - [ ] Confirm trusted issuer IDs are unique and sufficient for the configured threshold.
 - [ ] Supply a storage-headroom provider that fails closed when measurements are missing, stale, invalid, or unavailable.
