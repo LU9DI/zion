@@ -10,6 +10,7 @@ The repository audit at commit `e6c13486f22898b9dafcbd297b3b83cf91bbdd07` found 
 - `src/official-postgres-admission-transport.js` composes PostgreSQL admission, the verified admission service, and the official peer transport.
 - `src/official-node-bootstrap.js` validates and orchestrates a supplied transport and storage adapters; it does not construct production identity, trust roots, PostgreSQL pool, storage adapter, or capacity provider.
 - `cloud/README.md` identifies the cloud UI as a static local preview, not a connected cloud service.
+- The CI workflow installs `pg` transiently with `npm install --no-save --no-package-lock`; `package.json` does not declare a PostgreSQL runtime driver. A production launcher must make the driver an explicit, reproducibly pinned deployment dependency before it can open the listener.
 
 Therefore, the factory is **not yet wired into a real deployment launcher**. Do not interpret unit tests, the CI PostgreSQL integration test, or this runbook as proof that an official node can be deployed. The next integration step requires a real launcher and deployment-owned configuration for identity/key material, database lifecycle and migrations, reviewed genesis, bootstrap peers, trusted voucher issuers, storage adapter, and capacity/headroom measurements. Do not add placeholder values or silently fall back to in-memory admission to make startup appear successful.
 
