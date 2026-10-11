@@ -187,9 +187,17 @@ export class PeerTransport {
     if (!checked.ok) { socket.destroy(); return; }
     const trustedByAllowlist = !this.trustedPeerIds || this.trustedPeerIds.has(checked.nodeId);
     // Admission backends may be transactional and remote, so their fresh reads can be async.
-    const controllerAdmitted = this.admissionController
-      ? await this.admissionController.isAdmitted(checked.nodeId)
-      : false;
+    // A database outage must close the connection, not leave an unhandled rejection
+    // or fall back to process-local admission state.
+    let controllerAdmitted = false;
+    if (this.admissionController) {
+      try {
+        controllerAdmitted = await this.admissionController.isAdmitted(checked.nodeId);
+      } catch {
+        socket.destroy();
+        return;
+      }
+    }
     const previouslyAdmitted = this.admittedPeerIds.has(checked.nodeId) || controllerAdmitted === true;
     if (!trustedByAllowlist && !previouslyAdmitted && !this.admissionController) { socket.destroy(); return; }
     // Admission control applies to handshake frames as well as application traffic.
@@ -207,7 +215,13 @@ export class PeerTransport {
           let admission;
           try { admission = await this.admissionController.admit({ subjectNodeId: checked.nodeId, vouchers: payload.vouchers }); }
           catch { socket.destroy(); return; }
-          const admittedAfterAttempt = await this.admissionController.isAdmitted(checked.nodeId);
+          let admittedAfterAttempt;
+          try {
+            admittedAfterAttempt = await this.admissionController.isAdmitted(checked.nodeId);
+          } catch {
+            socket.destroy();
+            return;
+          }
           if (!admission?.ok && !admittedAfterAttempt) { socket.destroy(); return; }
           this.admittedPeerIds.add(checked.nodeId);
         }
