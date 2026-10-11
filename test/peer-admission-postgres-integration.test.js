@@ -113,6 +113,30 @@ test('PostgreSQL migration and independent-process admission races enforce capac
       'UPDATE peer_admission_capacity SET active_reservations = 0 WHERE singleton = true',
     );
 
+    // A valid issuer/evidence pair must not hide an extra consumed invitation
+    // from an issuer that is absent from the active admission's issuer set.
+    await pool.query(
+      "INSERT INTO peer_admissions (subject_node_id, status, policy_version) VALUES ($1, 'active', 1)",
+      [id('f')],
+    );
+    await pool.query(
+      'INSERT INTO peer_admission_issuers (subject_node_id, issuer_node_id) VALUES ($1, $2)',
+      [id('f'), id('1')],
+    );
+    await pool.query(
+      'INSERT INTO consumed_peer_invitations (issuer_node_id, nonce, subject_node_id) VALUES ($1, $2, $3), ($4, $5, $3)',
+      [id('1'), nonce('a'), id('f'), id('2'), nonce('b')],
+    );
+    await pool.query(
+      'UPDATE peer_admission_capacity SET active_reservations = 1 WHERE singleton = true',
+    );
+    await assert.rejects(store.verifyPersistentState(), { code: 'ZION_ADMISSION_STATE_INCONSISTENT' });
+    await pool.query('DELETE FROM consumed_peer_invitations WHERE subject_node_id = $1', [id('f')]);
+    await pool.query('DELETE FROM peer_admissions WHERE subject_node_id = $1', [id('f')]);
+    await pool.query(
+      'UPDATE peer_admission_capacity SET active_reservations = 0 WHERE singleton = true',
+    );
+
     // Scenario 1: two independent processes compete for the only available slot.
     await pool.query(
       'UPDATE peer_admission_policy SET max_active_peers = 1, max_admissions_per_issuer = 5, min_storage_headroom_ratio = 0.1, policy_version = policy_version + 1 WHERE singleton = true',
