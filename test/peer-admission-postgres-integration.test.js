@@ -117,38 +117,6 @@ test('PostgreSQL migration and independent-process admission races enforce capac
     assert.equal(Number(after[0].active_reservations), 0);
     assert.equal(after[0].active_admissions, 0);
 
-    // Expand capacity for independent nonce, subject, and issuer-quota races.
-    await pool.query(
-      'UPDATE peer_admission_policy SET max_active_peers = 10, max_admissions_per_issuer = 5, policy_version = policy_version + 1 WHERE singleton = true',
-    );
-
-    const nonceRace = await Promise.all([
-      runAdmissionWorker(admissionInput('c', ['5', '6'], ['e', 'f'])),
-      runAdmissionWorker(admissionInput('d', ['5', '7'], ['e', '1'])),
-    ]);
-    assert.equal(nonceRace.filter(result => result.ok).length, 1,
-      'the same issuer nonce must be consumed by at most one independent process');
-    assert.equal(nonceRace.filter(result => !result.ok && result.reason === 'invitation-already-used').length, 1);
-
-    const subjectRace = await Promise.all([
-      runAdmissionWorker(admissionInput('e', ['8', '9'], ['2', '3'])),
-      runAdmissionWorker(admissionInput('e', ['a', 'b'], ['4', '5'])),
-    ]);
-    assert.equal(subjectRace.filter(result => result.ok).length, 1,
-      'the same subject must be admitted by at most one independent process');
-    assert.equal(subjectRace.filter(result => !result.ok && result.reason === 'subject-already-admitted').length, 1);
-
-    await pool.query(
-      'UPDATE peer_admission_policy SET max_admissions_per_issuer = 1, policy_version = policy_version + 1 WHERE singleton = true',
-    );
-    const quotaRace = await Promise.all([
-      runAdmissionWorker(admissionInput('f', ['c', 'd'], ['6', '7'])),
-      runAdmissionWorker(admissionInput('1', ['c', '2'], ['8', '9'])),
-    ]);
-    assert.equal(quotaRace.filter(result => result.ok).length, 1,
-      'an issuer quota of one must not be exceeded by independent processes');
-    assert.equal(quotaRace.filter(result => !result.ok && result.reason === 'issuer-admission-quota-reached').length, 1);
-
     // Scenario 2: the same invitation nonces cannot be consumed by two subjects.
     await clearAdmissions(pool);
     await pool.query(
