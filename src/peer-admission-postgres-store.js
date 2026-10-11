@@ -153,6 +153,24 @@ export class PostgresPeerAdmissionStore {
     }
   }
 
+  /**
+   * Authoritative read used by the transport after admission and to reconcile an
+   * ambiguous COMMIT. This remains available even when writes are fail-closed.
+   */
+  async isAdmitted(subjectNodeId) {
+    if (!NODE_ID.test(subjectNodeId ?? '')) return false;
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query(
+        "SELECT 1 AS admitted FROM peer_admissions WHERE subject_node_id = $1 AND status = 'active' LIMIT 1",
+        [subjectNodeId],
+      );
+      return Boolean(result.rows?.length);
+    } finally {
+      client.release();
+    }
+  }
+
   async releaseAdmission(subjectNodeId, status = 'released') {
     if (this.commitOutcomeUnknown) return { ok: false, reason: 'admission-state-unavailable' };
     if (!NODE_ID.test(subjectNodeId ?? '') || !['released', 'revoked'].includes(status)) {
