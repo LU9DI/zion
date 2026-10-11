@@ -523,6 +523,7 @@ test('official transport admits an unknown peer only when its signed handshake c
   const asyncReadController = {
     admit: input => admissionController.admit(input),
     isAdmitted: async nodeId => admissionController.isAdmitted(nodeId),
+    releaseAdmission: (nodeId, status) => admissionController.releaseAdmission(nodeId, status),
   };
   const server = new PeerTransport({
     identity: seed, host: '127.0.0.1', networkMode: 'official', protocolGenesis: genesis, integrityGuard: guard,
