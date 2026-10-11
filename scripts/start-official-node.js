@@ -1,5 +1,5 @@
 import { isAbsolute, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { OfficialNodeBootstrap } from '../src/official-node-bootstrap.js';
 import { createOfficialPostgresAdmissionTransport } from '../src/official-postgres-admission-transport.js';
 
@@ -150,7 +150,7 @@ async function main() {
   process.once('SIGTERM', () => { shutdown('SIGTERM').catch(() => { process.exitCode = 1; }); });
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === resolve(new URL(import.meta.url).pathname)) {
+if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
   main().catch(() => {
     process.stderr.write('Official Zion node startup failed; inspect deployment logs for diagnostics.\n');
     process.exitCode = 1;
