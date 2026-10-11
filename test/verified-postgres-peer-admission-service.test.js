@@ -59,3 +59,21 @@ test('fails closed when storage headroom is unavailable', async () => {
   assert.deepEqual(await service.admit({ subjectNodeId: subject.nodeId, vouchers }),
     { ok: false, reason: 'capacity-unavailable' });
 });
+
+
+test('rejects admission configurations that cannot satisfy transport voucher limits', () => {
+  const issuer = createNodeIdentity();
+  const store = { commitAdmission: async () => ({ ok: true }) };
+  const options = {
+    store,
+    trustedIssuerNodeIds: [issuer.nodeId],
+    threshold: 2,
+    storageHeadroomProvider: async () => 0.5,
+  };
+  assert.throws(() => new VerifiedPostgresPeerAdmissionService(options), /Invalid verified PostgreSQL admission configuration/);
+  assert.throws(() => new VerifiedPostgresPeerAdmissionService({
+    ...options,
+    trustedIssuerNodeIds: [issuer.nodeId, issuer.nodeId],
+    maxVouchers: 17,
+  }), /Invalid verified PostgreSQL admission configuration/);
+});
