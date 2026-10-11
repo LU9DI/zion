@@ -10,7 +10,7 @@ const DEFAULT_MIGRATIONS = Object.freeze([
 const MIGRATION_LOCK_ID = 741_029_331;
 
 function migrationBody(sql, id) {
-  const match = /^\s*BEGIN;\s*([\s\S]*?)\s*COMMIT;\s*$/i.exec(sql);
+  const match = /^(?:\s|--[^\n]*(?:\n|$))*BEGIN;\s*([\s\S]*?)\s*COMMIT;\s*$/i.exec(sql);
   if (!match) {
     throw new Error(`Migration ${id} must have one outer BEGIN/COMMIT transaction wrapper`);
   }
