@@ -98,6 +98,20 @@ test('PostgreSQL migration and independent-process admission races enforce capac
     await pool.query(
       'UPDATE peer_admission_capacity SET active_reservations = 0 WHERE singleton = true',
     );
+    // A counter can match while active rows still lack their required issuer
+    // and consumed-invitation evidence; startup must reject that state as well.
+    await pool.query(
+      "INSERT INTO peer_admissions (subject_node_id, status, policy_version) VALUES ($1, 'active', 1)",
+      [id('f')],
+    );
+    await pool.query(
+      'UPDATE peer_admission_capacity SET active_reservations = 1 WHERE singleton = true',
+    );
+    await assert.rejects(store.verifyPersistentState(), { code: 'ZION_ADMISSION_STATE_INCONSISTENT' });
+    await pool.query('DELETE FROM peer_admissions WHERE subject_node_id = $1', [id('f')]);
+    await pool.query(
+      'UPDATE peer_admission_capacity SET active_reservations = 0 WHERE singleton = true',
+    );
 
     // Scenario 1: two independent processes compete for the only available slot.
     await pool.query(
