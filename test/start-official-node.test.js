@@ -151,3 +151,52 @@ test('official launcher composes the real transport/bootstrap and closes storage
   assert.equal(state.storageRunning, false);
   assert.equal(pool.ended, true);
 });
+
+
+test('official launcher closes composed transport and PostgreSQL pool when integrity verification fails', async () => {
+  const lifecycle = { poolEnded: false, storageStarted: false };
+  const genesis = {
+    schemaVersion: 1, networkName: 'Zion Launcher Failure Test', protocolMajor: 1,
+    genesisTime: 1800000000, serialization: 'canonical-json-v1',
+    crypto: { identity: 'Ed25519', signature: 'Ed25519', hash: 'SHA-256', aead: 'AES-256-GCM' },
+    contentAddress: { algorithm: 'SHA-256', encoding: 'lowercase-hex' },
+    erasureCoding: { algorithm: 'Reed-Solomon', dataShards: 10, parityShards: 20 },
+    limits: { maxFrameBytes: 262144, maxMessageBytes: 262144, maxTtlMs: 600000, maxHops: 16 },
+    replay: { maxClockSkewMs: 120000, nonceBytes: 16, retentionMs: 120000 },
+    rules: { gossipIsDiscoveryOnly: true, localResourceLimitsAreAuthoritative: true, breakingChangesRequireNewNetwork: true },
+  };
+  class FailurePool {
+    constructor() { this.ended = false; }
+    async end() { this.ended = true; lifecycle.poolEnded = true; }
+  }
+  let pool;
+  const guard = {
+    status: { verified: false, quarantined: false },
+    async verify() { return { ok: false, reason: 'fixture-integrity-failure' }; },
+    async checkHealthy() { throw new Error('integrity not verified'); },
+    assertHealthy() { throw new Error('integrity not verified'); },
+    addQuarantineListener() { return () => {}; },
+  };
+  await assert.rejects(startOfficialNode({
+    env,
+    PoolClass: class extends FailurePool { constructor(options) { super(options); pool = this; } },
+    loadAdapterModule: async () => ({
+      async createOfficialNodeDependencies() {
+        return {
+          integrityGuard: guard,
+          identity: createNodeIdentity(),
+          protocolGenesis: genesis,
+          trustedPeerIds: ['a'.repeat(64)],
+          trustedIssuerNodeIds: ['1'.repeat(64), '2'.repeat(64)],
+          storageHeadroomProvider: async () => 0.5,
+          async startStorage() { lifecycle.storageStarted = true; },
+          async stopStorage() { lifecycle.storageStarted = false; },
+          transportOptions: { host: '127.0.0.1', port: 0 },
+        };
+      },
+    }),
+  }), { code: 'ZION_STARTUP_INTEGRITY_FAILED' });
+  assert.equal(lifecycle.storageStarted, false, 'storage must never start before integrity verification');
+  assert.equal(pool.ended, true, 'PostgreSQL pool must close after startup failure');
+  assert.equal(lifecycle.poolEnded, true);
+});
