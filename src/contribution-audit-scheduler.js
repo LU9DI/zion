@@ -100,14 +100,25 @@ export class ContributionAuditScheduler {
     return true;
   }
 
-  stop() {
-    if (this.timer) clearInterval(this.timer);
-    this.timer = null;
+  async stop() {
+    const errors = [];
+    if (this.timer) {
+      const timer = this.timer;
+      this.timer = null;
+      try { clearInterval(timer); } catch (error) { errors.push(error); }
+    }
+    // The audit may still be reading/writing durable contribution evidence.
+    // Drain it before callers close storage or other dependencies.
+    if (this.inFlight) {
+      try { await this.inFlight; } catch (error) { errors.push(error); }
+    }
+    if (errors.length) throw new AggregateError(errors, 'Contribution audit scheduler shutdown was incomplete');
     return true;
   }
 
   close() {
-    this.stop();
+    // Close synchronously so no new audit can start while stop drains current work.
     this.closed = true;
+    return this.stop();
   }
 }
