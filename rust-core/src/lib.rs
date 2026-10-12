@@ -314,7 +314,7 @@ impl StorageCore {
         let owner_path = lock.join("owner");
         let owner = fs::symlink_metadata(&owner_path).ok().filter(|m| m.is_file() && !m.file_type().is_symlink() && m.len() <= 128)
             .and_then(|_| fs::read_to_string(&owner_path).ok());
-        let stale = if let Some(owner) = owner {
+        let stale = if let Some(ref owner) = owner {
             let pid = owner.split(':').next().and_then(|value| value.parse::<i32>().ok());
             match pid {
                 Some(pid) if pid > 0 => {
