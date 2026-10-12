@@ -360,6 +360,26 @@ test('does not issue a storage receipt when adapter read-back fails integrity ve
   assert.equal(released, 1);
 });
 
+test('wipes the assembled envelope buffer after a successful store', async () => {
+  const identity = createNodeIdentity();
+  const sender = createNodeIdentity();
+  const bytes = envelope(64);
+  const chunkId = createHash('sha256').update(bytes).digest('hex');
+  const request = createStoreRequest({ chunkId, bytes: bytes.length, targetNodeId: identity.nodeId });
+  let storedReference;
+  const store = {
+    async put(id, value) { storedReference = value; return { id, bytes: value.length, alreadyPresent: false }; },
+    async get() { return Buffer.from(bytes); }
+  };
+  const service = new PeerStorageService({ identity, store, maxChunkBytes: 1024, partBytes: 1024 });
+  await service.handle({ nodeId: sender.nodeId, payload: {
+    type: 'STORE_CHUNK', transferId: randomBytes(16).toString('hex'), chunkId,
+    totalBytes: bytes.length, partIndex: 0, partCount: 1, data: bytes.toString('base64'), request
+  } }, {}, { send() {} });
+  assert.ok(storedReference, 'store adapter should receive the assembled buffer');
+  assert.ok(storedReference.every(byte => byte === 0), 'assembled buffer should be wiped after persistence and receipt processing');
+});
+
 test('accepts Rust storage adapter receipt shape after verified read-back', async () => {
   const targetIdentity = createNodeIdentity(); const clientIdentity = createNodeIdentity();
   const bytes = envelope(21); const chunkId = createHash('sha256').update(bytes).digest('hex');
