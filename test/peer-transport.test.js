@@ -801,7 +801,19 @@ test('official transport aborts pending admission work when quarantine destroys 
     onMessage: async () => { messagesHandled++; }
   });
   const address = await transport.listen();
-  const client = new PeerTransport({ identity: createNodeIdentity() });
+  const clientGuard = {
+    status: { verified: true, quarantined: false, reason: null },
+    async checkHealthy() {},
+    assertHealthy() {},
+    addQuarantineListener() { return () => {}; }
+  };
+  const client = new PeerTransport({
+    identity: createNodeIdentity(),
+    protocolGenesis: testGenesis(),
+    networkMode: 'official',
+    integrityGuard: clientGuard,
+    trustedPeerIds: [transport.identity.nodeId]
+  });
   const socket = await client.connect('127.0.0.1', address.port);
   t.after(async () => { await client.close(); await transport.close(); });
   await waitFor(() => typeof releaseAdmissionRead === 'function');
