@@ -859,6 +859,30 @@ test('official transport cannot start listening if quarantine begins during star
 });
 
 
+test('official transport closes a bound listener when the final startup integrity gate fails', async () => {
+  let assertions = 0;
+  const integrityGuard = {
+    status: { verified: true, quarantined: false },
+    async checkHealthy() {},
+    assertHealthy() {
+      assertions++;
+      if (assertions > 1) {
+        this.status = { verified: false, quarantined: true, reason: 'startup-final-gate' };
+        throw Object.assign(new Error('quarantined at final startup gate'), { code: 'ZION_INTEGRITY_QUARANTINED' });
+      }
+    }
+  };
+  const transport = new PeerTransport({
+    identity: createNodeIdentity(),
+    protocolGenesis: testGenesis(),
+    networkMode: 'official',
+    integrityGuard
+  });
+  await assert.rejects(transport.listen(), /quarantined at final startup gate/);
+  assert.equal(transport.started, false);
+  assert.equal(transport.server, null, 'failed startup must not retain a server handle');
+});
+
 test('official transport rejects inbound sockets after quarantine even without a listener hook', async t => {
   const integrityGuard = {
     status: { verified: true, quarantined: false },
