@@ -265,7 +265,11 @@ impl StorageCore {
                         Ok(())
                     })();
                     if let Err(error) = owner_result {
-                        let _ = fs::remove_dir_all(&lock);
+                        // Do not recursively remove `lock` here: after a stale-lock
+                        // rename, another process may already have created a new lock
+                        // at the same pathname. Deleting by pathname could remove that
+                        // other process's lock. A metadata-less lock is reaped only
+                        // after the conservative stale age in `reap_stale_lock`.
                         return Err(error);
                     }
                     break;
