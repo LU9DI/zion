@@ -1,6 +1,6 @@
 /** Bounded periodic refresh of local contribution evidence. No network input can trigger it. */
 export class ContributionAuditScheduler {
-  constructor({ storageService, fairSharePolicy, intervalMs = 5 * 60 * 1000, maxEntries = 10_000, batchSize = 128, checkpointPath = null, onResult = null, adaptiveController = null, getTelemetry = null } = {}) {
+  constructor({ storageService, fairSharePolicy, intervalMs = 5 * 60 * 1000, maxEntries = 10_000, batchSize = 128, checkpointPath = null, onResult = null, adaptiveController = null, getTelemetry = null, setIntervalFn = setInterval, clearIntervalFn = clearInterval } = {}) {
     if (!storageService || typeof storageService.refreshVerifiedContribution !== 'function' ||
       !fairSharePolicy || typeof fairSharePolicy.revokeVerifiedContribution !== 'function' ||
       !Number.isSafeInteger(intervalMs) || intervalMs < 1_000 ||
@@ -9,7 +9,8 @@ export class ContributionAuditScheduler {
       typeof onResult !== 'function' && onResult !== null ||
       (adaptiveController === null) !== (getTelemetry === null) ||
       adaptiveController !== null && typeof adaptiveController.evaluate !== 'function' ||
-      getTelemetry !== null && typeof getTelemetry !== 'function') {
+      getTelemetry !== null && typeof getTelemetry !== 'function' ||
+      typeof setIntervalFn !== 'function' || typeof clearIntervalFn !== 'function') {
       throw new TypeError('Invalid contribution audit scheduler configuration');
     }
     if (Number.isSafeInteger(fairSharePolicy.contributionTtlMs) && intervalMs >= fairSharePolicy.contributionTtlMs) {
@@ -25,6 +26,8 @@ export class ContributionAuditScheduler {
     // When supplied, the adaptive gate fails closed on missing telemetry or a paused host.
     this.adaptiveController = adaptiveController;
     this.getTelemetry = getTelemetry;
+    this.setIntervalFn = setIntervalFn;
+    this.clearIntervalFn = clearIntervalFn;
     this.timer = null;
     this.inFlight = null;
     this.closed = false;
@@ -94,7 +97,7 @@ export class ContributionAuditScheduler {
   start({ runImmediately = true } = {}) {
     if (this.closed) throw new Error('Contribution audit scheduler is closed');
     if (this.timer) return false;
-    this.timer = setInterval(() => { void this.runOnce(); }, this.intervalMs);
+    this.timer = this.setIntervalFn(() => { void this.runOnce(); }, this.intervalMs);
     this.timer.unref?.();
     if (runImmediately) void this.runOnce();
     return true;
@@ -105,7 +108,7 @@ export class ContributionAuditScheduler {
     if (this.timer) {
       const timer = this.timer;
       this.timer = null;
-      try { clearInterval(timer); } catch (error) { errors.push(error); }
+      try { this.clearIntervalFn(timer); } catch (error) { errors.push(error); }
     }
     // The audit may still be reading/writing durable contribution evidence.
     // Drain it before callers close storage or other dependencies.
