@@ -427,7 +427,14 @@ export class PeerStorageService {
     if (transfer.received !== transfer.partCount) return;
     this.transfers.delete(transferKey); clearTimeout(transfer.expiryTimer); this.bufferedBytes -= transfer.totalBytes;
     const complete = Buffer.concat(transfer.parts, transfer.totalBytes);
-    if (complete.length !== transfer.totalBytes || createHash('sha256').update(complete).digest('hex') !== transfer.chunkId) throw new Error('Transferred chunk digest mismatch');
+    // Buffer.concat copies the bytes; wipe the per-segment allocations immediately
+    // so successful and digest-failing transfers do not retain duplicate plaintext
+    // buffers until garbage collection.
+    for (const part of transfer.parts) if (Buffer.isBuffer(part)) part.fill(0);
+    if (complete.length !== transfer.totalBytes || createHash('sha256').update(complete).digest('hex') !== transfer.chunkId) {
+      complete.fill(0);
+      throw new Error('Transferred chunk digest mismatch');
+    }
     if (response) {
       const key = `${nodeId}:${transfer.requestId}`;
       const pending = this.pendingGets.get(key);
