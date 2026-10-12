@@ -61,6 +61,16 @@ test('scheduler eventually sends a frame larger than one second of bandwidth bud
   } finally { scheduler.close(); }
 });
 
+test('scheduler rejects queued transfers when the bandwidth policy throws', async () => {
+  const policy = { evaluate() { throw new Error('policy evaluation failed'); } };
+  const scheduler = new AdaptiveTransferScheduler({ policy, getTelemetry: () => healthy });
+  try {
+    await assert.rejects(scheduler.enqueue(fakeSocket(), Buffer.from('data')), /policy evaluation failed/);
+    assert.equal(scheduler.queuedBytes, 0);
+    assert.equal(scheduler.queue.length, 0);
+  } finally { scheduler.close(); }
+});
+
 test('scheduler fails closed when telemetry is unavailable', async () => {
   const policy = new AdaptiveBandwidthPolicy();
   const scheduler = new AdaptiveTransferScheduler({ policy, getTelemetry: () => null });
