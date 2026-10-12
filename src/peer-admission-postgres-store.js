@@ -184,6 +184,12 @@ export class PostgresPeerAdmissionStore {
     const client = await this.pool.connect();
     let releaseError;
     try {
+      const roleResult = await client.query('SELECT pg_is_in_recovery() AS in_recovery');
+      if (roleResult.rows?.[0]?.in_recovery !== false) {
+        throw Object.assign(new Error('Authoritative admission reconciliation requires a writable PostgreSQL primary'), {
+          code: 'ZION_ADMISSION_PRIMARY_REQUIRED',
+        });
+      }
       const result = await client.query(
         "SELECT 1 AS admitted FROM peer_admissions WHERE subject_node_id = $1 AND status = 'active' LIMIT 1",
         [subjectNodeId],
@@ -220,6 +226,12 @@ export class PostgresPeerAdmissionStore {
     try {
       await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
       began = true;
+      const roleResult = await client.query('SELECT pg_is_in_recovery() AS in_recovery');
+      if (roleResult.rows?.[0]?.in_recovery !== false) {
+        throw Object.assign(new Error('Official peer admission requires a writable PostgreSQL primary'), {
+          code: 'ZION_ADMISSION_PRIMARY_REQUIRED',
+        });
+      }
       const policyResult = await client.query(
         'SELECT max_active_peers, max_admissions_per_issuer, min_storage_headroom_ratio, policy_version FROM peer_admission_policy WHERE singleton = true FOR UPDATE',
       );
