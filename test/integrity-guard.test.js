@@ -207,6 +207,8 @@ test('a slow quarantine alert cannot delay subsystem isolation listeners', async
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   const valid = signedManifest('0.32.8', [{ path: 'main.js', sha256: sha256(bytes) }], privateKey);
   let releaseAlert;
+  let signalAlertStarted;
+  const alertStarted = new Promise(resolve => { signalAlertStarted = resolve; });
   const alertPending = new Promise(resolve => { releaseAlert = resolve; });
   let listenerCalled = false;
   const guard = new IntegrityGuard({
@@ -214,12 +216,13 @@ test('a slow quarantine alert cannot delay subsystem isolation listeners', async
     trustedPublicKey: publicKey.export({ type: 'spki', format: 'pem' }),
     expectedReleaseVersion: '0.32.8',
     requiredPaths: ['main.js'],
-    onQuarantine: () => alertPending
+    onQuarantine: () => { signalAlertStarted(); return alertPending; }
   });
   guard.addQuarantineListener(async () => { listenerCalled = true; });
   const verification = guard.verify();
   try {
-    await new Promise(resolve => setImmediate(resolve));
+    await alertStarted;
+    await Promise.resolve();
     assert.equal(listenerCalled, true, 'containment listeners must run without waiting for the alert sink');
     assert.equal(guard.status.quarantined, true);
   } finally {
