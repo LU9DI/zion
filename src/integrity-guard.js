@@ -54,13 +54,14 @@ export class IntegrityGuard {
       // signature and file checks must operate on the same immutable-by-ownership
       // data; otherwise a caller mutating a shared manifest object during I/O could
       // change paths or hashes after signature verification.
-      const m = JSON.parse(canonical(this.manifest));
-      // Snapshot every security-critical setting before filesystem I/O. Public
-      // properties can otherwise be reassigned while awaits are in flight.
+      // Snapshot every security-critical setting before canonicalizing the
+      // manifest or beginning filesystem I/O. Public properties can otherwise
+      // be reassigned while asynchronous verification is in flight.
       const root = this.root;
       const expectedReleaseVersion = this.expectedReleaseVersion;
       const requiredPaths = this.requiredPaths;
       const trustedPublicKey = this.trustedPublicKey;
+      const m = JSON.parse(canonical(this.manifest));
       const rootStat = await lstat(root);
       if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error('release-root-not-real-directory');
       const resolvedRoot = await realpath(root);
