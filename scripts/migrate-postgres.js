@@ -113,7 +113,7 @@ export async function runPostgresMigrations({ pool, migrations = DEFAULT_MIGRATI
       } catch (error) {
         releaseError = error;
       }
-    } else if (lockAttempted) {
+    } else if (lockAttempted && !locked) {
       // A rejected lock query can have an ambiguous outcome if the connection
       // failed after PostgreSQL acquired the session lock but before its reply.
       releaseError = new Error('PostgreSQL migration advisory lock acquisition was not confirmed');
