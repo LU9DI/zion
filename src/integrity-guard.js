@@ -105,10 +105,15 @@ export class IntegrityGuard {
       this.quarantined = true;
       this.reason = typeof error?.message === 'string' ? error.message.slice(0, 240) : 'integrity-verification-failed';
       this.lastReport = Object.freeze({ ok: false, reason: this.reason });
-      try { await this.onQuarantine?.(this.lastReport); } catch { /* quarantine must remain active even if alerting fails */ }
+      // Dispatch every containment listener before waiting for any external
+      // alert sink. A slow or hung notification callback must not delay transport
+      // isolation or block another subsystem's quarantine listener.
+      const notifications = [];
+      if (this.onQuarantine) notifications.push(Promise.resolve().then(() => this.onQuarantine(this.lastReport)));
       for (const listener of this.quarantineListeners) {
-        try { await listener(this.lastReport); } catch { /* cleanup failures must not clear quarantine */ }
+        notifications.push(Promise.resolve().then(() => listener(this.lastReport)));
       }
+      await Promise.allSettled(notifications);
       return this.lastReport;
     }
   }
