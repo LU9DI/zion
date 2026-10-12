@@ -54,7 +54,7 @@ Use a disposable database and unique test identities/nonces for every run.
 - [ ] Concurrent admissions cannot exceed global capacity or an issuer's quota.
 - [ ] Releasing an admission updates authoritative state, and `isAdmitted()` reflects that state.
 - [ ] Capacity-provider exceptions, NaN, infinities, and values outside [0, 1] fail closed.
-- [ ] An ambiguous COMMIT never triggers automatic replay. Reconcile by querying authoritative state before any retry.
+- [ ] An ambiguous COMMIT never triggers automatic replay. Reconcile through `isAdmitted()` on the writable primary; the store serializes this read on the capacity-row lock before clearing its marker. Never bypass the store or use a lagging replica to infer absence.
 - [ ] One subject's ambiguous COMMIT does not unnecessarily block unrelated subjects.
 
 Record test IDs, timestamps, commit SHA, database version, expected result, observed result, and sanitized logs. Never record invitation secrets or database credentials.
