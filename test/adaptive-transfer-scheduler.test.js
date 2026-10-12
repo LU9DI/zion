@@ -37,3 +37,15 @@ test('scheduler rejects queue overflow and closed sockets', async () => {
     await assert.rejects(scheduler.enqueue(socket, Buffer.from('x')), /not writable/);
   } finally { scheduler.close(); }
 });
+
+test('scheduler close rejects an in-flight write whose callback never returns', async () => {
+  const policy = new AdaptiveBandwidthPolicy({ maxUploadKiBps: 10, activeUploadFraction: 1, activeDownloadFraction: 1 });
+  const scheduler = new AdaptiveTransferScheduler({ policy, getTelemetry: () => healthy });
+  const socket = { destroyed: false, writable: true, write() { return true; } };
+  const pending = scheduler.enqueue(socket, Buffer.from('stalled'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(scheduler.activeItem, 'write should be in flight');
+  scheduler.close();
+  await assert.rejects(pending, /Transfer scheduler is closed/);
+  assert.equal(scheduler.activeItem, null);
+});

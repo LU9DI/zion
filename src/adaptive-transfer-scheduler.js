@@ -13,7 +13,7 @@ export class AdaptiveTransferScheduler {
     this.policy = policy; this.getTelemetry = getTelemetry; this.now = now;
     this.maxQueuedBytes = maxQueuedBytes; this.minTickMs = minTickMs;
     this.queue = []; this.queuedBytes = 0; this.tokens = 0; this.lastRefillAt = now();
-    this.timer = null; this.closed = false; this.pumping = false;
+    this.timer = null; this.closed = false; this.pumping = false; this.activeItem = null;
   }
 
   enqueue(socket, frame) {
@@ -64,12 +64,14 @@ export class AdaptiveTransferScheduler {
           break;
         }
         this.queue.shift(); this.queuedBytes -= item.frame.length; this.tokens -= item.frame.length;
+        this.activeItem = item;
         try {
           await new Promise((resolve, reject) => {
             item.socket.write(item.frame, error => error ? reject(error) : resolve());
           });
           item.resolve({ bytes: item.frame.length, uploadKiBps: budget.uploadKiBps });
         } catch (error) { item.reject(error); }
+        finally { if (this.activeItem === item) this.activeItem = null; }
       }
     } finally {
       this.pumping = false;
@@ -82,6 +84,12 @@ export class AdaptiveTransferScheduler {
     this.closed = true;
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
+    // Reject the write currently awaiting a socket callback as well as queued
+    // work. A stalled or closing socket must not leave enqueue() callers pending.
+    if (this.activeItem) {
+      this.activeItem.reject(reason);
+      this.activeItem = null;
+    }
     for (const item of this.queue.splice(0)) item.reject(reason);
     this.queuedBytes = 0;
   }
