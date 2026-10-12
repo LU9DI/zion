@@ -238,7 +238,18 @@ impl StorageCore {
                 let entry = entry?;
                 let file_name = entry.file_name().to_string_lossy().into_owned();
                 let file_meta = fs::symlink_metadata(entry.path())?;
-                if file_name.starts_with(".tmp-") { continue; }
+                // A crash can leave a partially or fully written temporary chunk
+                // behind. Count regular temporary files against quota rather than
+                // ignoring them: otherwise repeated interrupted writes can consume
+                // unaccounted disk space. `.tmp-` entries are only created while holding
+                // the storage lock, so a scan should not see an active writer's temp.
+                if file_name.starts_with(".tmp-") {
+                    if !file_meta.is_file() || file_meta.file_type().is_symlink() {
+                        return Err(StorageError::UnsafePath);
+                    }
+                    total = total.checked_add(file_meta.len()).ok_or(StorageError::InvalidConfiguration)?;
+                    continue;
+                }
                 if file_name.len() != 62 || !file_name.bytes().all(is_hex) || !file_meta.is_file() || file_meta.file_type().is_symlink() {
                     return Err(StorageError::UnsafePath);
                 }
@@ -387,6 +398,18 @@ mod tests {
         store.init().unwrap();
         fs::write(root.join(".unexpected-data"), b"hidden data").unwrap();
         assert!(matches!(store.used_bytes(), Err(StorageError::UnsafePath)));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn counts_abandoned_temporary_chunks_against_quota() {
+        let root = temp_root();
+        let store = StorageCore::new(&root, 1024, 2048).unwrap();
+        store.init().unwrap();
+        let shard = root.join("ab");
+        fs::create_dir_all(&shard).unwrap();
+        fs::write(shard.join(".tmp-interrupted-write"), vec![7u8; 137]).unwrap();
+        assert_eq!(store.used_bytes().unwrap(), 137);
         let _ = fs::remove_dir_all(root);
     }
 
