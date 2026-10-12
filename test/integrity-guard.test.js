@@ -36,6 +36,34 @@ const signedManifest = (releaseVersion, files, privateKey) => {
   assert.match(integrityManifestDigest(manifest), /^[a-f0-9]{64}$/);
 });
 
+test('verification uses one manifest snapshot even if caller mutates shared configuration', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'zion-integrity-snapshot-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bytes = Buffer.from('approved release bytes');
+  await writeFile(path.join(root, 'main.js'), bytes);
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const core = createIntegrityManifestCore('0.32.8', [{ path: 'main.js', sha256: sha256(bytes) }]);
+  const manifest = {
+    ...core,
+    files: core.files.map(file => ({ ...file })),
+    signature: sign(null, Buffer.from(canonical(core)), privateKey).toString('base64')
+  };
+  const guard = new IntegrityGuard({
+    root, manifest,
+    trustedPublicKey: publicKey.export({ type: 'spki', format: 'pem' }),
+    expectedReleaseVersion: '0.32.8',
+    requiredPaths: ['main.js']
+  });
+  const verification = guard.verify();
+  // verify() must capture the manifest before yielding to filesystem I/O.
+  manifest.files[0].sha256 = '0'.repeat(64);
+  manifest.files[0].path = '../outside.js';
+  const report = await verification;
+  assert.equal(report.ok, true);
+  assert.equal(report.checkedFiles, 1);
+  assert.equal(guard.status.verified, true);
+});
+
 test('tampering quarantines the node and blocks critical operations', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'zion-integrity-tamper-'));
   t.after(() => rm(root, { recursive: true, force: true }));
