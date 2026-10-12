@@ -50,10 +50,14 @@ export class IntegrityGuard {
   async verify() {
     if (this.quarantined) return this.lastReport ?? { ok: false, reason: this.reason };
     try {
+      // Snapshot the complete manifest synchronously before the first await. The
+      // signature and file checks must operate on the same immutable-by-ownership
+      // data; otherwise a caller mutating a shared manifest object during I/O could
+      // change paths or hashes after signature verification.
+      const m = JSON.parse(canonical(this.manifest));
       const rootStat = await lstat(this.root);
       if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error('release-root-not-real-directory');
       const resolvedRoot = await realpath(this.root);
-      const m = this.manifest;
       if (!m || m.version !== 1 || typeof m.releaseVersion !== 'string' || !Array.isArray(m.files) || m.files.length < 1 || m.files.length > MAX_FILES) throw new Error('invalid-manifest-shape');
       if (this.expectedReleaseVersion && m.releaseVersion !== this.expectedReleaseVersion) throw new Error('release-version-mismatch');
       const seen = new Set();
