@@ -108,7 +108,12 @@ export class PeerRateLimiter {
   allow(peerId, cost = 1) {
     if (typeof peerId !== 'string' || !peerId || peerId.length > 256 || !Number.isFinite(cost) || cost <= 0 || cost > this.capacity) return false;
     const time = this.now();
-    for (const [id, bucket] of this.buckets) if (time - bucket.lastSeen >= this.idleTtlMs) this.buckets.delete(id);
+    // Buckets are re-inserted on every call, so Map order is ascending lastSeen: stop at the
+    // first live bucket instead of scanning every tracked peer on every frame.
+    for (const [id, bucket] of this.buckets) {
+      if (time - bucket.lastSeen < this.idleTtlMs) break;
+      this.buckets.delete(id);
+    }
     let old = this.buckets.get(peerId);
     if (!old) {
       if (this.buckets.size >= this.maxPeers) return false; // Fail closed instead of evicting active peers under attack.
