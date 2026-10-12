@@ -14,6 +14,7 @@ export class AdaptiveTransferScheduler {
     this.maxQueuedBytes = maxQueuedBytes; this.minTickMs = minTickMs;
     this.queue = []; this.queuedBytes = 0; this.tokens = 0; this.lastRefillAt = now();
     this.timer = null; this.closed = false; this.pumping = false; this.activeItem = null;
+    this.closedPromise = new Promise(resolve => { this.resolveClosed = resolve; });
   }
 
   enqueue(socket, frame) {
@@ -38,8 +39,13 @@ export class AdaptiveTransferScheduler {
     this.pumping = true;
     try {
       while (!this.closed && this.queue.length) {
-        let telemetry;
-        try { telemetry = await this.getTelemetry(); } catch { telemetry = null; }
+        const telemetryResult = await Promise.race([
+          Promise.resolve().then(() => this.getTelemetry())
+            .then(value => ({ value }), () => ({ value: null })),
+          this.closedPromise.then(() => ({ closed: true }))
+        ]);
+        if (telemetryResult.closed || this.closed) break;
+        const telemetry = telemetryResult.value;
         const budget = this.policy.evaluate(telemetry ?? {});
         if (!budget.enabled || !Number.isFinite(budget.uploadKiBps) || budget.uploadKiBps <= 0) {
           // Reject queued transfers instead of retaining data while the policy is disabled.
@@ -89,6 +95,7 @@ export class AdaptiveTransferScheduler {
   close(reason = new Error('Transfer scheduler is closed')) {
     if (this.closed) return;
     this.closed = true;
+    this.resolveClosed();
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
     // Reject the write currently awaiting a socket callback as well as queued
