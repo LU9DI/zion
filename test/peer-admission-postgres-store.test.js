@@ -267,6 +267,7 @@ test('ambiguous-COMMIT reconciliation locks capacity before reading subject stat
   assert.ok(reconciliation.indexOf('SELECT active_reservations FROM peer_admission_capacity WHERE singleton = true FOR UPDATE') <
     reconciliation.findIndex(sql => sql.includes('SELECT 1 AS admitted FROM peer_admissions')),
     'reconciliation must wait on the admission transaction lock before reading the subject');
-  assert.equal(reconciliation.at(-1), 'COMMIT');
+  assert.ok(reconciliation.includes('COMMIT'));
+  assert.ok(reconciliation.indexOf('COMMIT') < reconciliation.indexOf('RELEASE'));
   assert.equal((await store.commitAdmission(input())).ok, true);
 });
