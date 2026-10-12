@@ -367,9 +367,10 @@ test('wipes the assembled envelope buffer after a successful store', async () =>
   const chunkId = createHash('sha256').update(bytes).digest('hex');
   const request = createStoreRequest({ chunkId, bytes: bytes.length, targetNodeId: identity.nodeId });
   let storedReference;
+  let persistedReference;
   const store = {
     async put(id, value) { storedReference = value; return { id, bytes: value.length, alreadyPresent: false }; },
-    async get() { return Buffer.from(bytes); }
+    async get() { persistedReference = Buffer.from(bytes); return persistedReference; }
   };
   const service = new PeerStorageService({ identity, store, maxChunkBytes: 1024, partBytes: 1024 });
   await service.handle({ nodeId: sender.nodeId, payload: {
@@ -378,6 +379,7 @@ test('wipes the assembled envelope buffer after a successful store', async () =>
   } }, {}, { send() {} });
   assert.ok(storedReference, 'store adapter should receive the assembled buffer');
   assert.ok(storedReference.every(byte => byte === 0), 'assembled buffer should be wiped after persistence and receipt processing');
+  assert.ok(persistedReference.every(byte => byte === 0), 'read-back verification buffer should also be wiped');
 });
 
 test('accepts Rust storage adapter receipt shape after verified read-back', async () => {
