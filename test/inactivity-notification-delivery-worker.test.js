@@ -434,3 +434,33 @@ test('provider success whose receipt cannot be persisted is fenced into ambiguit
     await worker.stop();
   } finally { f.close(); }
 });
+
+
+test('stop drains active batch when timer cleanup throws', async () => {
+  const gate = deferred();
+  let timerCleared = false;
+  const worker = new InactivityNotificationDeliveryWorker({
+    store: {
+      async list() { await gate.promise; return []; },
+      async recordAttempt() {}, async claimDelivery() {}, async markDeliveryStarted() {},
+      async releaseDeliveryClaim() {}, async markDeliveryAmbiguous() {}, async resolveDeliveryAmbiguity() {},
+      async confirmDelivered() {},
+    },
+    listOwnerIdentityIds: async () => ['owner-1'],
+    deliver: async () => ({ delivered: true, receipt: 'receipt-1' }),
+    setIntervalFn: () => ({ id: 'timer' }),
+    clearIntervalFn: () => { timerCleared = true; throw new Error('timer adapter failed'); },
+  });
+  worker.start({ runImmediately: false });
+  const run = worker.runOnce();
+  let settled = false;
+  const stop = worker.stop().finally(() => { settled = true; });
+  await Promise.resolve();
+  assert.equal(timerCleared, true);
+  assert.equal(settled, false, 'shutdown must await the active batch');
+  gate.resolve();
+  await run;
+  await assert.rejects(stop, /Notification worker shutdown was incomplete/);
+  assert.equal(worker.snapshot().processing, false);
+  assert.equal(worker.snapshot().stopped, true);
+});
