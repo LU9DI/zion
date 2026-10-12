@@ -103,6 +103,7 @@ test('official launcher composes the real transport/bootstrap and closes storage
     async connect() {
       return {
         async query(sql) {
+          if (sql === 'SELECT pg_is_in_recovery() AS in_recovery') return { rows: [{ in_recovery: false }] };
           if (sql.startsWith('SELECT max_active_peers')) return { rows: [{
             max_active_peers: 10, max_admissions_per_issuer: 5,
             min_storage_headroom_ratio: 0.1, policy_version: 1,
@@ -221,6 +222,7 @@ test('official launcher keeps PostgreSQL available and permits retry after incom
     async connect() {
       return {
         async query(sql) {
+          if (sql === 'SELECT pg_is_in_recovery() AS in_recovery') return { rows: [{ in_recovery: false }] };
           if (sql.startsWith('SELECT max_active_peers')) return { rows: [{
             max_active_peers: 10, max_admissions_per_issuer: 5,
             min_storage_headroom_ratio: 0.1, policy_version: 1,
