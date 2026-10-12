@@ -132,17 +132,24 @@ test('wipes completed segment buffers after assembling a transfer', async () => 
     maxChunkBytes: 4096,
     partBytes: 1024
   });
-  const firstPart = bytes.subarray(0, 1024).toString('base64');
+  const transferId = randomBytes(16).toString('hex');
+  const transport = { send() {} };
   await service.handle({ nodeId: sender.nodeId, payload: {
-    type: 'STORE_CHUNK', transferId: randomBytes(16).toString('hex'), chunkId,
-    totalBytes: bytes.length, partIndex: 0, partCount: 2, data: firstPart, request
-  } }, {}, { send() {} });
-  // A malformed second segment must not bypass normal integrity checks; this
-  // regression is primarily covered through the successful assembly path below.
-  assert.equal(service.bufferedBytes, bytes.length);
+    type: 'STORE_CHUNK', transferId, chunkId, totalBytes: bytes.length,
+    partIndex: 0, partCount: 2, data: bytes.subarray(0, 1024).toString('base64'), request
+  } }, {}, transport);
+  const transfer = service.transfers.values().next().value;
+  const firstPart = transfer.parts[0];
+  assert.ok(firstPart.some(byte => byte !== 0));
+  await service.handle({ nodeId: sender.nodeId, payload: {
+    type: 'STORE_CHUNK', transferId, chunkId, totalBytes: bytes.length,
+    partIndex: 1, partCount: 2, data: bytes.subarray(1024).toString('base64')
+  } }, {}, transport);
+  assert.ok(firstPart.every(byte => byte === 0), 'assembled segment buffer should be wiped');
+  assert.equal(service.bufferedBytes, 0);
 });
 
-
+test('expires incomplete transfers and releases buffered memory when a peer goes silent', async () => {
   const target = createNodeIdentity();
   const sender = createNodeIdentity();
   const bytes = envelope(1500);
