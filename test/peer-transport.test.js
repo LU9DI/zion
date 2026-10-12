@@ -858,3 +858,30 @@ test('official transport cannot start listening if quarantine begins during star
   await transport.close();
 });
 
+
+test('official transport rejects inbound sockets after quarantine even without a listener hook', async t => {
+  const integrityGuard = {
+    status: { verified: true, quarantined: false },
+    async checkHealthy() {
+      if (this.status.quarantined) throw Object.assign(new Error('quarantined'), { code: 'ZION_INTEGRITY_QUARANTINED' });
+    },
+    assertHealthy() {
+      if (this.status.quarantined) throw Object.assign(new Error('quarantined'), { code: 'ZION_INTEGRITY_QUARANTINED' });
+    }
+  };
+  const transport = new PeerTransport({
+    identity: createNodeIdentity(),
+    protocolGenesis: testGenesis(),
+    networkMode: 'official',
+    integrityGuard
+  });
+  const address = await transport.listen();
+  t.after(() => transport.close());
+  integrityGuard.status = { verified: false, quarantined: true };
+  const client = new PeerTransport({ identity: createNodeIdentity() });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(() => client.close());
+  await waitFor(() => socket.destroyed);
+  assert.equal(transport.connections.size, 0, 'quarantined inbound socket must never be attached');
+});
+
