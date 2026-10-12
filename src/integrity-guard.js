@@ -91,6 +91,10 @@ export class IntegrityGuard {
         if (actual !== entry.sha256) throw new Error(`hash-mismatch:${entry.path}`);
         checked.push(entry.path);
       }
+      // Another overlapping verification may have quarantined this guard while
+      // this invocation was awaiting filesystem I/O. Quarantine is monotonic: a
+      // later-finishing successful scan must never overwrite its failure report.
+      if (this.quarantined) return this.lastReport ?? { ok: false, reason: this.reason };
       this.verified = true;
       this.lastVerifiedAt = Date.now();
       this.reason = null;
