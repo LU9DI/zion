@@ -97,3 +97,29 @@ test('stop clears the timer and waits for an in-flight evaluation to finish', as
   assert.deepEqual(events, ['evaluation-started', 'evaluation-finished']);
   assert.equal(scheduler.snapshot().evaluating, false);
 });
+
+
+test('stop drains active evaluation even when clearing the timer throws', async () => {
+  let resolveEvaluation;
+  let timerCleared = false;
+  const scheduler = new InactivityPolicyScheduler({
+    policy: {
+      evaluate: () => new Promise(resolve => { resolveEvaluation = resolve; }),
+      markActivity: async () => ({ ok: true }),
+    },
+    setIntervalFn: () => ({ id: 'timer' }),
+    clearIntervalFn: () => { timerCleared = true; throw new Error('timer adapter failed'); },
+  });
+  scheduler.start({ runImmediately: false });
+  const run = scheduler.runOnce();
+  let settled = false;
+  const stop = scheduler.stop().finally(() => { settled = true; });
+  await Promise.resolve();
+  assert.equal(timerCleared, true);
+  assert.equal(settled, false, 'shutdown must drain work despite timer cleanup failure');
+  resolveEvaluation({ ok: true });
+  await run;
+  await assert.rejects(stop, /Inactivity scheduler shutdown was incomplete/);
+  assert.equal(scheduler.snapshot().evaluating, false);
+  assert.equal(scheduler.snapshot().stopped, true);
+});
