@@ -57,16 +57,23 @@ export class InactivityPolicyScheduler {
 
   async stop() {
     const wasRunning = !this.closed;
+    const errors = [];
     if (wasRunning) {
       this.closed = true;
       if (this.timer !== null) {
-        this.clearIntervalFn(this.timer);
+        const timer = this.timer;
+        // Detach the timer handle even if the injected timer adapter fails.
+        // runOnce() checks closed, so any late callback cannot start new work.
         this.timer = null;
+        try { this.clearIntervalFn(timer); } catch (error) { errors.push(error); }
       }
     }
-    // Drain an evaluation that may still be using storage adapters before the
-    // official bootstrap proceeds to stop storage.
-    if (this.inFlight) await this.inFlight;
+    // Always drain an evaluation that may still be using storage adapters,
+    // even when clearing the timer fails.
+    if (this.inFlight) {
+      try { await this.inFlight; } catch (error) { errors.push(error); }
+    }
+    if (errors.length) throw new AggregateError(errors, 'Inactivity scheduler shutdown was incomplete');
     return wasRunning;
   }
 
