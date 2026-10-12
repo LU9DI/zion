@@ -201,3 +201,73 @@ test('official launcher closes composed transport and PostgreSQL pool when integ
   assert.equal(pool.ended, true, 'PostgreSQL pool must close after startup failure');
   assert.equal(lifecycle.poolEnded, true);
 });
+
+
+test('official launcher keeps PostgreSQL available and permits retry after incomplete shutdown', async () => {
+  const state = { verified: false, quarantined: false, storageRunning: false, stopAttempts: 0 };
+  const genesis = {
+    schemaVersion: 1, networkName: 'Zion Launcher Retry Shutdown Test', protocolMajor: 1,
+    genesisTime: 1800000000, serialization: 'canonical-json-v1',
+    crypto: { identity: 'Ed25519', signature: 'Ed25519', hash: 'SHA-256', aead: 'AES-256-GCM' },
+    contentAddress: { algorithm: 'SHA-256', encoding: 'lowercase-hex' },
+    erasureCoding: { algorithm: 'Reed-Solomon', dataShards: 10, parityShards: 20 },
+    limits: { maxFrameBytes: 262144, maxMessageBytes: 262144, maxTtlMs: 600000, maxHops: 16 },
+    replay: { maxClockSkewMs: 120000, nonceBytes: 16, retentionMs: 120000 },
+    rules: { gossipIsDiscoveryOnly: true, localResourceLimitsAreAuthoritative: true, breakingChangesRequireNewNetwork: true },
+  };
+  class RetryPool {
+    constructor() { this.ended = false; }
+    async connect() {
+      return {
+        async query(sql) {
+          if (sql.startsWith('SELECT max_active_peers')) return { rows: [{
+            max_active_peers: 10, max_admissions_per_issuer: 5,
+            min_storage_headroom_ratio: 0.1, policy_version: 1,
+          }] };
+          if (sql.startsWith('SELECT active_reservations')) return { rows: [{ active_reservations: 0 }] };
+          if (sql.includes('count(*)::bigint AS active_count')) return { rows: [{ active_count: '0' }] };
+          return { rows: [] };
+        },
+        release() {},
+      };
+    }
+    async end() { this.ended = true; }
+  }
+  let pool;
+  const running = await startOfficialNode({
+    env,
+    PoolClass: class extends RetryPool { constructor(options) { super(options); pool = this; } },
+    loadAdapterModule: async () => ({
+      async createOfficialNodeDependencies() {
+        return {
+          integrityGuard: {
+            get status() { return { verified: state.verified, quarantined: state.quarantined }; },
+            async verify() { state.verified = true; return { ok: true }; },
+            async checkHealthy() { if (!state.verified || state.quarantined) throw new Error('integrity unhealthy'); },
+            assertHealthy() { if (!state.verified || state.quarantined) throw new Error('integrity unhealthy'); },
+            addQuarantineListener() { return () => {}; },
+          },
+          identity: createNodeIdentity(),
+          protocolGenesis: genesis,
+          trustedPeerIds: ['a'.repeat(64)],
+          trustedIssuerNodeIds: ['1'.repeat(64), '2'.repeat(64)],
+          storageHeadroomProvider: async () => 0.5,
+          async startStorage() { state.storageRunning = true; },
+          async stopStorage() {
+            state.stopAttempts++;
+            if (state.stopAttempts === 1) throw new Error('transient storage shutdown failure');
+            state.storageRunning = false;
+          },
+          async getStorageStatus() { return { running: state.storageRunning }; },
+          transportOptions: { host: '127.0.0.1', port: 0 },
+        };
+      },
+    }),
+  });
+  await assert.rejects(running.close(), /shutdown was incomplete/);
+  assert.equal(pool.ended, false, 'pool must remain available while storage cleanup is unconfirmed');
+  await running.close();
+  assert.equal(state.stopAttempts, 2);
+  assert.equal(state.storageRunning, false);
+  assert.equal(pool.ended, true);
+});
