@@ -64,6 +64,35 @@ test('verification uses one manifest snapshot even if caller mutates shared conf
   assert.equal(guard.status.verified, true);
 });
 
+test('a later successful overlapping verification cannot overwrite quarantine evidence', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'zion-integrity-overlap-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bytes = Buffer.from('approved release bytes');
+  await writeFile(path.join(root, 'main.js'), bytes);
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const valid = signedManifest('0.32.8', [{ path: 'main.js', sha256: sha256(bytes) }], privateKey);
+  const forged = { ...valid, releaseVersion: 'forged-release' };
+  const guard = new IntegrityGuard({
+    root, manifest: valid,
+    trustedPublicKey: publicKey.export({ type: 'spki', format: 'pem' }),
+    expectedReleaseVersion: '0.32.8',
+    requiredPaths: ['main.js']
+  });
+  let manifestReads = 0;
+  Object.defineProperty(guard, 'manifest', {
+    configurable: true,
+    get() { manifestReads++; return manifestReads === 1 ? valid : forged; }
+  });
+  const first = guard.verify();
+  const second = guard.verify();
+  const reports = await Promise.all([first, second]);
+  assert.equal(guard.status.quarantined, true);
+  assert.equal(guard.status.verified, false);
+  assert.equal(guard.status.reason, guard.lastReport.reason);
+  assert.equal(guard.lastReport.ok, false);
+  assert.equal(reports.some(report => report.ok === false), true);
+});
+
 test('tampering quarantines the node and blocks critical operations', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'zion-integrity-tamper-'));
   t.after(() => rm(root, { recursive: true, force: true }));
