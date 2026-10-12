@@ -835,7 +835,6 @@ test('official transport cannot start listening if quarantine begins during star
     status: { verified: true, quarantined: false, reason: null },
     async checkHealthy() {
       await new Promise(resolve => { releasePreflight = resolve; });
-      if (this.status.quarantined) throw Object.assign(new Error('quarantined'), { code: 'ZION_INTEGRITY_QUARANTINED' });
     },
     assertHealthy() {
       if (this.status.quarantined) throw Object.assign(new Error('quarantined'), { code: 'ZION_INTEGRITY_QUARANTINED' });
