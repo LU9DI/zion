@@ -461,6 +461,7 @@ export class PeerStorageService {
     // A successful put() result is not sufficient evidence for a receipt: adapters and
     // filesystems can fail after reporting success. Read back the committed object and
     // verify both its content address and byte count before granting credit or signing.
+    let persisted;
     try {
       // Both OpaqueReplicaStore ({ id }) and the optional RustStorageAdapter
       // ({ chunkId }) implement the same persistence contract.
@@ -469,7 +470,7 @@ export class PeerStorageService {
           typeof this.store.get !== 'function') {
         throw new Error('Storage adapter did not provide verifiable persistence evidence');
       }
-      const persisted = await this.store.get(transfer.chunkId);
+      persisted = await this.store.get(transfer.chunkId);
       if (!Buffer.isBuffer(persisted) || persisted.length !== complete.length ||
           createHash('sha256').update(persisted).digest('hex') !== transfer.chunkId ||
           !persisted.equals(complete)) {
@@ -485,6 +486,8 @@ export class PeerStorageService {
     } catch (error) {
       await admission?.release();
       throw error;
+    } finally {
+      if (Buffer.isBuffer(persisted)) persisted.fill(0);
     }
       await this.#assertIntegrity();
       await transport.send(socket, receipt.payload);
