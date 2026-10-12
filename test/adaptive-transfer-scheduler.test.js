@@ -20,6 +20,26 @@ test('scheduler writes through policy-limited queue and resolves byte accounting
   } finally { scheduler.close(); }
 });
 
+test('scheduler honors token refill delay instead of polling while under budget', async () => {
+  const policy = new AdaptiveBandwidthPolicy({ maxUploadKiBps: 10, activeUploadFraction: 1, activeDownloadFraction: 1 });
+  let time = 0;
+  let telemetryCalls = 0;
+  const scheduler = new AdaptiveTransferScheduler({
+    policy,
+    getTelemetry: () => { telemetryCalls++; return healthy; },
+    now: () => ++time,
+    minTickMs: 10
+  });
+  const pending = scheduler.enqueue(fakeSocket(), Buffer.alloc(1025, 0x62));
+  try {
+    await new Promise(resolve => setTimeout(resolve, 35));
+    assert.equal(telemetryCalls, 1, 'scheduler should wait for the computed refill interval');
+  } finally {
+    scheduler.close();
+  }
+  await assert.rejects(pending, /Transfer scheduler is closed/);
+});
+
 test('scheduler eventually sends a frame larger than one second of bandwidth budget', async () => {
   const policy = new AdaptiveBandwidthPolicy({ maxUploadKiBps: 10, activeUploadFraction: 1, activeDownloadFraction: 1 });
   let time = 0;
