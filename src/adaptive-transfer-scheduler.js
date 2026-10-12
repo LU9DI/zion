@@ -56,10 +56,14 @@ export class AdaptiveTransferScheduler {
         }
         const time = this.now();
         const rate = budget.uploadKiBps * 1024;
-        const elapsed = Math.max(0, time - this.lastRefillAt);
-        this.tokens = Math.min(rate, this.tokens + elapsed * rate / 1000);
-        this.lastRefillAt = time;
         const item = this.queue[0];
+        // A token bucket capped below a frame's size can never transmit that
+        // frame, regardless of how long it waits. Permit one queued frame to
+        // accumulate enough tokens while still refilling at the configured rate.
+        const burstCapacity = Math.max(rate, item.frame.length);
+        const elapsed = Math.max(0, time - this.lastRefillAt);
+        this.tokens = Math.min(burstCapacity, this.tokens + elapsed * rate / 1000);
+        this.lastRefillAt = time;
         if (item.socket.destroyed || !item.socket.writable) {
           this.queue.shift(); this.queuedBytes -= item.frame.length;
           item.reject(new Error('Peer socket is not writable')); continue;
