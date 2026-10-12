@@ -331,7 +331,31 @@ impl StorageCore {
         if stale {
             let suffix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
             let quarantine = self.root.join(format!(".rea-rust-storage-lock.stale-{}-{suffix}", std::process::id()));
-            if fs::rename(lock, &quarantine).is_ok() { let _ = fs::remove_dir_all(quarantine); }
+            if fs::rename(lock, &quarantine).is_ok() {
+                // The lock pathname may have been replaced after the stale check but
+                // before rename. Verify the moved directory still matches the object
+                // we inspected; never recursively delete an unverified replacement.
+                let moved = fs::symlink_metadata(&quarantine).ok();
+                let same_directory = moved.as_ref().map(|m| {
+                    m.is_dir()
+                        && !m.file_type().is_symlink()
+                        && m.dev() == metadata.dev()
+                        && m.ino() == metadata.ino()
+                }).unwrap_or(false);
+                let moved_owner = fs::symlink_metadata(quarantine.join("owner")).ok()
+                    .filter(|m| m.is_file() && !m.file_type().is_symlink() && m.len() <= 128)
+                    .and_then(|_| fs::read_to_string(quarantine.join("owner")).ok());
+                if same_directory && moved_owner == owner {
+                    let _ = fs::remove_dir_all(quarantine);
+                } else {
+                    // Restore only if no other process has already established a lock
+                    // at the original path. If occupied, leave quarantine untouched:
+                    // preserving the moved data is safer than deleting another owner's lock.
+                    if !lock.exists() {
+                        let _ = fs::rename(&quarantine, lock);
+                    }
+                }
+            }
         }
     }
 
