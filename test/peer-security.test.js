@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createNodeIdentity, signPeerMessage, verifyPeerMessage, ReplayGuard, PeerRateLimiter } from '../src/peer-security.js';
+import { createNodeIdentity, signPeerMessage, signPeerFrame, verifyPeerMessage, ReplayGuard, PeerRateLimiter } from '../src/peer-security.js';
 
 test('Ed25519 peer messages verify and bind the node ID to its public key', () => {
   const id = createNodeIdentity();
@@ -53,4 +53,25 @@ test('replay guard expires entries through an ordered heap and rejects invalid c
   assert.equal(guard.accept({ nodeId: 'd', nonce: '4' }, 110), true, 'the earliest entry expires at its deadline');
   assert.equal(guard.accept({ nodeId: 'e', nonce: '5' }, Number.NaN), false);
   assert.equal(guard.seen.size, 3);
+});
+
+test('signPeerFrame produces a wire frame equivalent to signPeerMessage and reports exact payload size', () => {
+  const id = createNodeIdentity();
+  const payload = { type: 'CHUNK_DATA', b: [1, 'é"\n', null, true], a: { z: 1, y: 'x'.repeat(1000) } };
+  const opts = { now: 5000, nonce: 'c'.repeat(32) };
+  const { frame, payloadBytes } = signPeerFrame(id, payload, opts);
+  assert.equal(frame.at(-1), 0x0a);
+  const parsed = JSON.parse(frame.subarray(0, -1).toString('utf8'));
+  const checked = verifyPeerMessage(parsed, { now: 5000 });
+  assert.equal(checked.ok, true);
+  assert.deepEqual(checked.payload, payload);
+  assert.equal(checked.payloadBytes, payloadBytes);
+  assert.equal(payloadBytes, Buffer.byteLength(JSON.stringify(payload)));
+  const reference = signPeerMessage(id, payload, opts);
+  assert.equal(parsed.signature, reference.signature); // Ed25519 is deterministic: identical signed bytes
+  assert.deepEqual(Object.keys(parsed).sort(), Object.keys(reference).sort());
+  assert.throws(() => signPeerFrame(id, { type: 'X', bad: undefined }, opts), TypeError);
+  assert.throws(() => signPeerFrame(id, { type: 'X', big: 'a'.repeat(300 * 1024) }, opts), RangeError);
+  // multi-byte text: character count is under the limit but the UTF-8 size is over it
+  assert.throws(() => signPeerFrame(id, { type: 'X', t: '€'.repeat(60) }, { ...opts, maxPayloadBytes: 100 }), /too large/);
 });
