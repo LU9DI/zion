@@ -37,6 +37,7 @@ export class AdaptiveTransferScheduler {
   async #pump() {
     if (this.closed || this.pumping) return;
     this.pumping = true;
+    let nextDelay = this.minTickMs;
     try {
       while (!this.closed && this.queue.length) {
         const telemetryResult = await Promise.race([
@@ -70,7 +71,7 @@ export class AdaptiveTransferScheduler {
         }
         if (this.tokens < item.frame.length) {
           const waitMs = Math.max(this.minTickMs, Math.ceil((item.frame.length - this.tokens) * 1000 / rate));
-          this.#schedule(waitMs);
+          nextDelay = waitMs;
           break;
         }
         this.queue.shift(); this.queuedBytes -= item.frame.length; this.tokens -= item.frame.length;
@@ -92,7 +93,7 @@ export class AdaptiveTransferScheduler {
       }
     } finally {
       this.pumping = false;
-      if (this.queue.length && !this.closed && this.timer === null) this.#schedule(this.minTickMs);
+      if (this.queue.length && !this.closed && this.timer === null) this.#schedule(nextDelay);
     }
   }
 
