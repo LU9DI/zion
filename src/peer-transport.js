@@ -75,7 +75,11 @@ export class PeerTransport {
 
   async listen() {
     if (this.started) throw new Error('Transport already started');
-    if (this.networkMode === 'official') await this.integrityGuard.checkHealthy();
+    if (this.networkMode === 'official') {
+      await this.integrityGuard.checkHealthy();
+      // Revalidate after the async preflight before creating a listening socket.
+      this.integrityGuard.assertHealthy();
+    }
     this.server = this.tlsOptions
       ? createTlsServer({ ...this.tlsOptions, requestCert: true, rejectUnauthorized: true, minVersion: 'TLSv1.2', handshakeTimeout: this.tlsHandshakeTimeoutMs }, socket => this.#accept(socket))
       : createTcpServer(socket => this.#accept(socket));
@@ -86,6 +90,8 @@ export class PeerTransport {
       this.server.once('error', onError); this.server.once('listening', onListening);
       this.server.listen({ host: this.host, port: this.port, backlog: this.maxConnections });
     });
+    if (this.networkMode === 'official') this.integrityGuard.assertHealthy();
+    if (!this.server.listening) throw new Error('Transport listener closed before startup completed');
     this.started = true;
     const address = this.server.address();
     return Object.freeze({ host: address.address, port: address.port });
