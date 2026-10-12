@@ -31,7 +31,17 @@ export class AdaptiveTransferScheduler {
 
   #schedule(delay) {
     if (this.closed || this.timer !== null || this.pumping) return;
-    this.timer = setTimeout(() => { this.timer = null; void this.#pump(); }, delay);
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      // #pump is intentionally fire-and-forget; contain unexpected dependency
+      // failures and settle every queued caller instead of leaking an unhandled
+      // rejection while leaving transfers permanently pending.
+      void this.#pump().catch(error => {
+        const pending = this.queue.splice(0);
+        this.queuedBytes = 0;
+        for (const item of pending) item.reject(error);
+      });
+    }, delay);
   }
 
   async #pump() {
