@@ -353,16 +353,28 @@ export class PostgresPeerAdmissionStore {
       const capacityResult = await client.query(
         'SELECT active_reservations FROM peer_admission_capacity WHERE singleton = true FOR UPDATE',
       );
-      if (!capacityResult.rows?.[0]) {
+      const capacity = capacityResult.rows?.[0];
+      if (!capacity) {
         throw Object.assign(new Error('Admission capacity row missing'), { code: 'ZION_ADMISSION_CONFIG_MISSING' });
+      }
+      const activeReservations = Number(capacity.active_reservations);
+      if (!Number.isSafeInteger(activeReservations) || activeReservations < 0) {
+        throw Object.assign(new Error('Admission capacity counter is invalid'), { code: 'ZION_ADMISSION_STATE_INCONSISTENT' });
       }
       const updated = await client.query(
         "UPDATE peer_admissions SET status = $2, updated_at = now() WHERE subject_node_id = $1 AND status = 'active' RETURNING subject_node_id",
         [subjectNodeId, status],
       );
       if (updated.rows?.length) {
+        // Do not silently clamp counter drift: a release that hides an inconsistent
+        // active-row/reservation pair would make later admission decisions unsafe.
+        if (activeReservations === 0) {
+          throw Object.assign(new Error('Active admission exists while the capacity reservation counter is zero'), {
+            code: 'ZION_ADMISSION_STATE_INCONSISTENT',
+          });
+        }
         await client.query(
-          'UPDATE peer_admission_capacity SET active_reservations = GREATEST(0, active_reservations - 1), updated_at = now() WHERE singleton = true',
+          'UPDATE peer_admission_capacity SET active_reservations = active_reservations - 1, updated_at = now() WHERE singleton = true',
         );
       }
       return { ok: true, changed: Boolean(updated.rows?.length), subjectNodeId, status };
