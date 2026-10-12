@@ -70,7 +70,14 @@ export async function runPostgresMigrations({ pool, migrations = DEFAULT_MIGRATI
         continue;
       }
 
-      await client.query('BEGIN');
+      try {
+        await client.query('BEGIN');
+      } catch (error) {
+        // BEGIN can fail after the server received it but before the client got
+        // the reply. Do not assume the session is outside a transaction.
+        transactionCleanupError = error;
+        throw error;
+      }
       try {
         await client.query(body);
         await client.query(
