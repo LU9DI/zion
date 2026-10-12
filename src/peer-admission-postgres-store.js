@@ -178,35 +178,62 @@ export class PostgresPeerAdmissionStore {
    */
   async isAdmitted(subjectNodeId) {
     if (!NODE_ID.test(subjectNodeId ?? '')) return false;
-    // Capture the exact unresolved outcome before starting the query. A read that
-    // began before a later ambiguous COMMIT must never clear that newer marker.
+    // Capture the exact unresolved outcome before connecting. A read that began
+    // before a later ambiguous COMMIT must never clear that newer marker.
     const unresolvedMarker = this.unknownCommitSubjects.get(subjectNodeId);
     const client = await this.pool.connect();
     let releaseError;
+    let reconciliationTransaction = false;
+    let commitStarted = false;
     try {
+      // An ambiguous COMMIT may still be resolving on the server. If this subject
+      // is marked, take the same capacity-row lock used by every admission write
+      // before reading its row. Under READ COMMITTED, the following SELECT sees
+      // the state after the competing transaction commits or rolls back.
+      if (unresolvedMarker !== undefined) {
+        await client.query('BEGIN');
+        reconciliationTransaction = true;
+      }
       const roleResult = await client.query('SELECT pg_is_in_recovery() AS in_recovery');
       if (roleResult.rows?.[0]?.in_recovery !== false) {
         throw Object.assign(new Error('Authoritative admission reconciliation requires a writable PostgreSQL primary'), {
           code: 'ZION_ADMISSION_PRIMARY_REQUIRED',
         });
       }
+      if (unresolvedMarker !== undefined) {
+        const capacityResult = await client.query(
+          'SELECT active_reservations FROM peer_admission_capacity WHERE singleton = true FOR UPDATE',
+        );
+        if (!capacityResult.rows?.[0]) {
+          throw Object.assign(new Error('Admission capacity row missing during ambiguous-COMMIT reconciliation'), {
+            code: 'ZION_ADMISSION_CONFIG_MISSING',
+          });
+        }
+      }
       const result = await client.query(
         "SELECT 1 AS admitted FROM peer_admissions WHERE subject_node_id = $1 AND status = 'active' LIMIT 1",
         [subjectNodeId],
       );
       const admitted = Boolean(result.rows?.length);
-      // PostgreSQL transactions are atomic: the authoritative row resolves whether
-      // the ambiguous COMMIT for this subject took effect. Clear only after a
-      // successful read; if the query fails, retain the fail-closed marker.
+      if (unresolvedMarker !== undefined) {
+        // Do not clear the marker until the reconciliation transaction releases
+        // its lock successfully; a failed COMMIT leaves the outcome unresolved.
+        commitStarted = true;
+        await client.query('COMMIT');
+        reconciliationTransaction = false;
+      }
       if (unresolvedMarker !== undefined &&
         this.unknownCommitSubjects.get(subjectNodeId) === unresolvedMarker) {
         this.unknownCommitSubjects.delete(subjectNodeId);
       }
       return admitted;
     } catch (error) {
-      // The query is fixed SQL; on failure do not return a possibly broken session
-      // to the pool, and preserve the unresolved admission marker.
-      releaseError = error;
+      // Never attempt rollback after an ambiguous reconciliation COMMIT. For
+      // earlier failures, attempt rollback but discard the client regardless.
+      if (reconciliationTransaction && !commitStarted) {
+        try { await client.query('ROLLBACK'); } catch (rollbackError) { releaseError = rollbackError; }
+      }
+      releaseError ??= error;
       throw error;
     } finally {
       client.release(releaseError);

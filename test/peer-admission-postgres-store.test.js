@@ -253,3 +253,20 @@ test('failed startup-preflight COMMIT discards its uncertain database session', 
   await assert.rejects(store.verifyPersistentState(), /commit outcome is unknown|connection lost during COMMIT/);
   assert.equal(pool.calls.find(call => call.sql === 'RELEASE')?.releaseError, 'connection lost during COMMIT');
 });
+
+test('ambiguous-COMMIT reconciliation locks capacity before reading subject state', async () => {
+  const pool = fakePool({ failCommit: true });
+  const store = new PostgresPeerAdmissionStore({ pool });
+  assert.deepEqual(await store.commitAdmission(input()), {
+    ok: false, reason: 'admission-state-unavailable',
+  });
+  const beforeRead = pool.calls.length;
+  assert.equal(await store.isAdmitted(id('a')), false);
+  const reconciliation = pool.calls.slice(beforeRead).map(call => call.sql);
+  assert.equal(reconciliation[0], 'BEGIN');
+  assert.ok(reconciliation.indexOf('SELECT active_reservations FROM peer_admission_capacity WHERE singleton = true FOR UPDATE') <
+    reconciliation.findIndex(sql => sql.includes('SELECT 1 AS admitted FROM peer_admissions')),
+    'reconciliation must wait on the admission transaction lock before reading the subject');
+  assert.equal(reconciliation.at(-1), 'COMMIT');
+  assert.equal((await store.commitAdmission(input())).ok, true);
+});
