@@ -120,6 +120,36 @@ test('returns an explicit capacity-exhausted protocol response', async () => {
   assert.equal(sent[0].code, 'CAPACITY_EXHAUSTED');
 });
 
+test('expires incomplete transfers and releases buffered memory when a peer goes silent', async () => {
+  const target = createNodeIdentity();
+  const sender = createNodeIdentity();
+  const bytes = envelope(1500);
+  const chunkId = createHash('sha256').update(bytes).digest('hex');
+  const request = createStoreRequest({ chunkId, bytes: bytes.length, targetNodeId: target.nodeId });
+  const service = new PeerStorageService({
+    identity: target,
+    store: {},
+    maxChunkBytes: 4096,
+    partBytes: 1024,
+    transferTtlMs: 1000
+  });
+  await service.handle({ nodeId: sender.nodeId, payload: {
+    type: 'STORE_CHUNK',
+    transferId: randomBytes(16).toString('hex'),
+    chunkId,
+    totalBytes: bytes.length,
+    partIndex: 0,
+    partCount: Math.ceil(bytes.length / 1024),
+    data: bytes.subarray(0, 1024).toString('base64'),
+    request
+  } }, {}, { send() {} });
+  assert.equal(service.transfers.size, 1);
+  assert.equal(service.bufferedBytes, bytes.length);
+  await new Promise(resolve => setTimeout(resolve, 1100));
+  assert.equal(service.transfers.size, 0, 'silent peer must not retain an expired transfer');
+  assert.equal(service.bufferedBytes, 0, 'expiry must release the reserved memory budget');
+});
+
 test('propagates asynchronous transport write failures through storage transfer APIs', async () => {
   const identity = createNodeIdentity();
   const chunk = envelope(20);
