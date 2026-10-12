@@ -46,13 +46,13 @@ export class ContributionAuditScheduler {
         } catch (error) {
           const result = Object.freeze({ ok: false, reason: 'resources-not-available', detail: 'telemetry-unavailable', message: String(error?.message ?? 'telemetry unavailable'), completedAt: Date.now() });
           this.lastResult = result;
-          try { this.onResult?.(result); } catch { /* Observability only. */ }
+          try { void Promise.resolve(this.onResult?.(result)).catch(() => {}); } catch { /* Observability only. */ }
           return result;
         }
         if (!decision?.enabled || !(decision.concurrentJobs > 0)) {
           const result = Object.freeze({ ok: false, reason: 'resources-not-available', detail: decision?.reasons ?? ['resource-budget-disabled'], completedAt: Date.now() });
           this.lastResult = result;
-          try { this.onResult?.(result); } catch { /* Observability only. */ }
+          try { void Promise.resolve(this.onResult?.(result)).catch(() => {}); } catch { /* Observability only. */ }
           return result;
         }
       }
@@ -72,25 +72,23 @@ export class ContributionAuditScheduler {
         const report = await this.storageService.refreshVerifiedContribution(this.fairSharePolicy, options);
         const result = Object.freeze({ ok: true, completedAt: Date.now(), ...report });
         this.lastResult = result;
-        try { this.onResult?.(result); } catch { /* Observability callbacks must not affect admission safety. */ }
+        try { void Promise.resolve(this.onResult?.(result)).catch(() => {}); } catch { /* Observability callbacks must not affect admission safety. */ }
         return result;
       } catch (error) {
         if (error?.code === 'REA_AUDIT_PAUSED') {
           const result = Object.freeze({ ok: false, reason: 'resources-not-available', detail: 'audit-paused-during-scan', completedAt: Date.now() });
           this.lastResult = result;
-          try { this.onResult?.(result); } catch { /* Observability only. */ }
+          try { void Promise.resolve(this.onResult?.(result)).catch(() => {}); } catch { /* Observability only. */ }
           return result;
         }
         // refreshVerifiedContribution revokes credit on integrity failure; repeat here defensively.
         this.fairSharePolicy.revokeVerifiedContribution();
         const result = Object.freeze({ ok: false, reason: 'audit-failed', message: String(error?.message ?? 'audit failed'), completedAt: Date.now() });
         this.lastResult = result;
-        try { this.onResult?.(result); } catch { /* Do not allow callbacks to restore stale credit. */ }
+        try { void Promise.resolve(this.onResult?.(result)).catch(() => {}); } catch { /* Do not allow callbacks to restore stale credit. */ }
         return result;
-      } finally {
-        this.inFlight = null;
       }
-    })();
+    })().finally(() => { this.inFlight = null; });
     return this.inFlight;
   }
 
