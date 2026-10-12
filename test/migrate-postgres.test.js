@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runPostgresMigrations } from '../scripts/migrate-postgres.js';
 
-function fakePool({ initial = {}, failMigration = false, failLock = false, failUnlock = false, failRollback = false, failCommit = false } = {}) {
+function fakePool({ initial = {}, failMigration = false, failLock = false, failUnlock = false, failRollback = false, failCommit = false, failBegin = false } = {}) {
   const calls = [];
   const ledger = new Map(Object.entries(initial));
   let released = false;
@@ -21,6 +21,9 @@ function fakePool({ initial = {}, failMigration = false, failLock = false, failU
       if (normalized.startsWith('SELECT pg_advisory_unlock')) {
         if (failUnlock) throw new Error('simulated advisory unlock failure');
         return { rows: [{ pg_advisory_unlock: true }] };
+      }
+      if (normalized === 'BEGIN' && failBegin) {
+        throw new Error('simulated BEGIN reply loss');
       }
       if (normalized === 'COMMIT' && failCommit) {
         throw new Error('simulated commit reply loss');
@@ -122,6 +125,22 @@ test('migration runner discards a client when rollback after migration failure f
   });
 });
 
+
+
+test('migration runner discards a client when BEGIN outcome is uncertain', async () => {
+  await withMigration('BEGIN; CREATE TABLE example (id integer); COMMIT;', async path => {
+    const pool = fakePool({ failBegin: true });
+    await assert.rejects(
+      runPostgresMigrations({ pool, migrations: [{ id: '0001_example', path }] }),
+      /simulated BEGIN reply loss/,
+    );
+    assert.equal(pool.released, true);
+    assert.match(pool.releaseError?.message ?? '', /simulated BEGIN reply loss/);
+    assert.ok(!pool.calls.some(call => call.sql === 'ROLLBACK'),
+      'BEGIN may have succeeded on the server despite a lost response');
+    assert.ok(!pool.ledger.has('0001_example'));
+  });
+});
 
 test('migration runner discards a client after ambiguous COMMIT and reconciles through the ledger', async () => {
   await withMigration('BEGIN; CREATE TABLE example (id integer); COMMIT;', async path => {
