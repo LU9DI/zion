@@ -405,6 +405,31 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn lock_release_preserves_a_replacement_owned_by_another_process() {
+        let root = temp_root();
+        let store = StorageCore::new(&root, 1024, 2048).unwrap();
+        fs::create_dir_all(&root).unwrap();
+        let lock = root.join(".rea-rust-storage-lock");
+        let displaced = root.join(".test-displaced-lock");
+        let result = store.with_lock(|| {
+            // Simulate another actor moving our lock and establishing a new one
+            // before this process reaches its release path.
+            fs::rename(&lock, &displaced)?;
+            fs::create_dir(&lock)?;
+            fs::write(lock.join("owner"), "another-owner:replacement\n")?;
+            Ok(())
+        });
+        assert!(result.is_ok());
+        assert_eq!(
+            fs::read_to_string(lock.join("owner")).as_deref(),
+            Ok("another-owner:replacement\n"),
+            "release must not delete or strand a replacement lock with a different owner"
+        );
+        assert!(displaced.join("owner").exists(), "the displaced original must be preserved");
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[cfg(unix)]
     #[test]
     fn reaps_lock_owned_by_a_process_that_no_longer_exists() {
