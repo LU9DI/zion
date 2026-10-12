@@ -422,8 +422,8 @@ mod tests {
         });
         assert!(result.is_ok());
         assert_eq!(
-            fs::read_to_string(lock.join("owner")).as_deref(),
-            Ok("another-owner:replacement\n"),
+            fs::read_to_string(lock.join("owner")).unwrap(),
+            "another-owner:replacement\n",
             "release must not delete or strand a replacement lock with a different owner"
         );
         assert!(displaced.join("owner").exists(), "the displaced original must be preserved");
