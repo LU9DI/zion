@@ -98,6 +98,10 @@ export class PeerTransport {
   }
 
   #accept(socket) {
+    if (this.networkMode === 'official') {
+      try { this.integrityGuard.assertHealthy(); }
+      catch { socket.destroy(); return; }
+    }
     if (this.connections.size >= this.maxConnections) { socket.destroy(); return; }
     this.#attach(socket);
   }
