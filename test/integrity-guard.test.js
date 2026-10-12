@@ -198,3 +198,32 @@ test('send and fetch operations check integrity before touching the transport', 
   await assert.rejects(service.fetchChunk(transport, socket, 'a'.repeat(64), 'b'.repeat(64)), { code: 'ZION_INTEGRITY_QUARANTINED' });
   assert.equal(sends, 0);
 });
+
+test('a slow quarantine alert cannot delay subsystem isolation listeners', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'zion-integrity-alert-delay-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bytes = Buffer.from('approved release bytes');
+  await writeFile(path.join(root, 'main.js'), bytes);
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const valid = signedManifest('0.32.8', [{ path: 'main.js', sha256: sha256(bytes) }], privateKey);
+  let releaseAlert;
+  const alertPending = new Promise(resolve => { releaseAlert = resolve; });
+  let listenerCalled = false;
+  const guard = new IntegrityGuard({
+    root, manifest: { ...valid, releaseVersion: 'forged-release' },
+    trustedPublicKey: publicKey.export({ type: 'spki', format: 'pem' }),
+    expectedReleaseVersion: '0.32.8',
+    requiredPaths: ['main.js'],
+    onQuarantine: () => alertPending
+  });
+  guard.addQuarantineListener(async () => { listenerCalled = true; });
+  const verification = guard.verify();
+  try {
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(listenerCalled, true, 'containment listeners must run without waiting for the alert sink');
+    assert.equal(guard.status.quarantined, true);
+  } finally {
+    releaseAlert();
+  }
+  assert.equal((await verification).ok, false);
+});
