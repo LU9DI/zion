@@ -16,16 +16,18 @@ const input = () => ({
   maxAdmissionsPerIssuer: 5,
 });
 
-function fakePool({ failInvitationInsert = false, retryOnce = false, failCommit = false, failRollback = false, failAdmissionRead = false, activeReservations = 0 } = {}) {
+function fakePool({ failInvitationInsert = false, retryOnce = false, failCommit = false, failRollback = false, failAdmissionRead = false, activeReservations = 0, inRecovery = false } = {}) {
   const calls = [];
   let retryPending = retryOnce;
   let commitPending = failCommit;
   return {
     calls,
+    setInRecovery(value) { inRecovery = value; },
     async connect() {
       return {
         async query(sql, params = []) {
           calls.push({ sql: sql.replace(/\s+/g, ' ').trim(), params });
+          if (sql === 'SELECT pg_is_in_recovery() AS in_recovery') return { rows: [{ in_recovery }] };
           if (sql.includes('SELECT 1 AS admitted FROM peer_admissions') && failAdmissionRead) throw Object.assign(new Error('connection lost during admission read'), { code: '08006' });
           if (sql === 'ROLLBACK' && failRollback) throw Object.assign(new Error('connection lost during ROLLBACK'), { code: '08006' });
           if (sql === 'COMMIT' && commitPending) {
@@ -188,6 +190,32 @@ test('an in-flight stale admission read cannot clear a newer ambiguous-COMMIT ma
   assert.equal(basePool.calls.filter(x => x.sql === 'BEGIN ISOLATION LEVEL SERIALIZABLE').length, 1);
 
   // A fresh authoritative read may now reconcile the marker.
+  assert.equal(await store.isAdmitted(id('a')), false);
+  assert.equal((await store.commitAdmission(input())).ok, true);
+});
+
+
+test('startup preflight rejects a PostgreSQL standby before accepting official traffic', async () => {
+  const pool = fakePool({ inRecovery: true });
+  const store = new PostgresPeerAdmissionStore({ pool });
+  await assert.rejects(store.verifyPersistentState(), { code: 'ZION_ADMISSION_PRIMARY_REQUIRED' });
+  assert.ok(!pool.calls.some(call => call.sql.startsWith('SELECT max_active_peers')),
+    'policy state must not be treated as authoritative on a standby');
+  assert.ok(pool.calls.some(call => call.sql === 'ROLLBACK'));
+});
+
+test('ambiguous COMMIT marker is retained when reconciliation is routed to a standby', async () => {
+  const pool = fakePool({ failCommit: true });
+  const store = new PostgresPeerAdmissionStore({ pool });
+  assert.deepEqual(await store.commitAdmission(input()), {
+    ok: false, reason: 'admission-state-unavailable',
+  });
+  pool.setInRecovery(true);
+  await assert.rejects(store.isAdmitted(id('a')), { code: 'ZION_ADMISSION_PRIMARY_REQUIRED' });
+  assert.deepEqual(await store.commitAdmission(input()), {
+    ok: false, reason: 'admission-state-unavailable',
+  });
+  pool.setInRecovery(false);
   assert.equal(await store.isAdmitted(id('a')), false);
   assert.equal((await store.commitAdmission(input())).ok, true);
 });
