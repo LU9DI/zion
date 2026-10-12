@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runPostgresMigrations } from '../scripts/migrate-postgres.js';
 
-function fakePool({ initial = {}, failMigration = false, failLock = false, failUnlock = false } = {}) {
+function fakePool({ initial = {}, failMigration = false, failLock = false, failUnlock = false, failRollback = false } = {}) {
   const calls = [];
   const ledger = new Map(Object.entries(initial));
   let released = false;
@@ -21,6 +21,9 @@ function fakePool({ initial = {}, failMigration = false, failLock = false, failU
       if (normalized.startsWith('SELECT pg_advisory_unlock')) {
         if (failUnlock) throw new Error('simulated advisory unlock failure');
         return { rows: [{ pg_advisory_unlock: true }] };
+      }
+      if (normalized === 'ROLLBACK' && failRollback) {
+        throw new Error('simulated rollback failure');
       }
       if (normalized.startsWith('SELECT sha256 FROM zion_schema_migrations')) {
         const sha256 = ledger.get(params[0]);
@@ -100,6 +103,19 @@ test('migration runner rolls back DDL failures and releases the client', async (
     assert.ok(pool.calls.some(call => call.sql === 'ROLLBACK'));
     assert.ok(!pool.ledger.has('0001_failure'));
     assert.equal(pool.released, true);
+  });
+});
+
+test('migration runner discards a client when rollback after migration failure fails', async () => {
+  await withMigration('BEGIN; CREATE TABLE should_fail (id integer); COMMIT;', async path => {
+    const pool = fakePool({ failMigration: true, failRollback: true });
+    await assert.rejects(
+      runPostgresMigrations({ pool, migrations: [{ id: '0001_failure', path }] }),
+      /simulated DDL failure/,
+    );
+    assert.equal(pool.released, true);
+    assert.match(pool.releaseError?.message ?? '', /simulated rollback failure/);
+    assert.ok(!pool.ledger.has('0001_failure'));
   });
 });
 
