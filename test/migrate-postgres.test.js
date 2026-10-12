@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runPostgresMigrations } from '../scripts/migrate-postgres.js';
 
-function fakePool({ initial = {}, failMigration = false, failLock = false, failUnlock = false, failRollback = false } = {}) {
+function fakePool({ initial = {}, failMigration = false, failLock = false, failUnlock = false, failRollback = false, failCommit = false } = {}) {
   const calls = [];
   const ledger = new Map(Object.entries(initial));
   let released = false;
@@ -21,6 +21,9 @@ function fakePool({ initial = {}, failMigration = false, failLock = false, failU
       if (normalized.startsWith('SELECT pg_advisory_unlock')) {
         if (failUnlock) throw new Error('simulated advisory unlock failure');
         return { rows: [{ pg_advisory_unlock: true }] };
+      }
+      if (normalized === 'COMMIT' && failCommit) {
+        throw new Error('simulated commit reply loss');
       }
       if (normalized === 'ROLLBACK' && failRollback) {
         throw new Error('simulated rollback failure');
@@ -116,6 +119,35 @@ test('migration runner discards a client when rollback after migration failure f
     assert.equal(pool.released, true);
     assert.match(pool.releaseError?.message ?? '', /simulated rollback failure/);
     assert.ok(!pool.ledger.has('0001_failure'));
+  });
+});
+
+
+test('migration runner discards a client after ambiguous COMMIT and reconciles through the ledger', async () => {
+  await withMigration('BEGIN; CREATE TABLE example (id integer); COMMIT;', async path => {
+    const { createHash } = await import('node:crypto');
+    const sql = 'BEGIN; CREATE TABLE example (id integer); COMMIT;';
+    const checksum = createHash('sha256').update(sql).digest('hex');
+    const pool = fakePool({ failCommit: true });
+    await assert.rejects(
+      runPostgresMigrations({ pool, migrations: [{ id: '0001_example', path }] }),
+      /simulated commit reply loss/,
+    );
+    assert.equal(pool.released, true);
+    assert.match(pool.releaseError?.message ?? '', /simulated commit reply loss/);
+    assert.ok(!pool.calls.some(call => call.sql === 'ROLLBACK'),
+      'a rollback after an ambiguous COMMIT cannot establish whether the transaction committed');
+    assert.ok(!pool.calls.some(call => call.sql.startsWith('SELECT pg_advisory_unlock')),
+      'discarding the uncertain connection releases its session lock');
+    assert.equal(pool.ledger.get('0001_example'), checksum,
+      'simulate the server committing the ledger row before the response was lost');
+
+    const retryPool = fakePool({ initial: { '0001_example': checksum } });
+    const retry = await runPostgresMigrations({
+      pool: retryPool, migrations: [{ id: '0001_example', path }],
+    });
+    assert.equal(retry.migrations[0].status, 'already-applied');
+    assert.ok(!retryPool.calls.some(call => call.sql === 'BEGIN'));
   });
 });
 
