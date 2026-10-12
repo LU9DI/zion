@@ -149,6 +149,26 @@ test('transport routes outbound signed frames through adaptive bandwidth schedul
   assert.ok(result.uploadKiBps <= 20);
 });
 
+test('official transport refuses outbound dialing while integrity is quarantined', async t => {
+  let connections = 0;
+  const server = createTcpServer(() => { connections++; });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => server.close());
+  const integrityGuard = {
+    status: { verified: false, quarantined: true },
+    async checkHealthy() { throw Object.assign(new Error('integrity quarantined'), { code: 'ZION_INTEGRITY_QUARANTINED' }); },
+    assertHealthy() { throw Object.assign(new Error('integrity quarantined'), { code: 'ZION_INTEGRITY_QUARANTINED' }); },
+    addQuarantineListener() { return () => {}; },
+  };
+  const client = new PeerTransport({
+    identity: createNodeIdentity(), networkMode: 'official', protocolGenesis: testGenesis(), integrityGuard,
+  });
+  await assert.rejects(client.connect('127.0.0.1', server.address().port), { code: 'ZION_INTEGRITY_QUARANTINED' });
+  assert.equal(connections, 0, 'quarantined official node must not open outbound sockets');
+  await client.close();
+});
+
 function testGenesis(name = 'Zion test network') {
   return {
     schemaVersion: 1, networkName: name, protocolMajor: 1, genesisTime: 1800000000,
