@@ -136,20 +136,23 @@ export class OfficialNodeBootstrap {
     // close(), quarantine containment, rollback, and retry are requested together.
     const operation = this.adapterCleanupQueue.then(async () => {
       const errors = [];
-      if (this.idleParticipationSchedulerStarted && this.idleParticipationScheduler) {
-        try { await this.idleParticipationScheduler.stop(); this.idleParticipationSchedulerStarted = false; }
-        catch (error) { errors.push(error); }
-      }
-      if (this.notificationDeliveryWorkerStarted && this.notificationDeliveryWorker) {
-        try { await this.notificationDeliveryWorker.stop(); this.notificationDeliveryWorkerStarted = false; }
-        catch (error) { errors.push(error); }
-      }
+      // Stop ingress first so no new API work can arrive while background
+      // producers and consumers are being drained.
       if (this.notificationApiStarted && this.notificationApi) {
         try { await this.notificationApi.close(); this.notificationApiStarted = false; }
         catch (error) { errors.push(error); }
       }
+      // Drain producers before the durable-outbox consumer, then stop storage.
+      if (this.idleParticipationSchedulerStarted && this.idleParticipationScheduler) {
+        try { await this.idleParticipationScheduler.stop(); this.idleParticipationSchedulerStarted = false; }
+        catch (error) { errors.push(error); }
+      }
       if (this.inactivitySchedulerStarted && this.inactivityScheduler) {
         try { await this.inactivityScheduler.stop(); this.inactivitySchedulerStarted = false; }
+        catch (error) { errors.push(error); }
+      }
+      if (this.notificationDeliveryWorkerStarted && this.notificationDeliveryWorker) {
+        try { await this.notificationDeliveryWorker.stop(); this.notificationDeliveryWorkerStarted = false; }
         catch (error) { errors.push(error); }
       }
       this.transportState = 'stopping';
