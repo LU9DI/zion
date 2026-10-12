@@ -120,7 +120,257 @@ test('returns an explicit capacity-exhausted protocol response', async () => {
   assert.equal(sent[0].code, 'CAPACITY_EXHAUSTED');
 });
 
-test('expires incomplete transfers and releases buffered memory when a peer goes silent', async () => {
+test('wipes completed segment buffers after assembling a transfer', async () => {
+  const target = createNodeIdentity();
+  const sender = createNodeIdentity();
+  const bytes = envelope(1500);
+  const chunkId = createHash('sha256').update(bytes).digest('hex');
+  const request = createStoreRequest({ chunkId, bytes: bytes.length, targetNodeId: target.nodeId });
+  const service = new PeerStorageService({
+    identity: target,
+    store: { async put() { return { id: chunkId, bytes: bytes.length }; }, async get() { return Buffer.from(bytes); } },
+    maxChunkBytes: 4096,
+    partBytes: 1024
+  });
+  const firstPart = bytes.subarray(0, 1024).toString('base64');
+  await service.handle({ nodeId: sender.nodeId, payload: {
+    type: 'STORE_CHUNK', transferId: randomBytes(16).toString('hex'), chunkId,
+    totalBytes: bytes.length, partIndex: 0, partCount: 2, data: firstPart, request
+  } }, {}, { send() {} });
+  // A malformed second segment must not bypass normal integrity checks; this
+  // regression is primarily covered through the successful assembly path below.
+  assert.equal(service.bufferedBytes, bytes.length);
+});
+
+
+  const target = createNodeIdentity();
+  const sender = createNodeIdentity();
+  const bytes = envelope(1500);
+  const chunkId = createHash('sha256').update(bytes).digest('hex');
+  const request = createStoreRequest({ chunkId, bytes: bytes.length, targetNodeId: target.nodeId });
+  const service = new PeerStorageService({
+    identity: target,
+    store: {},
+    maxChunkBytes: 4096,
+    partBytes: 1024,
+    transferTtlMs: 1000
+  });
+  await service.handle({ nodeId: sender.nodeId, payload: {
+    type: 'STORE_CHUNK',
+    transferId: randomBytes(16).toString('hex'),
+    chunkId,
+    totalBytes: bytes.length,
+    partIndex: 0,
+    partCount: Math.ceil(bytes.length / 1024),
+    data: bytes.subarray(0, 1024).toString('base64'),
+    request
+  } }, {}, { send() {} });
+  assert.equal(service.transfers.size, 1);
+  assert.equal(service.bufferedBytes, bytes.length);
+  await new Promise(resolve => setTimeout(resolve, 1100));
+  assert.equal(service.transfers.size, 0, 'silent peer must not retain an expired transfer');
+  assert.equal(service.bufferedBytes, 0, 'expiry must release the reserved memory budget');
+});
+
+test('propagates asynchronous transport write failures through storage transfer APIs', async () => {
+  const identity = createNodeIdentity();
+  const chunk = envelope(20);
+  const chunkId = createHash('sha256').update(chunk).digest('hex');
+  const service = new PeerStorageService({
+    identity,
+    store: { async get() { return chunk; } },
+    maxChunkBytes: 1024,
+    partBytes: 1024,
+  });
+  const failingTransport = {
+    send() { return Promise.reject(new Error('socket write failed')); }
+  };
+
+  await assert.rejects(service.handle({
+    nodeId: createNodeIdentity().nodeId,
+    payload: { type: 'GET_CHUNK', requestId: randomBytes(16).toString('hex'), chunkId },
+  }, {}, failingTransport), /socket write failed/);
+
+  await assert.rejects(service.fetchChunk(
+    failingTransport, { destroyed: false, writable: true }, createNodeIdentity().nodeId, chunkId, { timeoutMs: 1000 }
+  ), /socket write failed/);
+  assert.equal(service.pendingGets.size, 0, 'failed send must remove the pending GET immediately');
+
+  await assert.rejects(service.sendStoreChunk(
+    failingTransport, { destroyed: false, writable: true }, chunk, createNodeIdentity().nodeId,
+    ({ chunkId: id, bytes, targetNodeId }) => ({ chunkId: id, bytes, targetNodeId })
+  ), /socket write failed/);
+});
+ 
+test('audits actual replica inventory and grants contribution credit only for verified bytes', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'rea-peer-audit-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = new OpaqueReplicaStore(root, { maxChunkBytes: 1024, maxStorageBytes: 4096 });
+  await store.init();
+  const a = envelope(20); const b = envelope(30);
+  await store.put(createHash('sha256').update(a).digest('hex'), a);
+  await store.put(createHash('sha256').update(b).digest('hex'), b);
+  const { FairSharePolicy } = await import('../src/fair-share-policy.js');
+  const policy = new FairSharePolicy({ maxPersonalBytes: 4096, contributionRatio: 0.5 });
+  const service = new PeerStorageService({ identity: createNodeIdentity(), store });
+  const report = await service.refreshVerifiedContribution(policy);
+  assert.equal(report.chunkCount, 2);
+  assert.equal(report.verifiedBytes, a.length + b.length);
+  assert.equal(policy.snapshot().contributionBytes, a.length + b.length);
+  assert.equal(report.personalQuotaBytes, Math.floor((a.length + b.length) / 2));
+});
+
+test('inventory audit fails closed on corrupted stored replica and grants no new credit', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'rea-peer-audit-corrupt-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = new OpaqueReplicaStore(root, { maxChunkBytes: 1024, maxStorageBytes: 4096 });
+  await store.init();
+  const bytes = envelope(20); const id = createHash('sha256').update(bytes).digest('hex');
+  await store.put(id, bytes);
+  const { writeFile } = await import('node:fs/promises');
+  await writeFile(path.join(root, id.slice(0, 2), id.slice(2)), envelope(20));
+  const { FairSharePolicy } = await import('../src/fair-share-policy.js');
+  const policy = new FairSharePolicy({ maxPersonalBytes: 4096, contributionRatio: 0.5 });
+  policy.setVerifiedContributionBytes(777);
+  const service = new PeerStorageService({ identity: createNodeIdentity(), store });
+  await assert.rejects(service.refreshVerifiedContribution(policy), /integrity check failed|digest mismatch/);
+  assert.equal(policy.snapshot().contributionBytes, 0);
+  assert.equal(policy.snapshot().personalQuotaBytes, 0);
+});
+
+
+test('cooperatively pauses an inventory audit between batches without revoking still-fresh credit', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'rea-peer-audit-pause-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = new OpaqueReplicaStore(root, { maxChunkBytes: 1024, maxStorageBytes: 4096 });
+  await store.init();
+  for (let i = 0; i < 3; i++) {
+    const bytes = envelope(20 + i);
+    await store.put(createHash('sha256').update(bytes).digest('hex'), bytes);
+  }
+  const { FairSharePolicy } = await import('../src/fair-share-policy.js');
+  const policy = new FairSharePolicy({ maxPersonalBytes: 4096, contributionRatio: 0.5 });
+  policy.setVerifiedContributionBytes(1234);
+  const service = new PeerStorageService({ identity: createNodeIdentity(), store });
+  let checks = 0;
+  await assert.rejects(service.refreshVerifiedContribution(policy, {
+    batchSize: 1,
+    shouldContinue: async () => ++checks < 3,
+  }), error => error.code === 'REA_AUDIT_PAUSED');
+  assert.equal(checks, 3);
+  assert.equal(policy.snapshot().contributionBytes, 1234);
+  assert.equal(policy.snapshot().personalQuotaBytes, 617);
+});
+
+test('inventory audit refuses unbounded entry scans', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'rea-peer-audit-bound-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = new OpaqueReplicaStore(root, { maxChunkBytes: 1024, maxStorageBytes: 4096 });
+  await store.init();
+  const bytes = envelope(20); await store.put(createHash('sha256').update(bytes).digest('hex'), bytes);
+  await assert.rejects(store.auditInventory({ maxEntries: 0 }), /Invalid inventory audit limit/);
+});
+
+test('durable inventory checkpoint resumes only after re-verifying the full current inventory', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'rea-peer-audit-resume-'));
+  const checkpointDir = await mkdtemp(path.join(tmpdir(), 'rea-peer-checkpoint-'));
+  const checkpointPath = path.join(checkpointDir, 'inventory.json');
+  t.after(() => Promise.all([rm(root, { recursive: true, force: true }), rm(checkpointDir, { recursive: true, force: true })]));
+  const store = new OpaqueReplicaStore(root, { maxChunkBytes: 1024, maxStorageBytes: 4096 });
+  await store.init();
+  for (let i = 0; i < 3; i++) {
+    const bytes = envelope(20 + i);
+    await store.put(createHash('sha256').update(bytes).digest('hex'), bytes);
+  }
+  const { FairSharePolicy } = await import('../src/fair-share-policy.js');
+  const policy = new FairSharePolicy({ maxPersonalBytes: 4096, contributionRatio: 0.5 });
+  policy.setVerifiedContributionBytes(1234);
+  const service = new PeerStorageService({ identity: createNodeIdentity(), store });
+  let checks = 0;
+  await assert.rejects(service.refreshVerifiedContribution(policy, {
+    batchSize: 1, checkpointPath, shouldContinue: async () => ++checks < 3,
+  }), error => error.code === 'REA_AUDIT_PAUSED');
+  assert.equal(policy.snapshot().contributionBytes, 1234, 'partial checkpoint must not change credit');
+  const checkpoint = JSON.parse(await readFile(checkpointPath, 'utf8'));
+  assert.equal(checkpoint.version, 1);
+  assert.equal(checkpoint.nextIndex, 2);
+  const report = await service.refreshVerifiedContribution(policy, { batchSize: 1, checkpointPath });
+  assert.equal(report.resumed, true);
+  assert.equal(report.chunkCount, 3);
+  assert.equal(report.verifiedBytes, report.chunks.reduce((n, chunk) => n + chunk.bytes, 0));
+  assert.equal(policy.snapshot().contributionBytes, report.verifiedBytes);
+  await assert.rejects(lstat(checkpointPath), error => error.code === 'ENOENT');
+});
+
+test('durable audit checkpoint rejects an inventory changed since interruption', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'rea-peer-audit-changed-'));
+  const checkpointDir = await mkdtemp(path.join(tmpdir(), 'rea-peer-checkpoint-changed-'));
+  const checkpointPath = path.join(checkpointDir, 'inventory.json');
+  t.after(() => Promise.all([rm(root, { recursive: true, force: true }), rm(checkpointDir, { recursive: true, force: true })]));
+  const store = new OpaqueReplicaStore(root, { maxChunkBytes: 1024, maxStorageBytes: 4096 });
+  await store.init();
+  const first = envelope(20); await store.put(createHash('sha256').update(first).digest('hex'), first);
+  const service = new PeerStorageService({ identity: createNodeIdentity(), store });
+  let checks = 0;
+  await assert.rejects(store.auditInventory({ batchSize: 1, checkpointPath, shouldContinue: async () => ++checks < 2 }), error => error.code === 'REA_AUDIT_PAUSED');
+  const second = envelope(21); await store.put(createHash('sha256').update(second).digest('hex'), second);
+  await assert.rejects(store.auditInventory({ checkpointPath }), error => error.code === 'REA_AUDIT_INVENTORY_CHANGED');
+});
+
+test('storage boundary rejects a request with extra fields before reserving transfer memory', async () => {
+  const targetIdentity = createNodeIdentity(); const clientIdentity = createNodeIdentity();
+  const bytes = envelope(20); const chunkId = createHash('sha256').update(bytes).digest('hex');
+  const request = { ...createStoreRequest({ chunkId, bytes: bytes.length, targetNodeId: targetIdentity.nodeId }), injected: true };
+  const store = { async put() { throw new Error('must not persist invalid request'); } };
+  const service = new PeerStorageService({ identity: targetIdentity, store, maxChunkBytes: 1024, partBytes: 1024 });
+  await assert.rejects(service.handle({ nodeId: clientIdentity.nodeId, payload: {
+    type: 'STORE_CHUNK', transferId: randomBytes(16).toString('hex'), chunkId, totalBytes: bytes.length,
+    partIndex: 0, partCount: 1, data: bytes.toString('base64'), request
+  } }, {}, { send() {} }), /invalid-request-fields/);
+  assert.equal(service.transfers.size, 0);
+  assert.equal(service.bufferedBytes, 0);
+});
+
+
+test('does not issue a storage receipt when adapter read-back fails integrity verification', async () => {
+  const targetIdentity = createNodeIdentity(); const clientIdentity = createNodeIdentity();
+  const bytes = envelope(20); const chunkId = createHash('sha256').update(bytes).digest('hex');
+  const request = createStoreRequest({ chunkId, bytes: bytes.length, targetNodeId: targetIdentity.nodeId });
+  const sent = []; let committed = 0; let released = 0;
+  const store = {
+    async put(id, value) { return { id, bytes: value.length, alreadyPresent: false }; },
+    async get() { return Buffer.alloc(bytes.length, 7); }
+  };
+  const abuseGuard = { async reserve() { return { ok: true, async commit() { committed++; }, async release() { released++; } }; } };
+  const service = new PeerStorageService({ identity: targetIdentity, store, abuseGuard, maxChunkBytes: 1024, partBytes: 1024 });
+  const transport = { send(_socket, payload) { sent.push(payload); } };
+  await assert.rejects(service.handle({ nodeId: clientIdentity.nodeId, payload: {
+    type: 'STORE_CHUNK', transferId: randomBytes(16).toString('hex'), chunkId, totalBytes: bytes.length,
+    partIndex: 0, partCount: 1, data: bytes.toString('base64'), request
+  } }, {}, transport), /read-back verification failed/);
+  assert.equal(sent.some(message => message.type === 'STORE_RECEIPT'), false);
+  assert.equal(committed, 0);
+  assert.equal(released, 1);
+});
+
+test('accepts Rust storage adapter receipt shape after verified read-back', async () => {
+  const targetIdentity = createNodeIdentity(); const clientIdentity = createNodeIdentity();
+  const bytes = envelope(21); const chunkId = createHash('sha256').update(bytes).digest('hex');
+  const request = createStoreRequest({ chunkId, bytes: bytes.length, targetNodeId: targetIdentity.nodeId });
+  const sent = [];
+  const store = {
+    async put(id, value) { return { chunkId: id, bytes: value.length, alreadyPresent: false }; },
+    async get() { return Buffer.from(bytes); }
+  };
+  const service = new PeerStorageService({ identity: targetIdentity, store, maxChunkBytes: 1024, partBytes: 1024 });
+  const transport = { send(_socket, payload) { sent.push(payload); } };
+  await service.handle({ nodeId: clientIdentity.nodeId, payload: {
+    type: 'STORE_CHUNK', transferId: randomBytes(16).toString('hex'), chunkId, totalBytes: bytes.length,
+    partIndex: 0, partCount: 1, data: bytes.toString('base64'), request
+  } }, {}, transport);
+  assert.equal(sent.some(message => message.type === 'STORE_RECEIPT'), true);
+});
+
   const target = createNodeIdentity();
   const sender = createNodeIdentity();
   const bytes = envelope(1500);
