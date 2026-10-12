@@ -827,3 +827,35 @@ test('official transport aborts pending admission work when quarantine destroys 
   assert.equal(messagesHandled, 0, 'quarantined socket must not reach application handlers');
 });
 
+
+test('official transport cannot start listening if quarantine begins during startup preflight', async t => {
+  const listeners = new Set();
+  let releasePreflight;
+  const integrityGuard = {
+    status: { verified: true, quarantined: false, reason: null },
+    async checkHealthy() {
+      await new Promise(resolve => { releasePreflight = resolve; });
+      if (this.status.quarantined) throw Object.assign(new Error('quarantined'), { code: 'ZION_INTEGRITY_QUARANTINED' });
+    },
+    assertHealthy() {
+      if (this.status.quarantined) throw Object.assign(new Error('quarantined'), { code: 'ZION_INTEGRITY_QUARANTINED' });
+    },
+    addQuarantineListener(listener) { listeners.add(listener); return () => listeners.delete(listener); }
+  };
+  const transport = new PeerTransport({
+    identity: createNodeIdentity(),
+    protocolGenesis: testGenesis(),
+    networkMode: 'official',
+    integrityGuard
+  });
+  const starting = transport.listen();
+  await waitFor(() => typeof releasePreflight === 'function');
+  integrityGuard.status = { verified: false, quarantined: true, reason: 'startup-race' };
+  for (const listener of listeners) await listener({ reason: 'startup-race' });
+  releasePreflight();
+  await assert.rejects(starting, /quarantined|ZION_INTEGRITY_QUARANTINED/);
+  assert.equal(transport.server, null, 'quarantined startup must not create a server');
+  assert.equal(transport.started, false);
+  await transport.close();
+});
+
