@@ -6,7 +6,7 @@ Use `createOfficialPostgresAdmissionTransport()` from `src/official-postgres-adm
 
 The PostgreSQL transaction enforces mutable invariants including subject uniqueness, nonce consumption, issuer quotas, policy limits, and capacity reservations. Storage-headroom metrics fail closed when unavailable; they do not constitute remote physical-storage reservations.
 
-An ambiguous `COMMIT` is never automatically replayed. The store marks the affected subject unavailable until `isAdmitted()` successfully queries PostgreSQL; because the transaction is atomic, that authoritative row resolves whether admission committed. Other subjects are not globally blocked by one ambiguous result. A restarted process has a fresh in-memory ambiguity marker, so callers must query authoritative admission state before retrying an invitation and must not infer absence from a prior process's error.
+An ambiguous `COMMIT` is never automatically replayed. The store marks the affected subject unavailable until `isAdmitted()` successfully queries PostgreSQL; because the transaction is atomic, that authoritative row resolves whether admission committed. Both startup preflight and ambiguity reconciliation reject a PostgreSQL standby (`pg_is_in_recovery() = true`), so the deployment pool must target the writable primary and must not route reconciliation reads to a lagging replica. Other subjects are not globally blocked by one ambiguous result. A restarted process has a fresh in-memory ambiguity marker, so callers must query authoritative admission state on the writable primary before retrying an invitation and must not infer absence from a prior process's error.
 
 ## Deployment requirements still open
 
