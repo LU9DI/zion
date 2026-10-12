@@ -20,6 +20,27 @@ test('scheduler writes through policy-limited queue and resolves byte accounting
   } finally { scheduler.close(); }
 });
 
+test('scheduler eventually sends a frame larger than one second of bandwidth budget', async () => {
+  const policy = new AdaptiveBandwidthPolicy({ maxUploadKiBps: 10, activeUploadFraction: 1, activeDownloadFraction: 1 });
+  let time = 0;
+  const scheduler = new AdaptiveTransferScheduler({
+    policy,
+    getTelemetry: () => healthy,
+    now: () => { time += 2000; return time; }
+  });
+  const socket = fakeSocket();
+  try {
+    const frame = Buffer.alloc(10 * 1024 + 1, 0x61);
+    const sent = scheduler.enqueue(socket, frame);
+    await Promise.race([
+      sent,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('oversized frame remained starved')), 100))
+    ]);
+    assert.equal(socket.writes.length, 1);
+    assert.equal(socket.writes[0].length, frame.length);
+  } finally { scheduler.close(); }
+});
+
 test('scheduler fails closed when telemetry is unavailable', async () => {
   const policy = new AdaptiveBandwidthPolicy();
   const scheduler = new AdaptiveTransferScheduler({ policy, getTelemetry: () => null });
