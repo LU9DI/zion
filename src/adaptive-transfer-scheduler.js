@@ -64,14 +64,21 @@ export class AdaptiveTransferScheduler {
           break;
         }
         this.queue.shift(); this.queuedBytes -= item.frame.length; this.tokens -= item.frame.length;
+        let cancelWrite;
+        const cancelled = new Promise((_, reject) => { cancelWrite = reject; });
+        item.cancelWrite = cancelWrite;
         this.activeItem = item;
         try {
-          await new Promise((resolve, reject) => {
+          const writeCompleted = new Promise((resolve, reject) => {
             item.socket.write(item.frame, error => error ? reject(error) : resolve());
           });
+          await Promise.race([writeCompleted, cancelled]);
           item.resolve({ bytes: item.frame.length, uploadKiBps: budget.uploadKiBps });
         } catch (error) { item.reject(error); }
-        finally { if (this.activeItem === item) this.activeItem = null; }
+        finally {
+          item.cancelWrite = null;
+          if (this.activeItem === item) this.activeItem = null;
+        }
       }
     } finally {
       this.pumping = false;
@@ -88,6 +95,7 @@ export class AdaptiveTransferScheduler {
     // work. A stalled or closing socket must not leave enqueue() callers pending.
     if (this.activeItem) {
       this.activeItem.reject(reason);
+      this.activeItem.cancelWrite?.(reason);
       this.activeItem = null;
     }
     for (const item of this.queue.splice(0)) item.reject(reason);
