@@ -150,6 +150,7 @@ export function installShutdownHandlers(running, {
 } = {}) {
   let shuttingDown = false;
   let closed = false;
+  let shutdownFailureSetExitCode = false;
   const shutdown = async signal => {
     if (shuttingDown || closed) return;
     shuttingDown = true;
@@ -157,6 +158,7 @@ export function installShutdownHandlers(running, {
     try {
       await running.close();
       closed = true;
+      if (shutdownFailureSetExitCode && processLike.exitCode === 1) processLike.exitCode = undefined;
       processLike.off?.('SIGINT', onSigint);
       processLike.off?.('SIGTERM', onSigterm);
     } catch {
