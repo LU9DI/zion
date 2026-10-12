@@ -94,6 +94,37 @@ test('PostgreSQL migration and independent-process admission races enforce capac
     assert.deepEqual(await store.verifyPersistentState(), {
       ok: true, activeAdmissions: 0, activeReservations: 0, policyVersion: 1,
     });
+
+    // An ambiguous-COMMIT reconciliation must wait for the shared capacity lock.
+    // Otherwise a read could observe absence before an in-flight COMMIT settles,
+    // clear the fail-closed marker, and then miss a transaction that commits later.
+    const reconciliationLock = await pool.connect();
+    let lockOpen = false;
+    let reconciliation;
+    let reconciliationFinished = false;
+    try {
+      await reconciliationLock.query('BEGIN');
+      lockOpen = true;
+      await reconciliationLock.query(
+        'SELECT active_reservations FROM peer_admission_capacity WHERE singleton = true FOR UPDATE',
+      );
+      store.unknownCommitSubjects.set(id('f'), {});
+      reconciliation = store.isAdmitted(id('f')).then(value => {
+        reconciliationFinished = true;
+        return value;
+      });
+      await new Promise(resolve => setTimeout(resolve, 50));
+      assert.equal(reconciliationFinished, false,
+        'reconciliation must wait for the transaction holding the capacity row');
+      await reconciliationLock.query('COMMIT');
+      lockOpen = false;
+    } finally {
+      if (lockOpen) await reconciliationLock.query('ROLLBACK').catch(() => {});
+      reconciliationLock.release();
+    }
+    assert.equal(await reconciliation, false);
+    assert.equal(store.unknownCommitSubjects.has(id('f')), false,
+      'the marker clears only after the serialized authoritative read completes');
     await pool.query(
       'UPDATE peer_admission_capacity SET active_reservations = 1 WHERE singleton = true',
     );
