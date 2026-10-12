@@ -257,8 +257,10 @@ export class OfficialNodeBootstrap {
       }
       // Start authenticated notification API only after integrity, storage, and transport are healthy.
       if (this.notificationApi) {
-        await this.notificationApi.listen();
+        // A listen() implementation can allocate resources before rejecting.
+        // Mark the attempt first so rollback always invokes close().
         this.notificationApiStarted = true;
+        await this.notificationApi.listen();
         this.#assertLifecycle(epoch);
         await this.integrityGuard.checkHealthy();
         this.#assertLifecycle(epoch);
@@ -266,16 +268,17 @@ export class OfficialNodeBootstrap {
       // Start inactivity automation only after integrity, storage, and transport are healthy.
       // The scheduler must use real host adapters; bootstrap only owns its lifecycle.
       if (this.inactivityScheduler) {
-        this.inactivityScheduler.start({ runImmediately: false });
+        // start() may allocate a timer before an injected adapter throws.
         this.inactivitySchedulerStarted = true;
+        this.inactivityScheduler.start({ runImmediately: false });
       }
       if (this.idleParticipationScheduler) {
-        this.idleParticipationScheduler.start({ runImmediately: false });
         this.idleParticipationSchedulerStarted = true;
+        this.idleParticipationScheduler.start({ runImmediately: false });
       }
       if (this.notificationDeliveryWorker) {
-        this.notificationDeliveryWorker.start({ runImmediately: false });
         this.notificationDeliveryWorkerStarted = true;
+        this.notificationDeliveryWorker.start({ runImmediately: false });
       }
       this.started = true;
       return Object.freeze({ ok: true, address, integrity: this.integrityGuard.status,
