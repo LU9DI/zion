@@ -768,3 +768,50 @@ test('official transport fails closed when authoritative admission state is not 
   await waitFor(() => socket.destroyed);
   assert.equal(server.admittedPeerIds.has(newcomer.nodeId), false);
 });
+
+test('official transport aborts pending admission work when quarantine destroys the session', async t => {
+  const listeners = new Set();
+  const integrityGuard = {
+    status: { verified: true, quarantined: false, reason: null },
+    async checkHealthy() {
+      if (this.status.quarantined) throw Object.assign(new Error('quarantined'), { code: 'ZION_INTEGRITY_QUARANTINED' });
+    },
+    assertHealthy() {
+      if (this.status.quarantined) throw Object.assign(new Error('quarantined'), { code: 'ZION_INTEGRITY_QUARANTINED' });
+    },
+    addQuarantineListener(listener) { listeners.add(listener); return () => listeners.delete(listener); }
+  };
+  let releaseAdmissionRead;
+  let admissionCalls = 0;
+  let messagesHandled = 0;
+  const admissionController = {
+    async isAdmitted() {
+      return await new Promise(resolve => { releaseAdmissionRead = resolve; });
+    },
+    async admit() { admissionCalls++; return { ok: true }; },
+    async releaseAdmission() {}
+  };
+  const transport = new PeerTransport({
+    identity: createNodeIdentity(),
+    protocolGenesis: testGenesis(),
+    networkMode: 'official',
+    integrityGuard,
+    trustedPeerIds: ['a'.repeat(64)],
+    admissionController,
+    onMessage: async () => { messagesHandled++; }
+  });
+  const address = await transport.listen();
+  const client = new PeerTransport({ identity: createNodeIdentity() });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(async () => { await client.close(); await transport.close(); });
+  await waitFor(() => typeof releaseAdmissionRead === 'function');
+
+  integrityGuard.status = { verified: false, quarantined: true, reason: 'test-quarantine' };
+  for (const listener of listeners) await listener({ reason: integrityGuard.status.reason });
+  releaseAdmissionRead(false);
+  await waitFor(() => socket.destroyed);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(admissionCalls, 0, 'quarantined socket must not continue into voucher admission');
+  assert.equal(messagesHandled, 0, 'quarantined socket must not reach application handlers');
+});
+
