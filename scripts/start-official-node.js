@@ -153,7 +153,7 @@ export function installShutdownHandlers(running, {
   const shutdown = async signal => {
     if (shuttingDown || closed) return;
     shuttingDown = true;
-    stdout.write(\`Official Zion node shutting down (\${signal})\\n\`);
+    stdout.write(`Official Zion node shutting down (${signal})\n`);
     try {
       await running.close();
       closed = true;
@@ -162,7 +162,7 @@ export function installShutdownHandlers(running, {
     } catch {
       // Keep both handlers installed so a later signal can retry cleanup.
       processLike.exitCode = 1;
-      stderr.write('Official node shutdown was incomplete; inspect deployment logs and resource status.\\n');
+      stderr.write('Official node shutdown was incomplete; inspect deployment logs and resource status.\n');
     } finally {
       shuttingDown = false;
     }
@@ -176,7 +176,7 @@ export function installShutdownHandlers(running, {
 
 async function main() {
   const running = await startOfficialNode();
-  process.stdout.write(\`Official Zion node listening on \${running.address.host}:\${running.address.port}\\n\`);
+  process.stdout.write(`Official Zion node listening on ${running.address.host}:${running.address.port}\n`);
   installShutdownHandlers(running);
 }
 
