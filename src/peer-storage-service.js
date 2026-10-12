@@ -435,7 +435,8 @@ export class PeerStorageService {
       complete.fill(0);
       throw new Error('Transferred chunk digest mismatch');
     }
-    if (response) {
+    try {
+      if (response) {
       const key = `${nodeId}:${transfer.requestId}`;
       const pending = this.pendingGets.get(key);
       if (!pending) throw new Error('Unsolicited chunk response');
@@ -485,8 +486,13 @@ export class PeerStorageService {
       await admission?.release();
       throw error;
     }
-    await this.#assertIntegrity();
-    await transport.send(socket, receipt.payload);
+      await this.#assertIntegrity();
+      await transport.send(socket, receipt.payload);
+    } finally {
+      // The assembled copy contains the full encrypted envelope. Its consumers
+      // have completed by this point, so do not retain it through Buffer pooling/GC.
+      complete.fill(0);
+    }
   }
   /** Refresh contribution credit from a fresh local integrity audit, never from peer claims. */
   async refreshVerifiedContribution(fairSharePolicy, { maxEntries = 10_000, batchSize = 128, shouldContinue = null, checkpointPath = null } = {}) {
