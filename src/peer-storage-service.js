@@ -409,6 +409,15 @@ export class PeerStorageService {
         if (!requestCheck.ok) { const error = new Error(`Invalid or expired store request: ${requestCheck.reason}`); error.code = 'REA_INVALID_STORE_REQUEST'; throw error; }
       }
       transfer = { nodeId, chunkId: payload.chunkId, requestId: response ? payload.requestId : undefined, totalBytes: payload.totalBytes, partCount: payload.partCount, parts: new Array(payload.partCount), received: 0, bytes: 0, expiresAt: this.now() + this.transferTtlMs, request: payload.request };
+      // Expire incomplete transfers even if the peer goes silent. The timer is
+      // unref'ed so an abandoned transfer cannot keep an otherwise idle process alive.
+      transfer.expiryTimer = setTimeout(() => {
+        if (this.transfers.get(transferKey) !== transfer) return;
+        this.transfers.delete(transferKey);
+        this.bufferedBytes -= transfer.totalBytes;
+        for (const part of transfer.parts) if (Buffer.isBuffer(part)) part.fill(0);
+      }, this.transferTtlMs);
+      transfer.expiryTimer.unref?.();
       this.transfers.set(transferKey, transfer); this.bufferedBytes += payload.totalBytes;
     } else if (transfer.chunkId !== payload.chunkId || transfer.totalBytes !== payload.totalBytes || transfer.partCount !== payload.partCount || (response && transfer.requestId !== payload.requestId)) throw new Error('Chunk transfer metadata changed');
     if (transfer.parts[payload.partIndex]) throw new Error('Duplicate chunk transfer segment');
@@ -416,7 +425,7 @@ export class PeerStorageService {
     if (part.length !== expectedLen) throw new Error('Chunk segment has unexpected length');
     transfer.parts[payload.partIndex] = part; transfer.received++; transfer.bytes += part.length;
     if (transfer.received !== transfer.partCount) return;
-    this.transfers.delete(transferKey); this.bufferedBytes -= transfer.totalBytes;
+    this.transfers.delete(transferKey); clearTimeout(transfer.expiryTimer); this.bufferedBytes -= transfer.totalBytes;
     const complete = Buffer.concat(transfer.parts, transfer.totalBytes);
     if (complete.length !== transfer.totalBytes || createHash('sha256').update(complete).digest('hex') !== transfer.chunkId) throw new Error('Transferred chunk digest mismatch');
     if (response) {
@@ -498,6 +507,7 @@ export class PeerStorageService {
   #enterQuarantine(reason = 'Zion integrity quarantine') {
     // Shed volatile data immediately; never delete persisted user chunks.
     for (const transfer of this.transfers.values()) {
+      clearTimeout(transfer.expiryTimer);
       for (const part of transfer.parts ?? []) if (Buffer.isBuffer(part)) part.fill(0);
     }
     this.transfers.clear();
@@ -519,7 +529,10 @@ export class PeerStorageService {
 
   #prune() {
     const now = this.now();
-    for (const [key, transfer] of this.transfers) if (transfer.expiresAt <= now) { this.transfers.delete(key); this.bufferedBytes -= transfer.totalBytes; }
+    for (const [key, transfer] of this.transfers) if (transfer.expiresAt <= now) {
+      this.transfers.delete(key); clearTimeout(transfer.expiryTimer); this.bufferedBytes -= transfer.totalBytes;
+      for (const part of transfer.parts) if (Buffer.isBuffer(part)) part.fill(0);
+    }
   }
 
   /** Fetch one chunk from a specific authenticated peer; rejects on timeout or integrity failure. */
