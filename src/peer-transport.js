@@ -197,7 +197,12 @@ export class PeerTransport {
   }
 
   async #processFrame(socket, frame) {
-    if (this.networkMode === 'official') await this.integrityGuard.checkHealthy();
+    if (this.networkMode === 'official') {
+      await this.integrityGuard.checkHealthy();
+      if (socket.destroyed) return;
+      this.integrityGuard.assertHealthy();
+    }
+    if (socket.destroyed) return;
     let message;
     try { message = JSON.parse(frame.toString('utf8')); }
     catch { socket.destroy(); return; }
@@ -215,6 +220,10 @@ export class PeerTransport {
         socket.destroy();
         return;
       }
+      // A quarantine can destroy the socket while a remote admission read is pending.
+      // Never continue protocol or admission side effects after that asynchronous boundary.
+      if (socket.destroyed) return;
+      if (this.networkMode === 'official') this.integrityGuard.assertHealthy();
       // Admission state is a security decision, not a truthy/falsy hint. Reject
       // malformed backend values so e.g. the string "false" cannot authorize a peer.
       if (controllerAdmitted !== true && controllerAdmitted !== false) {
@@ -251,6 +260,8 @@ export class PeerTransport {
           let admission;
           try { admission = await this.admissionController.admit({ subjectNodeId: checked.nodeId, vouchers: payload.vouchers }); }
           catch { socket.destroy(); return; }
+          if (socket.destroyed) return;
+          if (this.networkMode === 'official') this.integrityGuard.assertHealthy();
           let admittedAfterAttempt;
           try {
             admittedAfterAttempt = await this.admissionController.isAdmitted(checked.nodeId);
@@ -258,6 +269,8 @@ export class PeerTransport {
             socket.destroy();
             return;
           }
+          if (socket.destroyed) return;
+          if (this.networkMode === 'official') this.integrityGuard.assertHealthy();
           // The post-write authoritative read is the final admission decision. A
           // successful write response alone cannot authorize a session if the row
           // is already absent/revoked by the time the read completes.
@@ -282,6 +295,8 @@ export class PeerTransport {
       const operation = validateProtocolOperation(checked.payload, { genesis: this.genesis, now: this.now() });
       if (!operation.ok) { socket.destroy(); return; }
     }
+    if (socket.destroyed) return;
+    if (this.networkMode === 'official') this.integrityGuard.assertHealthy();
     try {
       await this.onMessage(Object.freeze({ nodeId: checked.nodeId, payload: checked.payload, envelope: message }), socket);
     } catch {
