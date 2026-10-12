@@ -124,11 +124,13 @@ export class OfficialNodeBootstrap {
     if (this.containmentHistory.length > this.maxContainmentHistory) this.containmentHistory.splice(0, this.containmentHistory.length - this.maxContainmentHistory);
     if (!this.recordContainmentEvent) return;
     const write = this.containmentAuditQueue.then(() => this.recordContainmentEvent(record));
-    this.containmentAuditQueue = write.then(() => undefined, () => undefined);
-    try { await write; } catch (error) {
+    // The audit sink is external and may hang indefinitely. Queue writes to
+    // preserve sequence, but never make security containment wait for durable
+    // audit delivery. Errors are surfaced asynchronously in the bounded report.
+    this.containmentAuditQueue = write.then(() => undefined, error => {
       this.containmentAuditErrors.push(String(error?.message ?? error).slice(0, 240));
       if (this.containmentAuditErrors.length > 20) this.containmentAuditErrors.shift();
-    }
+    });
   }
 
   async #cleanupAdapters() {

@@ -342,6 +342,7 @@ test('containment emits bounded structured events to the optional audit adapter'
     maxContainmentHistory: 2
   });
   await base.guard.quarantine();
+  await bootstrap.containmentAuditQueue;
   assert.ok(persisted.some(event => event.event === 'containment-started'));
   assert.ok(persisted.some(event => event.event === 'containment-completed'));
   assert.equal(bootstrap.containmentHistory.length, 2);
@@ -358,6 +359,7 @@ test('audit adapter failure is exposed without preventing urgent resource contai
     recordContainmentEvent: async () => { throw new Error('audit store unavailable'); }
   });
   await state.guard.quarantine();
+  await bootstrap.containmentAuditQueue;
   assert.equal(bootstrap.containmentStatus, 'contained');
   assert.equal(bootstrap.containmentReport.verifiedStopped, true);
   assert.ok(bootstrap.containmentReport.audit.errors.some(message => message.includes('audit store unavailable')));
@@ -594,4 +596,28 @@ test('shutdown closes notification ingress before draining schedulers and delive
   assert.ok(lifecycle.indexOf('idle-stop') < lifecycle.indexOf('worker-stop'));
   assert.ok(lifecycle.indexOf('inactivity-stop') < lifecycle.indexOf('worker-stop'));
   assert.ok(lifecycle.indexOf('worker-stop') < lifecycle.indexOf('storage-stop'));
+});
+
+test('a hung containment audit sink cannot delay resource isolation', async () => {
+  const state = fixture();
+  let releaseAudit;
+  const auditPending = new Promise(resolve => { releaseAudit = resolve; });
+  const bootstrap = new OfficialNodeBootstrap({
+    integrityGuard: state.guard, transport: state.transport,
+    startStorage: async () => {}, stopStorage: async () => {},
+    getStorageStatus: async () => ({ running: false }),
+    recordContainmentEvent: async () => auditPending
+  });
+  try {
+    await Promise.race([
+      state.guard.quarantine(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('quarantine waited on audit sink')), 500))
+    ]);
+    assert.ok(state.events.includes('close'), 'transport must close despite a hung audit sink');
+    assert.equal(bootstrap.containmentStatus, 'contained');
+    assert.equal(bootstrap.containmentReport.verifiedStopped, true);
+  } finally {
+    releaseAudit();
+  }
+  await bootstrap.containmentAuditQueue;
 });
