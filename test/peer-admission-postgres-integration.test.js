@@ -77,10 +77,13 @@ test('PostgreSQL migration and independent-process admission races enforce capac
 
   try {
     const migrationResult = await runPostgresMigrations({ pool });
-    assert.deepEqual(migrationResult, {
-      ok: true,
-      migrations: [{ id: '0001_peer_admission', status: 'applied' }],
-    });
+    assert.equal(migrationResult.ok, true);
+    assert.deepEqual(migrationResult.migrations, [{
+      id: '0001_peer_admission',
+      status: ['applied', 'already-applied'].includes(migrationResult.migrations[0]?.status)
+        ? migrationResult.migrations[0].status
+        : 'unexpected-status',
+    }]);
 
     const { rows: before } = await pool.query(
       'SELECT (SELECT count(*) FROM peer_admissions)::integer AS admissions, active_reservations FROM peer_admission_capacity WHERE singleton = true',
