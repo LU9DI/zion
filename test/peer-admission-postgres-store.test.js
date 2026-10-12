@@ -16,7 +16,7 @@ const input = () => ({
   maxAdmissionsPerIssuer: 5,
 });
 
-function fakePool({ failInvitationInsert = false, retryOnce = false, failCommit = false, failRollback = false, failAdmissionRead = false } = {}) {
+function fakePool({ failInvitationInsert = false, retryOnce = false, failCommit = false, failRollback = false, failAdmissionRead = false, activeReservations = 0 } = {}) {
   const calls = [];
   let retryPending = retryOnce;
   let commitPending = failCommit;
@@ -36,7 +36,7 @@ function fakePool({ failInvitationInsert = false, retryOnce = false, failCommit 
             return { rows: [{ max_active_peers: 100, max_admissions_per_issuer: 5,
               min_storage_headroom_ratio: 0.1, policy_version: 7 }] };
           }
-          if (sql.startsWith('SELECT active_reservations')) return { rows: [{ active_reservations: 0 }] };
+          if (sql.startsWith('SELECT active_reservations')) return { rows: [{ active_reservations: activeReservations }] };
           if (sql.includes('count(*)::integer')) return { rows: [{ count: 0 }] };
           if (sql.includes('count(*)::bigint AS active_count')) return { rows: [{ active_count: '0' }] };
           if (sql.startsWith('INSERT INTO consumed_peer_invitations') && failInvitationInsert) {
@@ -104,7 +104,7 @@ test('invalid or duplicate issuer input is rejected before opening a connection'
 });
 
 test('release is idempotent and updates reservation count only when active row changed', async () => {
-  const pool = fakePool();
+  const pool = fakePool({ activeReservations: 1 });
   const store = new PostgresPeerAdmissionStore({ pool });
   const result = await store.releaseAdmission(id('a'), 'revoked');
   assert.equal(result.ok, true);
@@ -113,6 +113,18 @@ test('release is idempotent and updates reservation count only when active row c
   assert.ok(pool.calls.some(x => x.sql === 'COMMIT'));
 });
 
+
+test('release fails closed and rolls back if an active admission has no capacity reservation', async () => {
+  const pool = fakePool({ activeReservations: 0 });
+  const store = new PostgresPeerAdmissionStore({ pool });
+  await assert.rejects(
+    store.releaseAdmission(id('a'), 'revoked'),
+    { code: 'ZION_ADMISSION_STATE_INCONSISTENT' },
+  );
+  assert.ok(pool.calls.some(call => call.sql === 'ROLLBACK'));
+  assert.ok(!pool.calls.some(call => call.sql === 'COMMIT'));
+  assert.ok(!pool.calls.some(call => call.sql.includes('GREATEST(0, active_reservations - 1)')));
+});
 
 test('ambiguous commit blocks only the affected subject until authoritative reconciliation', async () => {
   const pool = fakePool({ failCommit: true });
