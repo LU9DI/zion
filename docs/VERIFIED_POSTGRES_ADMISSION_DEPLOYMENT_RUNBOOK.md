@@ -59,7 +59,17 @@ Use a disposable database and unique test identities/nonces for every run.
 
 Record test IDs, timestamps, commit SHA, database version, expected result, observed result, and sanitized logs. Never record invitation secrets or database credentials.
 
-## 3. Failure and recovery drills
+## 3. Shutdown and containment checks
+
+- [ ] Verify shutdown closes authenticated notification ingress before draining background work.
+- [ ] Verify inactivity and idle schedulers stop accepting new work and await active evaluations before storage shutdown.
+- [ ] Verify the notification delivery worker aborts in-flight provider calls, persists or fences ambiguous delivery outcomes, and drains before storage shutdown.
+- [ ] Verify the contribution audit scheduler's `stop()` and `close()` await any active durable audit before storage dependencies are closed.
+- [ ] Inject timer-cleanup failures and confirm active work is still drained, shutdown reports incomplete cleanup, and a retry is possible.
+- [ ] Inject a transient storage-stop failure and confirm the launcher retains the PostgreSQL pool until shutdown is confirmed; retry and verify the pool closes only after successful cleanup.
+- [ ] Record the exact tested commit and the state reported by transport/storage adapters; missing status adapters must not be described as independently verified shutdown.
+
+## 4. Failure and recovery drills
 
 Only run against a disposable environment with snapshots and an explicit cleanup plan.
 
@@ -88,7 +98,7 @@ Only run against a disposable environment with snapshots and an explicit cleanup
 3. Restore the pre-migration snapshot, rerun the supported migration path, and rerun admission checks.
 4. Confirm application startup refuses incompatible or missing schema rather than silently opening the listener.
 
-## 4. Go/no-go criteria
+## 5. Go/no-go criteria
 
 Do not enable an official deployment until all are true:
 
@@ -100,7 +110,7 @@ Do not enable an official deployment until all are true:
 - [ ] The exact release commit has passing CI and security checks.
 - [ ] A rollback/disable plan exists that does not silently switch official mode back to in-memory admission.
 
-## 5. Evidence template
+## 6. Evidence template
 
 For each drill, record:
 
