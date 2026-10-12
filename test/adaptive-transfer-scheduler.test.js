@@ -38,6 +38,22 @@ test('scheduler rejects queue overflow and closed sockets', async () => {
   } finally { scheduler.close(); }
 });
 
+test('scheduler close releases pump when telemetry never resolves', async () => {
+  const policy = new AdaptiveBandwidthPolicy({ maxUploadKiBps: 10, activeUploadFraction: 1, activeDownloadFraction: 1 });
+  let markTelemetryStarted;
+  const telemetryStarted = new Promise(resolve => { markTelemetryStarted = resolve; });
+  const scheduler = new AdaptiveTransferScheduler({
+    policy,
+    getTelemetry: () => { markTelemetryStarted(); return new Promise(() => {}); }
+  });
+  const pending = scheduler.enqueue(fakeSocket(), Buffer.from('waiting'));
+  await telemetryStarted;
+  scheduler.close();
+  await assert.rejects(pending, /Transfer scheduler is closed/);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(scheduler.pumping, false);
+});
+ 
 test('scheduler close rejects an in-flight write whose callback never returns', async () => {
   const policy = new AdaptiveBandwidthPolicy({ maxUploadKiBps: 10, activeUploadFraction: 1, activeDownloadFraction: 1 });
   const scheduler = new AdaptiveTransferScheduler({ policy, getTelemetry: () => healthy });
