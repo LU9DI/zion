@@ -109,7 +109,7 @@ test('release is idempotent and updates reservation count only when active row c
   const result = await store.releaseAdmission(id('a'), 'revoked');
   assert.equal(result.ok, true);
   assert.equal(result.changed, true);
-  assert.ok(pool.calls.some(x => x.sql.includes('GREATEST(0, active_reservations - 1)')));
+  assert.ok(pool.calls.some(x => x.sql.includes('active_reservations = active_reservations - 1')));
   assert.ok(pool.calls.some(x => x.sql === 'COMMIT'));
 });
 
