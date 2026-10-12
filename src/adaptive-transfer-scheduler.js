@@ -37,6 +37,8 @@ export class AdaptiveTransferScheduler {
       // failures and settle every queued caller instead of leaking an unhandled
       // rejection while leaving transfers permanently pending.
       void this.#pump().catch(error => {
+        if (this.timer !== null) clearTimeout(this.timer);
+        this.timer = null;
         const pending = this.queue.splice(0);
         this.queuedBytes = 0;
         for (const item of pending) item.reject(error);
