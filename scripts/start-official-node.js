@@ -163,7 +163,10 @@ export function installShutdownHandlers(running, {
       processLike.off?.('SIGTERM', onSigterm);
     } catch {
       // Keep both handlers installed so a later signal can retry cleanup.
-      processLike.exitCode = 1;
+      if (processLike.exitCode === undefined || processLike.exitCode === 0) {
+        processLike.exitCode = 1;
+        shutdownFailureSetExitCode = true;
+      }
       stderr.write('Official node shutdown was incomplete; inspect deployment logs and resource status.\n');
     } finally {
       shuttingDown = false;
