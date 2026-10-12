@@ -225,6 +225,11 @@ test('a slow quarantine alert cannot delay subsystem isolation listeners', async
     await Promise.resolve();
     assert.equal(listenerCalled, true, 'containment listeners must run without waiting for the alert sink');
     assert.equal(guard.status.quarantined, true);
+    const completed = await Promise.race([
+      verification.then(report => report.ok === false),
+      new Promise(resolve => setTimeout(() => resolve(false), 500))
+    ]);
+    assert.equal(completed, true, 'a hung alert sink must not hold integrity verification open');
   } finally {
     releaseAlert();
   }

@@ -105,14 +105,16 @@ export class IntegrityGuard {
       this.quarantined = true;
       this.reason = typeof error?.message === 'string' ? error.message.slice(0, 240) : 'integrity-verification-failed';
       this.lastReport = Object.freeze({ ok: false, reason: this.reason });
-      // Dispatch every containment listener before waiting for any external
-      // alert sink. A slow or hung notification callback must not delay transport
-      // isolation or block another subsystem's quarantine listener.
-      const notifications = [];
-      if (this.onQuarantine) notifications.push(Promise.resolve().then(() => this.onQuarantine(this.lastReport)));
-      for (const listener of this.quarantineListeners) {
-        notifications.push(Promise.resolve().then(() => listener(this.lastReport)));
+      // Alerting is best-effort and must never gate containment or verification
+      // completion: external sinks can hang indefinitely. Attach a rejection
+      // handler immediately so an alert failure cannot become unhandled.
+      if (this.onQuarantine) {
+        void Promise.resolve().then(() => this.onQuarantine(this.lastReport)).catch(() => {});
       }
+      // Invoke all local containment listeners concurrently. Their completion is
+      // part of quarantine handling; external alert delivery is not.
+      const notifications = [...this.quarantineListeners].map(listener =>
+        Promise.resolve().then(() => listener(this.lastReport)));
       await Promise.allSettled(notifications);
       return this.lastReport;
     }
