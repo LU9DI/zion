@@ -169,6 +169,32 @@ test('official transport refuses outbound dialing while integrity is quarantined
   await client.close();
 });
 
+test('official transport rechecks integrity after an outbound dial before sending handshake', async t => {
+  let receivedBytes = 0;
+  const server = createTcpServer(socket => socket.on('data', chunk => { receivedBytes += chunk.length; }));
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => server.close());
+  let checks = 0;
+  const integrityGuard = {
+    status: { verified: true, quarantined: false },
+    async checkHealthy() {
+      checks++;
+      if (checks > 1) throw Object.assign(new Error('integrity quarantined during dial'), { code: 'ZION_INTEGRITY_QUARANTINED' });
+    },
+    assertHealthy() {},
+    addQuarantineListener() { return () => {}; },
+  };
+  const client = new PeerTransport({
+    identity: createNodeIdentity(), networkMode: 'official', protocolGenesis: testGenesis(), integrityGuard,
+  });
+  await assert.rejects(client.connect('127.0.0.1', server.address().port), { code: 'ZION_INTEGRITY_QUARANTINED' });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(checks, 2, 'integrity is checked before and after the asynchronous dial');
+  assert.equal(receivedBytes, 0, 'no protocol handshake is sent after integrity changes during dial');
+  await client.close();
+});
+
 function testGenesis(name = 'Zion test network') {
   return {
     schemaVersion: 1, networkName: name, protocolMajor: 1, genesisTime: 1800000000,
