@@ -7,6 +7,12 @@ import { tmpdir } from 'node:os';
 import { InactivityNotificationStore } from '../src/inactivity-notification-store.js';
 import { InactivityNotificationDeliveryWorker } from '../src/inactivity-notification-delivery-worker.js';
 
+function deferred() {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
+}
+
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), 'zion-delivery-worker-'));
   const store = new InactivityNotificationStore({ statePath: join(dir, 'notifications.json') });
