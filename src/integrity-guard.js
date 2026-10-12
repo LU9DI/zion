@@ -82,7 +82,7 @@ export class IntegrityGuard {
       const checked = [];
       for (const entry of m.files) {
         const target = path.resolve(root, ...entry.path.split('/'));
-        if (target !== this.root && !target.startsWith(`${this.root}${path.sep}`)) throw new Error('manifest-path-escape');
+        if (target !== root && !target.startsWith(`${root}${path.sep}`)) throw new Error('manifest-path-escape');
         let current = root;
         for (const segment of entry.path.split('/')) {
           current = path.join(current, segment);
