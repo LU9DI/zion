@@ -80,21 +80,33 @@ export class PeerTransport {
       // Revalidate after the async preflight before creating a listening socket.
       this.integrityGuard.assertHealthy();
     }
-    this.server = this.tlsOptions
+    const server = this.tlsOptions
       ? createTlsServer({ ...this.tlsOptions, requestCert: true, rejectUnauthorized: true, minVersion: 'TLSv1.2', handshakeTimeout: this.tlsHandshakeTimeoutMs }, socket => this.#accept(socket))
       : createTcpServer(socket => this.#accept(socket));
-    this.server.maxConnections = this.maxConnections;
-    await new Promise((resolve, reject) => {
-      const onError = error => { this.server.off('listening', onListening); reject(error); };
-      const onListening = () => { this.server.off('error', onError); resolve(); };
-      this.server.once('error', onError); this.server.once('listening', onListening);
-      this.server.listen({ host: this.host, port: this.port, backlog: this.maxConnections });
-    });
-    if (this.networkMode === 'official') this.integrityGuard.assertHealthy();
-    if (!this.server.listening) throw new Error('Transport listener closed before startup completed');
-    this.started = true;
-    const address = this.server.address();
-    return Object.freeze({ host: address.address, port: address.port });
+    this.server = server;
+    server.maxConnections = this.maxConnections;
+    try {
+      await new Promise((resolve, reject) => {
+        const onError = error => { server.off('listening', onListening); reject(error); };
+        const onListening = () => { server.off('error', onError); resolve(); };
+        server.once('error', onError); server.once('listening', onListening);
+        server.listen({ host: this.host, port: this.port, backlog: this.maxConnections });
+      });
+      if (this.networkMode === 'official') this.integrityGuard.assertHealthy();
+      if (!server.listening) throw new Error('Transport listener closed before startup completed');
+      this.started = true;
+      const address = server.address();
+      return Object.freeze({ host: address.address, port: address.port });
+    } catch (error) {
+      // A quarantine can close the listener between the listening event and the
+      // final integrity gate. Never leave a bound server behind after failed startup.
+      this.started = false;
+      if (this.server === server) this.server = null;
+      if (server.listening) {
+        await new Promise(resolve => server.close(() => resolve()));
+      }
+      throw error;
+    }
   }
 
   #accept(socket) {
