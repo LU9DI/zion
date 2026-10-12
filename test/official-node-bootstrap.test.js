@@ -477,15 +477,34 @@ test('starts idle participation scheduler only after the official network is hea
   assert.deepEqual(events, [['idle-start', { runImmediately: false }], ['idle-stop']]);
 });
 
-test('idle participation scheduler failure rolls back startup', async () => {
+test('idle participation scheduler failure rolls back partially allocated scheduler', async () => {
   const idleParticipationScheduler = {
-    start() { throw new Error('idle scheduler failed'); },
-    async stop() {},
+    start() { events.push('idle-start-partial'); throw new Error('idle scheduler failed'); },
+    async stop() { events.push('idle-stop-after-failure'); },
   };
   const { bootstrap, events } = fixture({ idleParticipationScheduler });
   await assert.rejects(bootstrap.start(), /idle scheduler failed/);
   assert.ok(events.includes('close'));
   assert.ok(events.includes('stopStorage'));
+});
+
+test('notification API partial startup failure still closes allocated resources', async () => {
+  const state = fixture();
+  const lifecycle = [];
+  const api = {
+    async listen() { lifecycle.push('api-listen'); throw new Error('listener allocated then failed'); },
+    async close() { lifecycle.push('api-close'); }
+  };
+  const bootstrap = new OfficialNodeBootstrap({
+    integrityGuard: state.guard, transport: state.transport,
+    async startStorage() { lifecycle.push('storage-start'); },
+    async stopStorage() { lifecycle.push('storage-stop'); },
+    notificationApi: api,
+  });
+  await assert.rejects(bootstrap.start(), /listener allocated then failed/);
+  assert.ok(lifecycle.includes('api-close'), 'rollback closes the partially started API');
+  assert.ok(lifecycle.indexOf('api-close') < state.events.indexOf('close'));
+  assert.ok(lifecycle.includes('storage-stop'));
 });
 
 test('official bootstrap refuses a transport that bypasses persistent admission', () => {
