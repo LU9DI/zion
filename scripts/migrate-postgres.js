@@ -40,6 +40,7 @@ export async function runPostgresMigrations({ pool, migrations = DEFAULT_MIGRATI
   let locked = false;
   let operationError;
   let transactionCleanupError;
+  let clientStateUncertain = false;
   try {
     lockAttempted = true;
     await client.query('SELECT pg_advisory_lock($1)', [MIGRATION_LOCK_ID]);
@@ -76,13 +77,22 @@ export async function runPostgresMigrations({ pool, migrations = DEFAULT_MIGRATI
           'INSERT INTO zion_schema_migrations (migration_id, sha256) VALUES ($1, $2)',
           [migration.id, checksum],
         );
+        clientStateUncertain = true;
         await client.query('COMMIT');
+        clientStateUncertain = false;
       } catch (error) {
-        try {
-          await client.query('ROLLBACK');
-        } catch (rollbackError) {
-          // Never return a session with uncertain transaction state to the pool.
-          transactionCleanupError = rollbackError;
+        if (clientStateUncertain) {
+          // COMMIT may have succeeded on the server even if its reply was lost.
+          // Do not issue ROLLBACK or reuse this session; the ledger is authoritative
+          // on the next invocation, which can safely determine whether to skip.
+          transactionCleanupError = error;
+        } else {
+          try {
+            await client.query('ROLLBACK');
+          } catch (rollbackError) {
+            // Never return a session with uncertain transaction state to the pool.
+            transactionCleanupError = rollbackError;
+          }
         }
         throw error;
       }
@@ -94,7 +104,7 @@ export async function runPostgresMigrations({ pool, migrations = DEFAULT_MIGRATI
     throw error;
   } finally {
     let releaseError = transactionCleanupError;
-    if (locked) {
+    if (locked && !clientStateUncertain) {
       try {
         const unlock = await client.query('SELECT pg_advisory_unlock($1)', [MIGRATION_LOCK_ID]);
         if (unlock.rows?.[0]?.pg_advisory_unlock !== true) {
