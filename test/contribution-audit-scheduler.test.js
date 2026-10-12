@@ -101,24 +101,21 @@ test('close prevents new audits and drains an active audit before resolving', as
 
 test('stop drains active audit even when interval cleanup fails', async () => {
   let resolveAudit;
+  let cleared = false;
   const scheduler = new ContributionAuditScheduler({
     storageService: { refreshVerifiedContribution: () => new Promise(resolve => { resolveAudit = resolve; }) },
     fairSharePolicy: policy(), intervalMs: 1000,
+    setIntervalFn: () => ({ id: 'timer' }),
+    clearIntervalFn: () => { cleared = true; throw new Error('timer adapter failed'); },
   });
   scheduler.start({ runImmediately: false });
   const active = scheduler.runOnce();
   let settled = false;
-  const originalClear = globalThis.clearInterval;
-  // Replace the global timer adapter only for this test's stop call.
-  globalThis.clearInterval = () => { throw new Error('timer adapter failed'); };
-  try {
-    const stopping = scheduler.stop().finally(() => { settled = true; });
-    await Promise.resolve();
-    assert.equal(settled, false, 'stop must drain active audit despite cleanup failure');
-    resolveAudit({ verifiedBytes: 10 });
-    await active;
-    await assert.rejects(stopping, /Contribution audit scheduler shutdown was incomplete/);
-  } finally {
-    globalThis.clearInterval = originalClear;
-  }
+  const stopping = scheduler.stop().finally(() => { settled = true; });
+  await Promise.resolve();
+  assert.equal(cleared, true);
+  assert.equal(settled, false, 'stop must drain active audit despite cleanup failure');
+  resolveAudit({ verifiedBytes: 10 });
+  await active;
+  await assert.rejects(stopping, /Contribution audit scheduler shutdown was incomplete/);
 });
