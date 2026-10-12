@@ -27,7 +27,7 @@ function fakePool({ failInvitationInsert = false, retryOnce = false, failCommit 
       return {
         async query(sql, params = []) {
           calls.push({ sql: sql.replace(/\s+/g, ' ').trim(), params });
-          if (sql === 'SELECT pg_is_in_recovery() AS in_recovery') return { rows: [{ in_recovery }] };
+          if (sql === 'SELECT pg_is_in_recovery() AS in_recovery') return { rows: [{ in_recovery: inRecovery }] };
           if (sql.includes('SELECT 1 AS admitted FROM peer_admissions') && failAdmissionRead) throw Object.assign(new Error('connection lost during admission read'), { code: '08006' });
           if (sql === 'ROLLBACK' && failRollback) throw Object.assign(new Error('connection lost during ROLLBACK'), { code: '08006' });
           if (sql === 'COMMIT' && commitPending) {
