@@ -39,6 +39,7 @@ export async function runPostgresMigrations({ pool, migrations = DEFAULT_MIGRATI
   let lockAttempted = false;
   let locked = false;
   let operationError;
+  let transactionCleanupError;
   try {
     lockAttempted = true;
     await client.query('SELECT pg_advisory_lock($1)', [MIGRATION_LOCK_ID]);
@@ -77,7 +78,12 @@ export async function runPostgresMigrations({ pool, migrations = DEFAULT_MIGRATI
         );
         await client.query('COMMIT');
       } catch (error) {
-        try { await client.query('ROLLBACK'); } catch {}
+        try {
+          await client.query('ROLLBACK');
+        } catch (rollbackError) {
+          // Never return a session with uncertain transaction state to the pool.
+          transactionCleanupError = rollbackError;
+        }
         throw error;
       }
       applied.push({ id: migration.id, status: 'applied' });
@@ -87,7 +93,7 @@ export async function runPostgresMigrations({ pool, migrations = DEFAULT_MIGRATI
     operationError = error;
     throw error;
   } finally {
-    let releaseError;
+    let releaseError = transactionCleanupError;
     if (locked) {
       try {
         const unlock = await client.query('SELECT pg_advisory_unlock($1)', [MIGRATION_LOCK_ID]);
