@@ -380,7 +380,7 @@ export class PeerStorageService {
       const transferId = randomBytes(16).toString('hex');
       const partCount = Math.ceil(bytes.length / this.partBytes);
       for (let partIndex = 0; partIndex < partCount; partIndex++) {
-        transport.send(socket, { type: 'CHUNK_DATA', transferId, requestId: payload.requestId, chunkId: payload.chunkId, totalBytes: bytes.length,
+        await transport.send(socket, { type: 'CHUNK_DATA', transferId, requestId: payload.requestId, chunkId: payload.chunkId, totalBytes: bytes.length,
           partIndex, partCount, data: bytes.subarray(partIndex * this.partBytes, (partIndex + 1) * this.partBytes).toString('base64') });
       }
       return;
@@ -428,7 +428,7 @@ export class PeerStorageService {
     }
     const admission = await this.abuseGuard?.reserve(nodeId, complete.length);
     if (admission && !admission.ok) {
-      transport.send(socket, { type: 'STORE_REJECTED', requestId: transfer.request?.requestId, chunkId: transfer.chunkId, code: 'FAIR_USE_LIMIT', availableBytes: 0 });
+      await transport.send(socket, { type: 'STORE_REJECTED', requestId: transfer.request?.requestId, chunkId: transfer.chunkId, code: 'FAIR_USE_LIMIT', availableBytes: 0 });
       return;
     }
     let result;
@@ -436,7 +436,7 @@ export class PeerStorageService {
     catch (error) {
       await admission?.release();
       if (error?.code === 'REA_CAPACITY_EXHAUSTED') {
-        transport.send(socket, { type: 'STORE_REJECTED', requestId: transfer.request?.requestId, chunkId: transfer.chunkId, code: 'CAPACITY_EXHAUSTED', availableBytes: error.availableBytes ?? 0 });
+        await transport.send(socket, { type: 'STORE_REJECTED', requestId: transfer.request?.requestId, chunkId: transfer.chunkId, code: 'CAPACITY_EXHAUSTED', availableBytes: error.availableBytes ?? 0 });
         return;
       }
       throw error;
@@ -470,7 +470,7 @@ export class PeerStorageService {
       throw error;
     }
     await this.#assertIntegrity();
-    transport.send(socket, receipt.payload);
+    await transport.send(socket, receipt.payload);
   }
   /** Refresh contribution credit from a fresh local integrity audit, never from peer claims. */
   async refreshVerifiedContribution(fairSharePolicy, { maxEntries = 10_000, batchSize = 128, shouldContinue = null, checkpointPath = null } = {}) {
@@ -534,8 +534,11 @@ export class PeerStorageService {
       const timeout = setTimeout(() => { this.pendingGets.delete(key); reject(new Error('Chunk fetch timed out')); }, timeoutMs);
       timeout.unref?.();
       this.pendingGets.set(key, { chunkId, resolve, reject, timeout });
-      try { transport.send(socket, { type: 'GET_CHUNK', requestId, chunkId }); }
-      catch (error) { clearTimeout(timeout); this.pendingGets.delete(key); reject(error); }
+      try {
+        Promise.resolve(transport.send(socket, { type: 'GET_CHUNK', requestId, chunkId })).catch(error => {
+          clearTimeout(timeout); this.pendingGets.delete(key); reject(error);
+        });
+      } catch (error) { clearTimeout(timeout); this.pendingGets.delete(key); reject(error); }
     });
   }
 
@@ -554,7 +557,7 @@ export class PeerStorageService {
     const transferId = randomBytes(16).toString('hex'); const partCount = Math.ceil(envelope.length / this.partBytes);
     for (let partIndex = 0; partIndex < partCount; partIndex++) {
       const data = envelope.subarray(partIndex * this.partBytes, (partIndex + 1) * this.partBytes).toString('base64');
-      transport.send(socket, { type: 'STORE_CHUNK', transferId, chunkId, totalBytes: envelope.length, partIndex, partCount, data, ...(partIndex === 0 ? { request } : {}) });
+      await transport.send(socket, { type: 'STORE_CHUNK', transferId, chunkId, totalBytes: envelope.length, partIndex, partCount, data, ...(partIndex === 0 ? { request } : {}) });
     }
     return Object.freeze({ chunkId, bytes: envelope.length, request, transferId });
   }
