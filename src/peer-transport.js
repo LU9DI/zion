@@ -174,6 +174,9 @@ export class PeerTransport {
         // started while the dial was pending; in that case never attach/send a
         // protocol handshake, and ensure a failed socket cannot emit an unhandled error.
         await this.integrityGuard.checkHealthy();
+        // Synchronous final gate closes the microtask race between the awaited
+        // check and attaching/sending the first protocol handshake.
+        this.integrityGuard.assertHealthy();
       } catch (error) {
         socket.on('error', () => {});
         socket.destroy();
