@@ -55,28 +55,34 @@ export class IntegrityGuard {
       // data; otherwise a caller mutating a shared manifest object during I/O could
       // change paths or hashes after signature verification.
       const m = JSON.parse(canonical(this.manifest));
-      const rootStat = await lstat(this.root);
+      // Snapshot every security-critical setting before filesystem I/O. Public
+      // properties can otherwise be reassigned while awaits are in flight.
+      const root = this.root;
+      const expectedReleaseVersion = this.expectedReleaseVersion;
+      const requiredPaths = this.requiredPaths;
+      const trustedPublicKey = this.trustedPublicKey;
+      const rootStat = await lstat(root);
       if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error('release-root-not-real-directory');
-      const resolvedRoot = await realpath(this.root);
+      const resolvedRoot = await realpath(root);
       if (!m || m.version !== 1 || typeof m.releaseVersion !== 'string' || !Array.isArray(m.files) || m.files.length < 1 || m.files.length > MAX_FILES) throw new Error('invalid-manifest-shape');
-      if (this.expectedReleaseVersion && m.releaseVersion !== this.expectedReleaseVersion) throw new Error('release-version-mismatch');
+      if (expectedReleaseVersion && m.releaseVersion !== expectedReleaseVersion) throw new Error('release-version-mismatch');
       const seen = new Set();
       for (const file of m.files) {
         if (!file || typeof file.path !== 'string' || !file.path || path.isAbsolute(file.path) || file.path.includes('\\') || file.path.split('/').some(part => !part || part === '.' || part === '..') || !HEX256.test(file.sha256 ?? '')) throw new Error('invalid-manifest-entry');
         if (seen.has(file.path)) throw new Error('duplicate-manifest-path');
         seen.add(file.path);
       }
-      for (const requiredPath of this.requiredPaths) if (!m.files.some(file => file?.path === requiredPath)) throw new Error(`required-file-missing:${requiredPath}`);
+      for (const requiredPath of requiredPaths) if (!m.files.some(file => file?.path === requiredPath)) throw new Error(`required-file-missing:${requiredPath}`);
       const { signature, ...core } = m;
       if (Buffer.byteLength(canonical(core), 'utf8') > 2 * 1024 * 1024) throw new Error('manifest-too-large');
       if (typeof signature !== 'string' || signature.length > 2048) throw new Error('missing-manifest-signature');
       const signatureBytes = Buffer.from(signature, 'base64');
-      if (!signatureBytes.length || signatureBytes.toString('base64') !== signature || !verifySignature(null, Buffer.from(canonical(core)), this.trustedPublicKey, signatureBytes)) throw new Error('invalid-manifest-signature');
+      if (!signatureBytes.length || signatureBytes.toString('base64') !== signature || !verifySignature(null, Buffer.from(canonical(core)), trustedPublicKey, signatureBytes)) throw new Error('invalid-manifest-signature');
       const checked = [];
       for (const entry of m.files) {
-        const target = path.resolve(this.root, ...entry.path.split('/'));
+        const target = path.resolve(root, ...entry.path.split('/'));
         if (target !== this.root && !target.startsWith(`${this.root}${path.sep}`)) throw new Error('manifest-path-escape');
-        let current = this.root;
+        let current = root;
         for (const segment of entry.path.split('/')) {
           current = path.join(current, segment);
           const st = await lstat(current);

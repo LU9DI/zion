@@ -235,3 +235,34 @@ test('a slow quarantine alert cannot delay subsystem isolation listeners', async
   }
   assert.equal((await verification).ok, false);
 });
+
+test('verification snapshots root, version, key, and required paths before asynchronous I/O', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'zion-integrity-config-snapshot-'));
+  const replacementRoot = await mkdtemp(path.join(tmpdir(), 'zion-integrity-config-replacement-'));
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true });
+    await rm(replacementRoot, { recursive: true, force: true });
+  });
+  const approved = Buffer.from('approved release bytes');
+  await writeFile(path.join(root, 'main.js'), approved);
+  await writeFile(path.join(replacementRoot, 'main.js'), Buffer.from('different bytes'));
+  await writeFile(path.join(replacementRoot, 'other.js'), Buffer.from('other release bytes'));
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const replacementKeys = generateKeyPairSync('ed25519');
+  const manifest = signedManifest('0.32.8', [{ path: 'main.js', sha256: sha256(approved) }], privateKey);
+  const guard = new IntegrityGuard({
+    root, manifest,
+    trustedPublicKey: publicKey.export({ type: 'spki', format: 'pem' }),
+    expectedReleaseVersion: '0.32.8',
+    requiredPaths: ['main.js']
+  });
+  const verification = guard.verify();
+  guard.root = replacementRoot;
+  guard.expectedReleaseVersion = 'replacement-release';
+  guard.trustedPublicKey = replacementKeys.publicKey;
+  guard.requiredPaths = ['other.js'];
+  const report = await verification;
+  assert.equal(report.ok, true);
+  assert.equal(report.releaseVersion, '0.32.8');
+  assert.equal(report.checkedFiles, 1);
+});
