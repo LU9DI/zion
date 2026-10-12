@@ -143,23 +143,41 @@ export async function startOfficialNode({
   }
 }
 
-async function main() {
-  const running = await startOfficialNode();
-  process.stdout.write(`Official Zion node listening on ${running.address.host}:${running.address.port}\n`);
+export function installShutdownHandlers(running, {
+  processLike = process,
+  stdout = process.stdout,
+  stderr = process.stderr,
+} = {}) {
   let shuttingDown = false;
+  let closed = false;
   const shutdown = async signal => {
-    if (shuttingDown) return;
+    if (shuttingDown || closed) return;
     shuttingDown = true;
-    process.stdout.write(`Official Zion node shutting down (${signal})\n`);
+    stdout.write(\`Official Zion node shutting down (\${signal})\\n\`);
     try {
       await running.close();
+      closed = true;
+      processLike.off?.('SIGINT', onSigint);
+      processLike.off?.('SIGTERM', onSigterm);
     } catch {
-      process.stderr.write('Official node shutdown was incomplete; inspect deployment logs and resource status.\n');
-      process.exitCode = 1;
+      // Keep both handlers installed so a later signal can retry cleanup.
+      processLike.exitCode = 1;
+      stderr.write('Official node shutdown was incomplete; inspect deployment logs and resource status.\\n');
+    } finally {
+      shuttingDown = false;
     }
   };
-  process.once('SIGINT', () => { shutdown('SIGINT').catch(() => { process.exitCode = 1; }); });
-  process.once('SIGTERM', () => { shutdown('SIGTERM').catch(() => { process.exitCode = 1; }); });
+  const onSigint = () => { shutdown('SIGINT').catch(() => { processLike.exitCode = 1; }); };
+  const onSigterm = () => { shutdown('SIGTERM').catch(() => { processLike.exitCode = 1; }); };
+  processLike.on('SIGINT', onSigint);
+  processLike.on('SIGTERM', onSigterm);
+  return shutdown;
+}
+
+async function main() {
+  const running = await startOfficialNode();
+  process.stdout.write(\`Official Zion node listening on \${running.address.host}:\${running.address.port}\\n\`);
+  installShutdownHandlers(running);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
