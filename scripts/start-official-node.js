@@ -115,21 +115,30 @@ export async function startOfficialNode({
     const close = () => {
       if (closePromise) return closePromise;
       closePromise = (async () => {
-        const errors = [];
-        try { await bootstrap.close(); } catch (error) { errors.push(error); }
-        try { await pool.end(); } catch (error) { errors.push(error); }
-        if (errors.length) throw new AggregateError(errors, 'Official node shutdown was incomplete');
-      })();
+        // The pool backs transport/admission and storage cleanup. Do not end it
+        // while bootstrap still reports incomplete containment.
+        await bootstrap.close();
+        await pool.end();
+      })().finally(() => {
+        // A failed close is retryable; do not permanently memoize a transient
+        // adapter failure and strand resources in an uncertain state.
+        closePromise = null;
+      });
       return closePromise;
     };
     return Object.freeze({ ...started, bootstrap, close });
   } catch (error) {
+    let cleanupConfirmed = true;
     if (bootstrap) {
-      try { await bootstrap.close(); } catch { /* preserve startup failure */ }
+      try { await bootstrap.close(); } catch { cleanupConfirmed = false; /* preserve startup failure */ }
     } else if (composition) {
-      try { await composition.transport.close(); } catch { /* preserve startup failure */ }
+      try { await composition.transport.close(); } catch { cleanupConfirmed = false; /* preserve startup failure */ }
     }
-    try { await pool.end(); } catch { /* preserve startup failure */ }
+    // If listeners or storage may still be active, retain their backing pool
+    // rather than severing live handlers from PostgreSQL during failed cleanup.
+    if (cleanupConfirmed) {
+      try { await pool.end(); } catch { /* preserve startup failure */ }
+    }
     throw error;
   }
 }
