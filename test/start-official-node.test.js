@@ -297,5 +297,6 @@ test('official shutdown signal handlers remain retryable after transient close f
   assert.equal(attempts, 2);
   assert.equal(processLike.listenerCount('SIGTERM'), 0, 'successful close removes signal handlers');
   assert.equal(processLike.listenerCount('SIGINT'), 0);
+  assert.equal(processLike.exitCode, undefined, 'successful retry clears the exit code set by the failed shutdown');
   assert.equal(stderr.lines.length, 1);
 });
