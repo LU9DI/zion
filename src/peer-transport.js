@@ -134,6 +134,9 @@ export class PeerTransport {
   /** Open an authenticated-message TCP connection and attach the inbound frame parser. */
   async connect(host, port) {
     if (typeof host !== 'string' || !host || !Number.isInteger(port) || port < 1 || port > 65535) throw new TypeError('Invalid peer address');
+    // Outbound dialing is also a network action: do not send even a handshake
+    // while an official node is quarantined or its integrity state is unknown.
+    if (this.networkMode === 'official') await this.integrityGuard.checkHealthy();
     if (!isLoopbackAddress(host) && !this.tlsOptions) throw new Error('Remote peer connections require mutual TLS; plaintext TCP is restricted to loopback IP literals');
     if (this.connections.size >= this.maxConnections) throw new Error('Connection capacity reached');
     const useTls = Boolean(this.tlsOptions);
@@ -165,6 +168,18 @@ export class PeerTransport {
       socket.once('error', onError); socket.once(readyEvent, onReady);
     });
     if (this.connections.size >= this.maxConnections) { socket.destroy(); throw new Error('Connection capacity reached'); }
+    if (this.networkMode === 'official') {
+      try {
+        // Recheck after the asynchronous TCP/TLS handshake. Quarantine may have
+        // started while the dial was pending; in that case never attach/send a
+        // protocol handshake, and ensure a failed socket cannot emit an unhandled error.
+        await this.integrityGuard.checkHealthy();
+      } catch (error) {
+        socket.on('error', () => {});
+        socket.destroy();
+        throw error;
+      }
+    }
     this.#attach(socket);
     return socket;
   }
