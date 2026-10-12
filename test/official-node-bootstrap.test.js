@@ -568,11 +568,10 @@ test('storage startup failure invokes rollback after partial resource allocation
 
 test('shutdown closes notification ingress before draining schedulers and delivery worker', async () => {
   const lifecycle = [];
-  const state = fixture({
-    inactivityScheduler: { start() { lifecycle.push('inactivity-start'); }, async stop() { lifecycle.push('inactivity-stop'); } },
-    idleParticipationScheduler: { start() { lifecycle.push('idle-start'); }, async stop() { lifecycle.push('idle-stop'); } },
-    notificationDeliveryWorker: { start() { lifecycle.push('worker-start'); }, async stop() { lifecycle.push('worker-stop'); } },
-  });
+  const state = fixture();
+  const inactivityScheduler = { start() { lifecycle.push('inactivity-start'); }, async stop() { lifecycle.push('inactivity-stop'); } };
+  const idleParticipationScheduler = { start() { lifecycle.push('idle-start'); }, async stop() { lifecycle.push('idle-stop'); } };
+  const notificationDeliveryWorker = { start() { lifecycle.push('worker-start'); }, async stop() { lifecycle.push('worker-stop'); } };
   const api = {
     async listen() { lifecycle.push('api-listen'); return { host: '127.0.0.1', port: 1234 }; },
     async close() { lifecycle.push('api-close'); },
@@ -583,9 +582,9 @@ test('shutdown closes notification ingress before draining schedulers and delive
     async startStorage() { lifecycle.push('storage-start'); },
     async stopStorage() { lifecycle.push('storage-stop'); },
     notificationApi: api,
-    inactivityScheduler: state.bootstrap.inactivityScheduler,
-    idleParticipationScheduler: state.bootstrap.idleParticipationScheduler,
-    notificationDeliveryWorker: state.bootstrap.notificationDeliveryWorker,
+    inactivityScheduler,
+    idleParticipationScheduler,
+    notificationDeliveryWorker,
   });
   await bootstrap.start();
   await bootstrap.close();
