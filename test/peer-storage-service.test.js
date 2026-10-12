@@ -120,6 +120,36 @@ test('returns an explicit capacity-exhausted protocol response', async () => {
   assert.equal(sent[0].code, 'CAPACITY_EXHAUSTED');
 });
 
+test('propagates asynchronous transport write failures through storage transfer APIs', async () => {
+  const identity = createNodeIdentity();
+  const chunk = envelope(20);
+  const chunkId = createHash('sha256').update(chunk).digest('hex');
+  const service = new PeerStorageService({
+    identity,
+    store: { async get() { return chunk; } },
+    maxChunkBytes: 1024,
+    partBytes: 1024,
+  });
+  const failingTransport = {
+    send() { return Promise.reject(new Error('socket write failed')); }
+  };
+
+  await assert.rejects(service.handle({
+    nodeId: createNodeIdentity().nodeId,
+    payload: { type: 'GET_CHUNK', requestId: randomBytes(16).toString('hex'), chunkId },
+  }, {}, failingTransport), /socket write failed/);
+
+  await assert.rejects(service.fetchChunk(
+    failingTransport, { destroyed: false, writable: true }, createNodeIdentity().nodeId, chunkId, { timeoutMs: 1000 }
+  ), /socket write failed/);
+  assert.equal(service.pendingGets.size, 0, 'failed send must remove the pending GET immediately');
+
+  await assert.rejects(service.sendStoreChunk(
+    failingTransport, { destroyed: false, writable: true }, chunk, createNodeIdentity().nodeId,
+    ({ chunkId: id, bytes, targetNodeId }) => ({ chunkId: id, bytes, targetNodeId })
+  ), /socket write failed/);
+});
+ 
 test('audits actual replica inventory and grants contribution credit only for verified bytes', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'rea-peer-audit-'));
   t.after(() => rm(root, { recursive: true, force: true }));
