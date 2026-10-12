@@ -1,6 +1,7 @@
 import test from 'node:test';
+import { EventEmitter } from 'node:events';
 import assert from 'node:assert/strict';
-import { startOfficialNode } from '../scripts/start-official-node.js';
+import { installShutdownHandlers, startOfficialNode } from '../scripts/start-official-node.js';
 import { createNodeIdentity } from '../src/peer-security.js';
 
 const env = Object.freeze({
@@ -270,4 +271,31 @@ test('official launcher keeps PostgreSQL available and permits retry after incom
   assert.equal(state.stopAttempts, 2);
   assert.equal(state.storageRunning, false);
   assert.equal(pool.ended, true);
+});
+
+
+test('official shutdown signal handlers remain retryable after transient close failure', async () => {
+  const processLike = new EventEmitter();
+  processLike.exitCode = 0;
+  const stdout = { lines: [], write(value) { this.lines.push(value); } };
+  const stderr = { lines: [], write(value) { this.lines.push(value); } };
+  let attempts = 0;
+  const running = {
+    async close() {
+      attempts++;
+      if (attempts === 1) throw new Error('temporary shutdown failure');
+    }
+  };
+  installShutdownHandlers(running, { processLike, stdout, stderr });
+  processLike.emit('SIGTERM');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(attempts, 1);
+  assert.equal(processLike.listenerCount('SIGTERM'), 1, 'failed close must retain signal handler');
+  assert.equal(processLike.exitCode, 1);
+  processLike.emit('SIGTERM');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(attempts, 2);
+  assert.equal(processLike.listenerCount('SIGTERM'), 0, 'successful close removes signal handlers');
+  assert.equal(processLike.listenerCount('SIGINT'), 0);
+  assert.equal(stderr.lines.length, 1);
 });
