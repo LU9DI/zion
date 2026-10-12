@@ -197,12 +197,22 @@ export class InactivityNotificationDeliveryWorker {
   }
 
   async stop() {
+    const errors = [];
     if (!this.closed) {
       this.closed = true;
       this.lifecycleController.abort(new Error('Notification worker is shutting down'));
-      if (this.timer !== null) { this.clearIntervalFn(this.timer); this.timer = null; }
+      if (this.timer !== null) {
+        const timer = this.timer;
+        this.timer = null;
+        try { this.clearIntervalFn(timer); } catch (error) { errors.push(error); }
+      }
     }
-    if (this.inFlight) await this.inFlight;
+    // Shutdown cancellation is not complete until the active batch has
+    // reconciled its durable state and stopped using storage/provider adapters.
+    if (this.inFlight) {
+      try { await this.inFlight; } catch (error) { errors.push(error); }
+    }
+    if (errors.length) throw new AggregateError(errors, 'Notification worker shutdown was incomplete');
     return true;
   }
 
