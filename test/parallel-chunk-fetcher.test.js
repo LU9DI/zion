@@ -123,3 +123,18 @@ test('parallel fetch honors a signal already aborted before scheduling', async (
     peers: [], chunks: [], signal: controller.signal
   }), error => error.name === 'AbortError');
 });
+
+
+test('parallel fetch rejects a non-Buffer response even when its bytes would hash correctly', async () => {
+  const bytes = Buffer.from('x');
+  const nodeId = 'a'.repeat(64);
+  const storageService = {
+    identity: { nodeId: 'b'.repeat(64) }, maxTransfers: 1, maxBufferedBytes: 1024, maxChunkBytes: 1024,
+    async fetchChunk() { return bytes.toString(); }
+  };
+  await assert.rejects(fetchChunksParallel({
+    transport: { send() {} }, storageService,
+    peers: [{ nodeId, socket: { destroyed: false, writable: true } }],
+    chunks: [sha(bytes)]
+  }), error => error instanceof AggregateError && error.errors.some(item => /not a Buffer/.test(item.message)));
+});
