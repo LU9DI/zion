@@ -41,8 +41,12 @@ export class FileStorageAuditStateStore {
       fsyncSync(fd);
       closeSync(fd); fd = undefined;
       renameSync(temp, this.path);
-      const dirFd = openSync(dir, 'r');
-      try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
+      // Node.js cannot portably fsync directory handles on Windows (EPERM).
+      // The snapshot file itself is fsynced; Windows directory-entry durability is weaker.
+      if (process.platform !== 'win32') {
+        const dirFd = openSync(dir, 'r');
+        try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
+      }
     } catch (error) {
       if (fd !== undefined) { try { closeSync(fd); } catch {} }
       try { unlinkSync(temp); } catch {}

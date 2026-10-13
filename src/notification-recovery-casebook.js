@@ -3,7 +3,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import { join, resolve } from 'node:path';
 
 const digest = value => createHash('sha256').update(value).digest('hex');
-function syncDirectory(path) { const fd = openSync(path, 'r'); try { fsyncSync(fd); } finally { closeSync(fd); } }
+function syncDirectory(path) {
+  // Node.js/Windows does not provide portable directory-handle fsync (often EPERM).
+  // File contents are fsynced before publication; directory-entry durability is weaker on Windows.
+  if (process.platform === 'win32') return;
+  const fd = openSync(path, 'r'); try { fsyncSync(fd); } finally { closeSync(fd); }
+}
 function validateReport(report) {
   if (!report || typeof report !== 'object' || report.schemaVersion !== 1 || report.mode !== 'read-only-no-retry' ||
       report.automaticResendsPerformed !== 0 || report.recordsMutated !== false || !report.counts ||

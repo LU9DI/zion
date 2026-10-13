@@ -31,7 +31,10 @@ export class PersistentFileNotificationAnchorAdapter {
     let fd;
     let raw;
     try {
-      // O_NOFOLLOW closes the symlink check/read race on platforms that support it.
+      // Check the path itself first because Windows may not implement O_NOFOLLOW.
+      const pathStat = lstatSync(this.anchorPath);
+      if (pathStat.isSymbolicLink() || !pathStat.isFile()) throw fail('NOTIFICATION_ANCHOR_UNSAFE_FILE', 'Anchor must be a regular non-symlink file');
+      // O_NOFOLLOW additionally closes the symlink check/read race on platforms that support it.
       const flags = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
       fd = openSync(this.anchorPath, flags);
       const stat = fstatSync(fd);
@@ -39,6 +42,7 @@ export class PersistentFileNotificationAnchorAdapter {
       raw = readFileSync(fd, 'utf8');
     } catch (error) {
       if (error.code === 'ENOENT') return null;
+      if (error.code === 'NOTIFICATION_ANCHOR_UNSAFE_FILE') throw error;
       if (error.code === 'ELOOP') throw fail('NOTIFICATION_ANCHOR_UNSAFE_FILE', 'Anchor must be a regular non-symlink file');
       if (error.code === 'NOTIFICATION_ANCHOR_UNSAFE_FILE') throw error;
       throw error;
@@ -85,8 +89,12 @@ export class PersistentFileNotificationAnchorAdapter {
         this._fsyncSync(fd);
         closeSync(fd); fd = undefined;
         renameSync(temporaryPath, this.anchorPath);
-        const dirFd = openSync(directory, 'r');
-        try { this._fsyncSync(dirFd); } finally { closeSync(dirFd); }
+        // Windows does not support portable directory-handle fsync in Node.js (EPERM).
+        // The checkpoint file itself is fsynced; Windows directory-entry durability is weaker.
+        if (process.platform !== 'win32') {
+          const dirFd = openSync(directory, 'r');
+          try { this._fsyncSync(dirFd); } finally { closeSync(dirFd); }
+        }
       } catch (error) {
         if (fd !== undefined) { try { closeSync(fd); } catch {} }
         try { unlinkSync(temporaryPath); } catch {}
@@ -121,12 +129,17 @@ export class PersistentFileNotificationAnchorAdapter {
     try {
       fileFd = openSync(this.anchorPath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
       if (!fstatSync(fileFd).isFile()) throw fail('NOTIFICATION_ANCHOR_UNSAFE_FILE', 'Anchor must be a regular non-symlink file');
-      this._fsyncSync(fileFd);
+      // The checkpoint was fsynced before its original publication. Windows can reject fsync
+      // on a read-only handle with EPERM, so validate visibility/type without re-syncing it.
+      if (process.platform !== 'win32') this._fsyncSync(fileFd);
     } finally {
       if (fileFd !== undefined) closeSync(fileFd);
     }
-    const dirFd = openSync(directory, 'r');
-    try { this._fsyncSync(dirFd); } finally { closeSync(dirFd); }
+    // The checkpoint file is fsynced above during publication. Directory-entry durability is weaker on Windows.
+    if (process.platform !== 'win32') {
+      const dirFd = openSync(directory, 'r');
+      try { this._fsyncSync(dirFd); } finally { closeSync(dirFd); }
+    }
   }
 
   async #acquireLock() {
@@ -142,7 +155,14 @@ export class PersistentFileNotificationAnchorAdapter {
         closeSync(fd);
         return { path: this.lockPath, token, dev: stat.dev, ino: stat.ino };
       } catch (error) {
-        if (error.code !== 'EEXIST') throw error;
+        // On Windows, a concurrent exclusive-create race can surface as EPERM rather than EEXIST.
+        // Treat it as contention only when lstat confirms that the lock path now exists.
+        let lockExists = false;
+        if (error.code === 'EPERM') {
+          try { lstatSync(this.lockPath); lockExists = true; }
+          catch (statError) { if (statError.code !== 'ENOENT') throw statError; }
+        }
+        if (error.code !== 'EEXIST' && !lockExists) throw error;
         if (Date.now() >= deadline) throw fail('NOTIFICATION_ANCHOR_LOCK_TIMEOUT', 'Anchor is locked; lock is not stolen automatically');
         await sleep(Math.min(this.retryIntervalMs, Math.max(1, deadline - Date.now())));
       }

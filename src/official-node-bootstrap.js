@@ -14,6 +14,15 @@ export class OfficialNodeBootstrap {
     if (!transport || transport.networkMode !== 'official' || typeof transport.listen !== 'function' || typeof transport.close !== 'function') {
       throw new TypeError('Official node bootstrap requires an official-mode transport');
     }
+    if (transport.integrityGuard !== integrityGuard) {
+      throw new TypeError('Official node bootstrap and transport must share the same IntegrityGuard instance');
+    }
+    const admission = transport.admissionController;
+    if (!admission || typeof admission.admit !== 'function' ||
+      typeof admission.isAdmitted !== 'function' || typeof admission.releaseAdmission !== 'function' ||
+      typeof admission.verifyPersistentState !== 'function') {
+      throw new TypeError('Official node bootstrap requires a persistent admission controller with startup-state verification');
+    }
     if (typeof startStorage !== 'function' || typeof stopStorage !== 'function') {
       throw new TypeError('Storage startup and shutdown adapters are required');
     }
@@ -115,11 +124,13 @@ export class OfficialNodeBootstrap {
     if (this.containmentHistory.length > this.maxContainmentHistory) this.containmentHistory.splice(0, this.containmentHistory.length - this.maxContainmentHistory);
     if (!this.recordContainmentEvent) return;
     const write = this.containmentAuditQueue.then(() => this.recordContainmentEvent(record));
-    this.containmentAuditQueue = write.then(() => undefined, () => undefined);
-    try { await write; } catch (error) {
+    // The audit sink is external and may hang indefinitely. Queue writes to
+    // preserve sequence, but never make security containment wait for durable
+    // audit delivery. Errors are surfaced asynchronously in the bounded report.
+    this.containmentAuditQueue = write.then(() => undefined, error => {
       this.containmentAuditErrors.push(String(error?.message ?? error).slice(0, 240));
       if (this.containmentAuditErrors.length > 20) this.containmentAuditErrors.shift();
-    }
+    });
   }
 
   async #cleanupAdapters() {
@@ -127,20 +138,23 @@ export class OfficialNodeBootstrap {
     // close(), quarantine containment, rollback, and retry are requested together.
     const operation = this.adapterCleanupQueue.then(async () => {
       const errors = [];
-      if (this.idleParticipationSchedulerStarted && this.idleParticipationScheduler) {
-        try { await this.idleParticipationScheduler.stop(); this.idleParticipationSchedulerStarted = false; }
-        catch (error) { errors.push(error); }
-      }
-      if (this.notificationDeliveryWorkerStarted && this.notificationDeliveryWorker) {
-        try { await this.notificationDeliveryWorker.stop(); this.notificationDeliveryWorkerStarted = false; }
-        catch (error) { errors.push(error); }
-      }
+      // Stop ingress first so no new API work can arrive while background
+      // producers and consumers are being drained.
       if (this.notificationApiStarted && this.notificationApi) {
         try { await this.notificationApi.close(); this.notificationApiStarted = false; }
         catch (error) { errors.push(error); }
       }
+      // Drain producers before the durable-outbox consumer, then stop storage.
+      if (this.idleParticipationSchedulerStarted && this.idleParticipationScheduler) {
+        try { await this.idleParticipationScheduler.stop(); this.idleParticipationSchedulerStarted = false; }
+        catch (error) { errors.push(error); }
+      }
       if (this.inactivitySchedulerStarted && this.inactivityScheduler) {
-        try { this.inactivityScheduler.stop(); this.inactivitySchedulerStarted = false; }
+        try { await this.inactivityScheduler.stop(); this.inactivitySchedulerStarted = false; }
+        catch (error) { errors.push(error); }
+      }
+      if (this.notificationDeliveryWorkerStarted && this.notificationDeliveryWorker) {
+        try { await this.notificationDeliveryWorker.stop(); this.notificationDeliveryWorkerStarted = false; }
         catch (error) { errors.push(error); }
       }
       this.transportState = 'stopping';
@@ -219,10 +233,16 @@ export class OfficialNodeBootstrap {
         throw Object.assign(new Error('Official node integrity state is not healthy'), { code: 'ZION_STARTUP_INTEGRITY_FAILED' });
       }
 
+      // Reconcile database policy, active rows, issuer evidence, and capacity before opening any listener.
+      await this.transport.admissionController.verifyPersistentState();
+      this.#assertLifecycle(epoch);
+
       // Storage may create/open persistent state, so it is not touched before verification.
       this.storageState = 'starting';
-      await this.startStorage();
+      // Mark startup as attempted before awaiting the adapter: it may allocate
+      // resources and then reject, so rollback must still invoke stopStorage().
       this.storageStarted = true;
+      await this.startStorage();
       this.storageState = 'running';
       this.#assertLifecycle(epoch);
       // Recheck immediately before opening the network listener.
@@ -242,8 +262,10 @@ export class OfficialNodeBootstrap {
       }
       // Start authenticated notification API only after integrity, storage, and transport are healthy.
       if (this.notificationApi) {
-        await this.notificationApi.listen();
+        // A listen() implementation can allocate resources before rejecting.
+        // Mark the attempt first so rollback always invokes close().
         this.notificationApiStarted = true;
+        await this.notificationApi.listen();
         this.#assertLifecycle(epoch);
         await this.integrityGuard.checkHealthy();
         this.#assertLifecycle(epoch);
@@ -251,16 +273,17 @@ export class OfficialNodeBootstrap {
       // Start inactivity automation only after integrity, storage, and transport are healthy.
       // The scheduler must use real host adapters; bootstrap only owns its lifecycle.
       if (this.inactivityScheduler) {
-        this.inactivityScheduler.start({ runImmediately: false });
+        // start() may allocate a timer before an injected adapter throws.
         this.inactivitySchedulerStarted = true;
+        this.inactivityScheduler.start({ runImmediately: false });
       }
       if (this.idleParticipationScheduler) {
-        this.idleParticipationScheduler.start({ runImmediately: false });
         this.idleParticipationSchedulerStarted = true;
+        this.idleParticipationScheduler.start({ runImmediately: false });
       }
       if (this.notificationDeliveryWorker) {
-        this.notificationDeliveryWorker.start({ runImmediately: false });
         this.notificationDeliveryWorkerStarted = true;
+        this.notificationDeliveryWorker.start({ runImmediately: false });
       }
       this.started = true;
       return Object.freeze({ ok: true, address, integrity: this.integrityGuard.status,

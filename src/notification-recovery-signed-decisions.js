@@ -8,7 +8,12 @@ const KEY_ID_RE = /^[a-zA-Z0-9._:-]{1,128}$/;
 const ACTIONS = new Set(['keep_pending', 'investigate', 'authorize_manual_retry']);
 const MAX_TTL_MS = 24 * 60 * 60 * 1000;
 function fail(code, message) { return Object.assign(new Error(message), { code }); }
-function syncDirectory(path) { const fd = openSync(path, 'r'); try { fsyncSync(fd); } finally { closeSync(fd); } }
+function syncDirectory(path) {
+  // Node.js cannot reliably fsync directory handles on Windows (EPERM).
+  // The signed record itself is fsynced before publication; directory-entry durability is weaker there.
+  if (process.platform === 'win32') return;
+  const fd = openSync(path, 'r'); try { fsyncSync(fd); } finally { closeSync(fd); }
+}
 function assertDirectory(path) {
   mkdirSync(path, { recursive: true, mode: 0o700 });
   const stat = lstatSync(path);

@@ -6,7 +6,13 @@ const KEY_ID_RE = /^[a-zA-Z0-9._:-]{1,128}$/;
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const canonical = state => JSON.stringify({ schemaVersion: state.schemaVersion, revision: state.revision, keys: state.keys, events: state.events });
-function syncDirectory(path) { const fd = openSync(path, 'r'); try { fsyncSync(fd); } finally { closeSync(fd); } }
+function syncDirectory(path) {
+  // Directory-handle fsync is not portable in Node.js on Windows (EPERM).
+  // State and lock files are still fsynced; directory-entry durability is weaker on Windows.
+  if (process.platform === 'win32') return;
+  const fd = openSync(path, 'r');
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+}
 function validatePublicKey(publicKey) {
   const key = createPublicKey(publicKey);
   if (key.asymmetricKeyType !== 'ed25519') throw new TypeError('Trusted recovery keys must be Ed25519 public keys');
@@ -39,7 +45,14 @@ export class NotificationRecoveryTrustRegistry {
           lockFd = undefined;
           try { unlinkSync(this.lockPath); } catch {}
         }
-        if (error?.code !== 'EEXIST') throw error;
+        // Windows may report EPERM for a concurrent exclusive-create race. Treat it as
+        // contention only when the lock path actually exists; otherwise preserve the error.
+        let lockExists = error?.code === 'EEXIST';
+        if (error?.code === 'EPERM') {
+          try { lstatSync(this.lockPath); lockExists = true; }
+          catch (statError) { if (statError?.code !== 'ENOENT') throw statError; }
+        }
+        if (!lockExists) throw error;
         // Only reclaim a lock when its recorded owner is demonstrably gone.
         try {
           const st = lstatSync(this.lockPath);
@@ -115,7 +128,17 @@ export class NotificationRecoveryTrustRegistry {
     try {
       fd = openSync(temp, 'wx', 0o600);
       writeFileSync(fd, `${JSON.stringify(next, null, 2)}\n`, 'utf8'); fsyncSync(fd); closeSync(fd); fd = undefined;
-      renameSync(temp, this.statePath);
+      // Windows can transiently reject replacement while another process has a read handle
+      // open (EPERM/EBUSY). The registry lock serializes writers; retry the same atomic rename
+      // briefly rather than deleting the committed state or failing a valid concurrent mutation.
+      const renameDeadline = Date.now() + 1000;
+      while (true) {
+        try { renameSync(temp, this.statePath); break; }
+        catch (error) {
+          if (process.platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(error?.code) || Date.now() >= renameDeadline) throw error;
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+        }
+      }
       syncDirectory(this.directory);
       this.state = next;
     } catch (error) {

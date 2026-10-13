@@ -5,12 +5,19 @@ const mode = process.env.ZION_TEST_CRASH_MODE;
 const originalLinkSync = fs.linkSync.bind(fs);
 const originalFsyncSync = fs.fsyncSync.bind(fs);
 
+const terminateAbruptly = () => {
+  // Windows child processes cannot report POSIX SIGKILL; exit without running
+  // application cleanup there, while retaining a real uncatchable kill on POSIX.
+  if (process.platform === 'win32') process.exit(137);
+  process.kill(process.pid, 'SIGKILL');
+};
+
 if (mode === 'before-link') {
-  fs.linkSync = () => process.kill(process.pid, 'SIGKILL');
+  fs.linkSync = terminateAbruptly;
 } else if (mode === 'after-link') {
   fs.linkSync = (source, target) => {
     originalLinkSync(source, target);
-    process.kill(process.pid, 'SIGKILL');
+    terminateAbruptly();
   };
 } else if (mode === 'directory-fsync-error') {
   fs.fsyncSync = fd => {

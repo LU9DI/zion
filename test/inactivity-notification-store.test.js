@@ -136,7 +136,7 @@ test('serializes writes from independent Node.js processes to one outbox', async
   const modulePath = resolve('src/inactivity-notification-store.js');
   const childSource = `
     import { InactivityNotificationStore } from ${JSON.stringify(new URL(`file://${modulePath}`).href)};
-    const store = new InactivityNotificationStore({ statePath: process.env.ZION_TEST_STATE_PATH });
+    const store = new InactivityNotificationStore({ statePath: process.env.ZION_TEST_STATE_PATH, lockTimeoutMs: 60000 });
     for (let i = 0; i < 20; i++) {
       await store.enqueue({ ownerIdentityId: 'shared-owner', event: { type: 'pause-warning', message: process.env.ZION_WORKER_ID + ':' + i } });
     }

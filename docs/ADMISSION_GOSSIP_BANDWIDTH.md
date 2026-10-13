@@ -27,7 +27,7 @@ A difficulty of *d* leading zero bits has expected work near 2^d hashes. Wall-cl
 `AdaptiveTransferScheduler` now provides application-level enforcement for outbound frames that pass through it. Configure `PeerTransport` with `transferScheduler`; its `send()` returns a promise when the scheduler is active. The scheduler:
 
 - reevaluates live telemetry before draining queued frames;
-- applies a byte-per-second token budget from `AdaptiveBandwidthPolicy`;
+- applies a byte-per-second token budget from `AdaptiveBandwidthPolicy`, allowing a single frame to accumulate its full byte cost even when the frame exceeds one second of the configured rate (otherwise such frames could starve forever);
 - bounds queued bytes and rejects overflow;
 - rejects pending frames if telemetry is missing or the upload budget is zero;
 - rejects frames whose socket is no longer writable.

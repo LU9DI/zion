@@ -83,3 +83,42 @@ Until P0 blockers are closed and independently reviewed, use Zion only for local
 - PR #22 merged: added [the transactional peer-admission backend contract](docs/TRANSACTIONAL_PEER_ADMISSION_CONTRACT.md). This specifies the required database transaction boundary, uniqueness/quota/capacity invariants, and real multi-process integration tests. **It is a design contract, not a deployed database adapter.**
 - PR #23 merged: reject malformed and duplicate consumed-invitation keys, duplicate admission subjects, empty issuer lists, and duplicate issuer IDs in persisted/controller state. Updated regression fixtures to remain structurally valid while testing size limits. Validation and both CodeQL analyses passed.
 - The current file-backed controller remains single-process only; distributed admission is still a production blocker. The next safe implementation step is a real transactional adapter plus schema/migrations and independent-process integration tests—not a wrapper around the existing `load()`/`save()` API.
+
+
+## Follow-up hardening — 2026-10-13
+
+The current draft PR #33 continues the experimental Rust storage-core hardening. The following changes are now present on `feat/verified-postgres-admission-boundary`:
+
+- Clean up abandoned temporary chunk files when publication fails, including directory-sync and post-`AlreadyExists` read failures.
+- Reject a symlinked storage root in direct operations, before creating lock/config metadata; quota scans also reject a symlinked root.
+- Recover only recognized, bounded, regular non-symlink config-temp files while holding the cooperative storage lock; count abandoned config-temp bytes until recovery.
+- Persist and verify quota configuration, serialize usage snapshots with writers, and validate lock/config metadata during quota scans.
+- Preserve a replacement lock during release and reclaim stale locks only with conservative evidence; PID reuse and hostile same-user filesystem races remain outside the complete guarantees of this cooperative file-lock design.
+
+CI for head `5bfdc3874bea267531f5f50f944e178c90dbeceb` completed successfully:
+- [Zion validation run 38405410779](https://github.com/LU9DI/zion/actions/runs/38405410779) — success.
+- [CodeQL run 38405410809](https://github.com/LU9DI/zion/actions/runs/38405410809) — success.
+
+These checks validate the current automated suite and static analysis only; they are not a production security certification. The storage sidecar remains experimental, quota accounting is not OS-enforced, and hostile concurrent local filesystem mutation is not fully prevented. PR #33 remains a draft and must not be merged as a production-readiness signal.
+
+- Follow-up review corrected the symlinked-config regression fixture to contain a syntactically valid configuration payload, so the test isolates the symlink metadata behavior rather than malformed fixture bytes. This is test-quality hardening, not a new runtime guarantee.
+- Filesystem ancestor hardening: `init()`, direct `put`/usage lock acquisition, and direct `get` now check each existing path component with `symlink_metadata` and reject a symlink before performing storage operations. Unix regression tests cover both initialization and direct operations through a symlinked ancestor. This closes the deterministic, pre-existing ancestor-symlink case, but it is not race-free: the implementation still performs subsequent operations by pathname, so a hostile concurrent local process could replace an ancestor after validation. Keep the storage root beneath a trusted, pre-created parent. Descriptor-relative, no-follow traversal across all storage operations remains the stronger long-term fix.
+- Stale-lock owner parsing now requires a complete `PID:nonce` token with a newline terminator and decimal PID/nonce before PID liveness can trigger immediate reclamation. Malformed/partial metadata follows the 30-second age-based fallback. Added a regression test for a dead-looking PID paired with a malformed nonce; the fixture uses a real newline. This is conservative recovery hardening, not protection against hostile same-user races or PID reuse.
+
+
+## Peer-transfer throughput and disconnect handling — 2026-10-13
+
+- The peer transport now waits for tokens from the existing per-peer token bucket instead of treating ordinary rate pressure as an automatic disconnect. While waiting, it pauses inbound socket reads so TCP can apply backpressure; queue/frame bounds, replay checks, signature verification, and fail-closed behavior for limiters that do not support waiting remain in place.
+- PeerStorageService.fetchChunk() now rejects when the peer socket closes or errors, clears its timeout and listeners, and removes the pending request instead of waiting for the full request timeout.
+- Rate-limit waits are now cancellable: each socket owns an `AbortController`, and closing the socket aborts any token wait so a disconnected peer cannot leave the serialized frame-processing chain parked until a distant refill deadline. Added a regression test for cancellation of a pending wait. Send failures use the same cleanup path.
+- Added regression coverage for a peer sending valid messages above a deliberately low token-bucket rate and for immediate fetchChunk() rejection on socket close.
+- These changes improve continuity and error latency; they do not establish a higher bulk-transfer throughput ceiling. CPU cost from repeated JSON/base64 conversion, canonical signing/verification, hashing, and Ed25519 operations remains. A binary frame protocol would be a compatibility-affecting change and should be separately versioned, benchmarked, and reviewed before adoption.
+- Backpressure only applies after a frame has been parsed and queued. Existing per-socket frame/queue limits still close a peer that exceeds those hard bounds; these are protective resource limits, not the rate limiter.
+- Validation for this change is pending CI at the current branch head. No new benchmark numbers are claimed.
+
+
+### Repeatable loopback transfer benchmark
+
+- Added `npm run bench:peer-transfer` as an opt-in benchmark for sequential 4 MiB reads over the actual signed TCP peer transport and the existing 96 KiB JSON/base64 chunk segments. It verifies every fetched chunk before recording elapsed time and reports per-iteration and aggregate MiB/s.
+- Compare the standard limiter with `npm run bench:peer-transfer -- --relaxed`; set `ZION_BENCH_ITERATIONS` and `ZION_BENCH_CHUNK_BYTES` to change run count and chunk size. Run both modes on the same machine under similar load. The benchmark is a local regression instrument, not a predictor of WAN performance.
+- The benchmark has been committed but has not yet been executed in this environment; no performance improvement is claimed. Current CI is validating the updated branch.

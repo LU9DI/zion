@@ -53,17 +53,23 @@ export class IdleParticipationScheduler {
   }
 
   async stop() {
-    if (this.closed) {
-      if (this.inFlight) await this.inFlight;
-      return false;
+    const wasRunning = !this.closed;
+    const errors = [];
+    if (wasRunning) {
+      this.closed = true;
+      if (this.timer !== null) {
+        const timer = this.timer;
+        this.timer = null;
+        try { this.clearIntervalFn(timer); } catch (error) { errors.push(error); }
+      }
     }
-    this.closed = true;
-    if (this.timer !== null) {
-      this.clearIntervalFn(this.timer);
-      this.timer = null;
+    // Drain telemetry/controller work before bootstrap shuts down storage,
+    // even if the injected timer adapter failed to clear its handle.
+    if (this.inFlight) {
+      try { await this.inFlight; } catch (error) { errors.push(error); }
     }
-    if (this.inFlight) await this.inFlight;
-    return true;
+    if (errors.length) throw new AggregateError(errors, 'Idle participation scheduler shutdown was incomplete');
+    return wasRunning;
   }
 
   snapshot() {

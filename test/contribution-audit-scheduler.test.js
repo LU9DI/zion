@@ -45,16 +45,39 @@ test('stop is idempotent and close prevents further audits', async () => {
 });
 
 test('resource-aware gate skips audit when telemetry is unavailable without revoking fresh credit', async () => {
-  const p = policy(); let calls = 0;
+  const p = policy(); let calls = 0; let safe = false;
   const scheduler = new ContributionAuditScheduler({
     storageService: { async refreshVerifiedContribution() { calls++; return { verifiedBytes: 100 }; } },
     fairSharePolicy: p, intervalMs: 1000,
     adaptiveController: { evaluate(telemetry) { return { enabled: telemetry?.safe === true, concurrentJobs: telemetry?.safe ? 1 : 0, reasons: telemetry?.safe ? [] : ['telemetry-unavailable'] }; } },
-    getTelemetry: async () => null,
+    getTelemetry: async () => safe ? { safe: true } : null,
   });
   const result = await scheduler.runOnce();
   assert.equal(result.ok, false); assert.equal(result.reason, 'resources-not-available');
-  assert.equal(calls, 0); assert.equal(p.revoked, 0); scheduler.close();
+  assert.equal(calls, 0); assert.equal(p.revoked, 0);
+  safe = true;
+  assert.equal((await scheduler.runOnce()).ok, true, 'a skipped run must not wedge future audits');
+  assert.equal(calls, 1); scheduler.close();
+});
+
+test('telemetry-provider failure does not wedge future contribution audits', async () => {
+  let telemetryCalls = 0; let auditCalls = 0;
+  const scheduler = new ContributionAuditScheduler({
+    storageService: { async refreshVerifiedContribution() { auditCalls++; return { verifiedBytes: 10 }; } },
+    fairSharePolicy: policy(), intervalMs: 1000,
+    adaptiveController: { evaluate(telemetry) { return { enabled: telemetry.safe, concurrentJobs: telemetry.safe ? 1 : 0, reasons: [] }; } },
+    getTelemetry: async () => {
+      telemetryCalls++;
+      if (telemetryCalls === 1) throw new Error('telemetry temporarily unavailable');
+      return { safe: true };
+    },
+  });
+  const first = await scheduler.runOnce();
+  assert.equal(first.detail, 'telemetry-unavailable');
+  assert.equal(auditCalls, 0);
+  assert.equal((await scheduler.runOnce()).ok, true);
+  assert.equal(auditCalls, 1);
+  scheduler.close();
 });
 
 test('resource-aware gate runs audit only after a positive adaptive budget', async () => {
@@ -75,4 +98,47 @@ test('rejects an invalid audit batch size', () => {
 
 test('resource-aware configuration requires controller and telemetry provider together', () => {
   assert.throws(() => new ContributionAuditScheduler({ storageService: { refreshVerifiedContribution() {} }, fairSharePolicy: policy(), intervalMs: 1000, adaptiveController: { evaluate() {} } }), /Invalid contribution audit scheduler configuration/);
+});
+
+
+test('close prevents new audits and drains an active audit before resolving', async () => {
+  let resolveAudit;
+  let calls = 0;
+  const scheduler = new ContributionAuditScheduler({
+    storageService: { refreshVerifiedContribution: () => { calls++; return new Promise(resolve => { resolveAudit = resolve; }); } },
+    fairSharePolicy: policy(), intervalMs: 1000,
+  });
+  const active = scheduler.runOnce();
+  assert.equal(calls, 1);
+  let closed = false;
+  const closing = scheduler.close().then(() => { closed = true; });
+  await Promise.resolve();
+  assert.equal(closed, false, 'close must wait for the active audit');
+  assert.deepEqual(await scheduler.runOnce(), { ok: false, reason: 'scheduler-closed' });
+  resolveAudit({ verifiedBytes: 10 });
+  await active;
+  await closing;
+  assert.equal(closed, true);
+  assert.equal(calls, 1);
+});
+
+test('stop drains active audit even when interval cleanup fails', async () => {
+  let resolveAudit;
+  let cleared = false;
+  const scheduler = new ContributionAuditScheduler({
+    storageService: { refreshVerifiedContribution: () => new Promise(resolve => { resolveAudit = resolve; }) },
+    fairSharePolicy: policy(), intervalMs: 1000,
+    setIntervalFn: () => ({ id: 'timer' }),
+    clearIntervalFn: () => { cleared = true; throw new Error('timer adapter failed'); },
+  });
+  scheduler.start({ runImmediately: false });
+  const active = scheduler.runOnce();
+  let settled = false;
+  const stopping = scheduler.stop().finally(() => { settled = true; });
+  await Promise.resolve();
+  assert.equal(cleared, true);
+  assert.equal(settled, false, 'stop must drain active audit despite cleanup failure');
+  resolveAudit({ verifiedBytes: 10 });
+  await active;
+  await assert.rejects(stopping, /Contribution audit scheduler shutdown was incomplete/);
 });

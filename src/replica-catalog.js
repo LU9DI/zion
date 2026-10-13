@@ -176,7 +176,12 @@ export class ReplicaCatalog {
       handle = await open(temp, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o600);
       await handle.writeFile(`${JSON.stringify(state)}\n`, 'utf8'); await handle.sync(); await handle.close(); handle = null;
       await rename(temp, this.file);
-      const dir = await open(this.root, fsConstants.O_RDONLY); try { await dir.sync(); } finally { await dir.close(); }
+      // Directory-handle fsync is unsupported by Node.js on Windows (EPERM).
+      // The catalog file is synced before rename; Windows directory-entry durability is weaker.
+      if (process.platform !== 'win32') {
+        const dir = await open(this.root, fsConstants.O_RDONLY);
+        try { await dir.sync(); } finally { await dir.close(); }
+      }
     } finally { if (handle) await handle.close().catch(() => {}); await unlink(temp).catch(() => {}); }
   }
 

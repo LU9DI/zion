@@ -61,3 +61,27 @@ test('reports bounded hook failures without terminating future scheduling', asyn
   assert.deepEqual(second, { state: 'active' });
   await scheduler.stop();
 });
+
+
+test('stop drains active evaluation even when timer cleanup throws', async () => {
+  let resolveEvaluation;
+  let cleared = false;
+  const scheduler = new IdleParticipationScheduler({
+    controller: { evaluate: () => new Promise(resolve => { resolveEvaluation = resolve; }) },
+    getTelemetry: async () => ({}),
+    setIntervalFn: () => ({ id: 'timer' }),
+    clearIntervalFn: () => { cleared = true; throw new Error('timer adapter failed'); },
+  });
+  scheduler.start({ runImmediately: false });
+  const run = scheduler.runOnce();
+  let settled = false;
+  const stop = scheduler.stop().finally(() => { settled = true; });
+  await Promise.resolve();
+  assert.equal(cleared, true);
+  assert.equal(settled, false);
+  resolveEvaluation({ ok: true });
+  await run;
+  await assert.rejects(stop, /Idle participation scheduler shutdown was incomplete/);
+  assert.equal(scheduler.snapshot().evaluating, false);
+  assert.equal(scheduler.snapshot().stopped, true);
+});

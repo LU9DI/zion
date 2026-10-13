@@ -1,4 +1,4 @@
-import { constants as fsConstants, closeSync, fstatSync, openSync, readSync } from 'node:fs';
+import { constants as fsConstants, closeSync, fstatSync, lstatSync, openSync, readSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createPublicKey } from 'node:crypto';
@@ -8,8 +8,13 @@ import { verifyNotificationRecoveryAnchorWitnessChallengeResponse } from '../src
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
 function readRegularBounded(path, maxBytes = MAX_FILE_BYTES) {
   let fd;
+  const absolutePath = resolve(path);
   try {
-    fd = openSync(resolve(path), fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    // O_NOFOLLOW is unavailable on some platforms (notably Windows). Reject a
+    // symlink before opening, then retain O_NOFOLLOW where the platform supports it.
+    const pathStat = lstatSync(absolutePath);
+    if (pathStat.isSymbolicLink() || !pathStat.isFile()) throw new Error('Input must be a regular file (symbolic link rejected)');
+    fd = openSync(absolutePath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
     const before = fstatSync(fd);
     if (!before.isFile()) throw new Error('Input must be a regular non-symlink file');
     if (before.size > maxBytes) throw new Error(`Input exceeds ${maxBytes}-byte limit`);

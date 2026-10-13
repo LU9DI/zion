@@ -25,7 +25,13 @@
     "anchor:verify-external-trust-receipt": "node scripts/verify-external-trust-receipt.js",
     "content:screen-local": "node scripts/screen-content-local.js",
     "content:verify-uploader": "node scripts/verify-uploader-attribution.js",
-    "client:demo": "node scripts/demo-consumer-client.js"
+    "client:demo": "node scripts/demo-consumer-client.js",
+    "db:migrate": "node scripts/migrate-postgres.js",
+    "start:official": "node scripts/start-official-node.js",
+    "bench:peer-transfer": "node scripts/benchmark-peer-transfer.js"
   },
-  "license": "AGPL-3.0-only"
+  "license": "AGPL-3.0-only",
+  "dependencies": {
+    "pg": "^8.13.0"
+  }
 }

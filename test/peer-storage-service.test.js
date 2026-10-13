@@ -4,7 +4,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { mkdtemp, rm, readFile, lstat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { once } from 'node:events';
+import { once, EventEmitter } from 'node:events';
 import { createNodeIdentity } from '../src/peer-security.js';
 import { PeerTransport } from '../src/peer-transport.js';
 import { OpaqueReplicaStore, PeerStorageService } from '../src/peer-storage-service.js';
@@ -118,6 +118,113 @@ test('returns an explicit capacity-exhausted protocol response', async () => {
   assert.equal(sent[0].type, 'STORE_REJECTED');
   assert.equal(sent[0].requestId, request.requestId);
   assert.equal(sent[0].code, 'CAPACITY_EXHAUSTED');
+});
+
+test('wipes completed segment buffers after assembling a transfer', async () => {
+  const target = createNodeIdentity();
+  const sender = createNodeIdentity();
+  const bytes = envelope(1500);
+  const chunkId = createHash('sha256').update(bytes).digest('hex');
+  const request = createStoreRequest({ chunkId, bytes: bytes.length, targetNodeId: target.nodeId });
+  const service = new PeerStorageService({
+    identity: target,
+    store: { async put() { return { id: chunkId, bytes: bytes.length }; }, async get() { return Buffer.from(bytes); } },
+    maxChunkBytes: 4096,
+    partBytes: 1024
+  });
+  const transferId = randomBytes(16).toString('hex');
+  const transport = { send() {} };
+  await service.handle({ nodeId: sender.nodeId, payload: {
+    type: 'STORE_CHUNK', transferId, chunkId, totalBytes: bytes.length,
+    partIndex: 0, partCount: 2, data: bytes.subarray(0, 1024).toString('base64'), request
+  } }, {}, transport);
+  const transfer = service.transfers.values().next().value;
+  const firstPart = transfer.parts[0];
+  assert.ok(firstPart.some(byte => byte !== 0));
+  await service.handle({ nodeId: sender.nodeId, payload: {
+    type: 'STORE_CHUNK', transferId, chunkId, totalBytes: bytes.length,
+    partIndex: 1, partCount: 2, data: bytes.subarray(1024).toString('base64')
+  } }, {}, transport);
+  assert.ok(firstPart.every(byte => byte === 0), 'assembled segment buffer should be wiped');
+  assert.equal(service.bufferedBytes, 0);
+});
+
+test('expires incomplete transfers and releases buffered memory when a peer goes silent', async () => {
+  const target = createNodeIdentity();
+  const sender = createNodeIdentity();
+  const bytes = envelope(1500);
+  const chunkId = createHash('sha256').update(bytes).digest('hex');
+  const request = createStoreRequest({ chunkId, bytes: bytes.length, targetNodeId: target.nodeId });
+  const service = new PeerStorageService({
+    identity: target,
+    store: {},
+    maxChunkBytes: 4096,
+    partBytes: 1024,
+    transferTtlMs: 1000
+  });
+  await service.handle({ nodeId: sender.nodeId, payload: {
+    type: 'STORE_CHUNK',
+    transferId: randomBytes(16).toString('hex'),
+    chunkId,
+    totalBytes: bytes.length,
+    partIndex: 0,
+    partCount: Math.ceil(bytes.length / 1024),
+    data: bytes.subarray(0, 1024).toString('base64'),
+    request
+  } }, {}, { send() {} });
+  assert.equal(service.transfers.size, 1);
+  assert.equal(service.bufferedBytes, bytes.length);
+  await new Promise(resolve => setTimeout(resolve, 1100));
+  assert.equal(service.transfers.size, 0, 'silent peer must not retain an expired transfer');
+  assert.equal(service.bufferedBytes, 0, 'expiry must release the reserved memory budget');
+});
+
+test('propagates asynchronous transport write failures through storage transfer APIs', async () => {
+  const identity = createNodeIdentity();
+  const chunk = envelope(20);
+  const chunkId = createHash('sha256').update(chunk).digest('hex');
+  const service = new PeerStorageService({
+    identity,
+    store: { async get() { return chunk; } },
+    maxChunkBytes: 1024,
+    partBytes: 1024,
+  });
+  const failingTransport = {
+    send() { return Promise.reject(new Error('socket write failed')); }
+  };
+
+  await assert.rejects(service.handle({
+    nodeId: createNodeIdentity().nodeId,
+    payload: { type: 'GET_CHUNK', requestId: randomBytes(16).toString('hex'), chunkId },
+  }, {}, failingTransport), /socket write failed/);
+
+  await assert.rejects(service.fetchChunk(
+    failingTransport, { destroyed: false, writable: true }, createNodeIdentity().nodeId, chunkId, { timeoutMs: 1000 }
+  ), /socket write failed/);
+  assert.equal(service.pendingGets.size, 0, 'failed send must remove the pending GET immediately');
+
+  await assert.rejects(service.sendStoreChunk(
+    failingTransport, { destroyed: false, writable: true }, chunk, createNodeIdentity().nodeId,
+    ({ chunkId: id, bytes, targetNodeId }) => ({ chunkId: id, bytes, targetNodeId })
+  ), /socket write failed/);
+});
+ 
+test('fetchChunk rejects immediately when the peer socket closes', async () => {
+  const identity = createNodeIdentity();
+  const bytes = envelope(32);
+  const chunkId = createHash('sha256').update(bytes).digest('hex');
+  const service = new PeerStorageService({ identity, store: {}, maxChunkBytes: 1024, partBytes: 1024 });
+  const socket = new EventEmitter();
+  socket.destroyed = false;
+  socket.writable = true;
+  const transport = { send() { return true; } };
+  const pending = service.fetchChunk(transport, socket, createNodeIdentity().nodeId, chunkId, { timeoutMs: 10_000 });
+  await new Promise(resolve => setImmediate(resolve));
+  socket.destroyed = true;
+  socket.writable = false;
+  socket.emit('close');
+  await assert.rejects(pending, /Peer socket closed during chunk fetch/);
+  assert.equal(service.pendingGets.size, 0);
 });
 
 test('audits actual replica inventory and grants contribution credit only for verified bytes', async t => {
@@ -269,6 +376,28 @@ test('does not issue a storage receipt when adapter read-back fails integrity ve
   assert.equal(sent.some(message => message.type === 'STORE_RECEIPT'), false);
   assert.equal(committed, 0);
   assert.equal(released, 1);
+});
+
+test('wipes the assembled envelope buffer after a successful store', async () => {
+  const identity = createNodeIdentity();
+  const sender = createNodeIdentity();
+  const bytes = envelope(64);
+  const chunkId = createHash('sha256').update(bytes).digest('hex');
+  const request = createStoreRequest({ chunkId, bytes: bytes.length, targetNodeId: identity.nodeId });
+  let storedReference;
+  let persistedReference;
+  const store = {
+    async put(id, value) { storedReference = value; return { id, bytes: value.length, alreadyPresent: false }; },
+    async get() { persistedReference = Buffer.from(bytes); return persistedReference; }
+  };
+  const service = new PeerStorageService({ identity, store, maxChunkBytes: 1024, partBytes: 1024 });
+  await service.handle({ nodeId: sender.nodeId, payload: {
+    type: 'STORE_CHUNK', transferId: randomBytes(16).toString('hex'), chunkId,
+    totalBytes: bytes.length, partIndex: 0, partCount: 1, data: bytes.toString('base64'), request
+  } }, {}, { send() {} });
+  assert.ok(storedReference, 'store adapter should receive the assembled buffer');
+  assert.ok(storedReference.every(byte => byte === 0), 'assembled buffer should be wiped after persistence and receipt processing');
+  assert.ok(persistedReference.every(byte => byte === 0), 'read-back verification buffer should also be wiped');
 });
 
 test('accepts Rust storage adapter receipt shape after verified read-back', async () => {

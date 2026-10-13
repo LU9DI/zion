@@ -80,12 +80,34 @@ test('transport serializes async handlers and bounds queued frames per socket', 
   const socket = connect(address.port, '127.0.0.1');
   t.after(() => socket.destroy());
   await once(socket, 'connect');
+  // Start one blocked handler before flooding the bounded queue. If the whole
+  // batch is written at once, overflow can close the socket before any handler starts.
+  client.send(socket, { type: 'PING', nonce: 'blocking-first' });
+  await waitFor(() => entered === 1, 3000);
   for (let i = 0; i < 70; i++) client.send(socket, { type: 'PING', nonce: String(i) });
-  await waitFor(() => socket.destroyed || entered > 0);
+  await waitFor(() => socket.destroyed, 3000);
   assert.equal(maxConcurrent, 1);
   assert.equal(socket.destroyed, true, 'socket is closed when its per-connection work queue overflows');
 });
 
+
+test('transport throttles sustained valid traffic instead of disconnecting the peer', async t => {
+  const received = [];
+  const server = new PeerTransport({
+    identity: createNodeIdentity(),
+    rateLimiter: new (await import('../src/peer-security.js')).PeerRateLimiter({ capacity: 1, refillPerSecond: 100 }),
+    onMessage: async message => { received.push(message.payload.nonce); },
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({ identity: createNodeIdentity() });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(async () => { socket.destroy(); await client.close(); });
+  for (let i = 0; i < 8; i++) client.send(socket, { type: 'PING', nonce: `throttle-${i}` });
+  await waitFor(() => received.length === 8);
+  assert.deepEqual(received, Array.from({ length: 8 }, (_, i) => `throttle-${i}`));
+  assert.equal(socket.destroyed, false, 'rate pressure must not terminate a valid peer session');
+});
 
 test('transport applies rate limiting before replay-cache admission', async t => {
   const replayGuard = {
@@ -149,6 +171,52 @@ test('transport routes outbound signed frames through adaptive bandwidth schedul
   assert.ok(result.uploadKiBps <= 20);
 });
 
+test('official transport refuses outbound dialing while integrity is quarantined', async t => {
+  let connections = 0;
+  const server = createTcpServer(() => { connections++; });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => server.close());
+  const integrityGuard = {
+    status: { verified: false, quarantined: true },
+    async checkHealthy() { throw Object.assign(new Error('integrity quarantined'), { code: 'ZION_INTEGRITY_QUARANTINED' }); },
+    assertHealthy() { throw Object.assign(new Error('integrity quarantined'), { code: 'ZION_INTEGRITY_QUARANTINED' }); },
+    addQuarantineListener() { return () => {}; },
+  };
+  const client = new PeerTransport({
+    identity: createNodeIdentity(), networkMode: 'official', protocolGenesis: testGenesis(), integrityGuard,
+  });
+  await assert.rejects(client.connect('127.0.0.1', server.address().port), { code: 'ZION_INTEGRITY_QUARANTINED' });
+  assert.equal(connections, 0, 'quarantined official node must not open outbound sockets');
+  await client.close();
+});
+
+test('official transport rechecks integrity after an outbound dial before sending handshake', async t => {
+  let receivedBytes = 0;
+  const server = createTcpServer(socket => socket.on('data', chunk => { receivedBytes += chunk.length; }));
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => server.close());
+  let checks = 0;
+  const integrityGuard = {
+    status: { verified: true, quarantined: false },
+    async checkHealthy() {
+      checks++;
+      if (checks > 1) throw Object.assign(new Error('integrity quarantined during dial'), { code: 'ZION_INTEGRITY_QUARANTINED' });
+    },
+    assertHealthy() {},
+    addQuarantineListener() { return () => {}; },
+  };
+  const client = new PeerTransport({
+    identity: createNodeIdentity(), networkMode: 'official', protocolGenesis: testGenesis(), integrityGuard,
+  });
+  await assert.rejects(client.connect('127.0.0.1', server.address().port), { code: 'ZION_INTEGRITY_QUARANTINED' });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(checks, 2, 'integrity is checked before and after the asynchronous dial');
+  assert.equal(receivedBytes, 0, 'no protocol handshake is sent after integrity changes during dial');
+  await client.close();
+});
+
 function testGenesis(name = 'Zion test network') {
   return {
     schemaVersion: 1, networkName: name, protocolMajor: 1, genesisTime: 1800000000,
@@ -184,7 +252,7 @@ test('genesis-enabled peers reject different network IDs before application mess
   const client = new PeerTransport({ identity: createNodeIdentity(), protocolGenesis: testGenesis('Zion B') });
   const socket = await client.connect('127.0.0.1', address.port);
   t.after(() => socket.destroy());
-  await waitFor(() => socket.destroyed || [...server.connections].every(peer => peer.destroyed));
+  await waitFor(() => socket.destroyed, 3000);
   assert.equal(socket.destroyed, true);
 });
 
@@ -225,14 +293,26 @@ test('official transport immediately closes peer sessions and stops listening on
   };
   const transport = new PeerTransport({ identity: createNodeIdentity(), protocolGenesis: testGenesis(), networkMode: 'official', integrityGuard });
   const address = await transport.listen();
-  const client = new PeerTransport({ identity: createNodeIdentity() });
+  // Official peers must complete the same genesis handshake before the server-side
+  // session remains established; a legacy client is correctly rejected pre-auth.
+  const clientGuard = {
+    status: { verified: true, quarantined: false, reason: null },
+    async checkHealthy() {},
+    assertHealthy() {},
+    addQuarantineListener() { return () => {}; },
+  };
+  const client = new PeerTransport({ identity: createNodeIdentity(), protocolGenesis: testGenesis(), networkMode: 'official', integrityGuard: clientGuard });
   const socket = await client.connect('127.0.0.1', address.port);
   t.after(async () => { await client.close(); await transport.close(); });
-  await waitFor(() => transport.connections.size === 1);
+  await waitFor(() => transport.connections.size === 1 && [...transport.connections][0]?.__zionSession?.authenticated, 5000);
   assert.equal(transport.server.listening, true);
+  const socketClosed = once(socket, 'close');
   integrityGuard.status = { verified: false, quarantined: true, reason: 'hash-mismatch:src/peer-transport.js' };
   for (const listener of listeners) await listener({ reason: integrityGuard.status.reason });
-  await waitFor(() => socket.destroyed && transport.connections.size === 0 && !transport.server.listening);
+  // Quarantine destroys the server-side session. The client observes the remote close
+  // asynchronously and does not necessarily set its local `destroyed` flag on receipt.
+  await waitFor(() => transport.connections.size === 0 && !transport.server.listening, 5000);
+  await socketClosed;
   assert.equal(transport.started, false);
   assert.throws(() => transport.send(socket, { type: 'PING', nonce: 'after-quarantine' }), /ZION_INTEGRITY_QUARANTINED|not writable|quarantined/);
 });
@@ -364,6 +444,127 @@ test('outbound TLS handshake timeout closes an unresponsive peer', { skip: !open
   await client.close();
 });
 
+test('official transport honors persistent admission revocation over its local cache', async t => {
+  const seed = createNodeIdentity();
+  const newcomer = createNodeIdentity();
+  const guard = {
+    status: { verified: true, quarantined: false },
+    async checkHealthy() {},
+    assertHealthy() {},
+    addQuarantineListener: () => () => {},
+  };
+  const admissionController = {
+    async admit() { return { ok: false, reason: 'subject-not-admitted' }; },
+    async isAdmitted() { return false; },
+    async releaseAdmission() {},
+  };
+  const server = new PeerTransport({
+    identity: seed,
+    networkMode: 'official',
+    protocolGenesis: testGenesis(),
+    integrityGuard: guard,
+    trustedPeerIds: ['a'.repeat(64)],
+    admissionController,
+  });
+  // Simulate stale process-local state after an operator releases the admission.
+  server.admittedPeerIds.add(newcomer.nodeId);
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({
+    identity: newcomer,
+    networkMode: 'official',
+    protocolGenesis: testGenesis(),
+    integrityGuard: guard,
+    trustedPeerIds: [seed.nodeId],
+  });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(async () => { socket.destroy(); await client.close(); });
+  await waitFor(() => socket.destroyed);
+  assert.equal(server.admittedPeerIds.has(newcomer.nodeId), true, 'test keeps stale cache to prove it cannot override database state');
+});
+
+test('official transport closes a peer when authoritative admission reads fail', async t => {
+  const seed = createNodeIdentity();
+  const newcomer = createNodeIdentity();
+  const guard = {
+    status: { verified: true, quarantined: false },
+    async checkHealthy() {},
+    assertHealthy() {},
+    addQuarantineListener: () => () => {},
+  };
+  const admissionController = {
+    async admit() { return { ok: false, reason: 'admission-state-unavailable' }; },
+    async isAdmitted() { throw new Error('database unavailable'); },
+    async releaseAdmission() {},
+  };
+  const server = new PeerTransport({
+    identity: seed,
+    networkMode: 'official',
+    protocolGenesis: testGenesis(),
+    integrityGuard: guard,
+    trustedPeerIds: ['a'.repeat(64)],
+    admissionController,
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({
+    identity: newcomer,
+    networkMode: 'official',
+    protocolGenesis: testGenesis(),
+    integrityGuard: guard,
+    trustedPeerIds: [seed.nodeId],
+  });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(async () => { socket.destroy(); await client.close(); });
+  await waitFor(() => socket.destroyed);
+  assert.equal(server.admittedPeerIds.has(newcomer.nodeId), false);
+});
+
+test('official transport closes a peer when post-admission reconciliation read fails', async t => {
+  const seed = createNodeIdentity();
+  const issuer = createNodeIdentity();
+  const newcomer = createNodeIdentity();
+  const { createPeerIntroductionVoucher } = await import('../src/peer-introduction-vouchers.js');
+  const guard = {
+    status: { verified: true, quarantined: false },
+    async checkHealthy() {},
+    assertHealthy() {},
+    addQuarantineListener: () => () => {},
+  };
+  let reads = 0;
+  const admissionController = {
+    async admit() { return { ok: false, reason: 'admission-state-unavailable' }; },
+    async isAdmitted() {
+      reads++;
+      if (reads > 1) throw new Error('database unavailable after admission attempt');
+      return false;
+    },
+    async releaseAdmission() {},
+  };
+  const server = new PeerTransport({
+    identity: seed,
+    networkMode: 'official',
+    protocolGenesis: testGenesis(),
+    integrityGuard: guard,
+    trustedPeerIds: [issuer.nodeId],
+    admissionController,
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({
+    identity: newcomer,
+    networkMode: 'official',
+    protocolGenesis: testGenesis(),
+    integrityGuard: guard,
+    trustedPeerIds: [seed.nodeId],
+    admissionVouchers: [],
+  });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(async () => { socket.destroy(); await client.close(); });
+  await waitFor(() => socket.destroyed);
+  assert.equal(server.admittedPeerIds.has(newcomer.nodeId), false);
+});
+
 test('official transport admits an unknown peer only when its signed handshake carries valid invite vouchers', async t => {
   const { calculateNetworkId } = await import('../src/protocol-genesis.js');
   const { createPeerIntroductionVoucher } = await import('../src/peer-introduction-vouchers.js');
@@ -402,6 +603,7 @@ test('official transport admits an unknown peer only when its signed handshake c
   const asyncReadController = {
     admit: input => admissionController.admit(input),
     isAdmitted: async nodeId => admissionController.isAdmitted(nodeId),
+    releaseAdmission: (nodeId, status) => admissionController.releaseAdmission(nodeId, status),
   };
   const server = new PeerTransport({
     identity: seed, host: '127.0.0.1', networkMode: 'official', protocolGenesis: genesis, integrityGuard: guard,
@@ -417,6 +619,9 @@ test('official transport admits an unknown peer only when its signed handshake c
   const socket = await client.connect('127.0.0.1', address.port);
   t.after(() => { socket.destroy(); client.close(); });
   await waitFor(() => server.admittedPeerIds.has(newcomer.nodeId));
+  // Server-side admission may complete before the client's handshake response is
+  // processed. Wait for the client session to authenticate before sending data.
+  await waitFor(() => socket.__zionSession?.authenticated === true);
   client.send(socket, { type: 'PING', nonce: 'invite-admitted' });
   await waitFor(() => received);
   assert.equal(admissionController.isAdmitted(newcomer.nodeId), true);
@@ -457,3 +662,284 @@ test('official transport rejects an unknown peer with no valid invite vouchers',
   await waitFor(() => socket.destroyed);
   assert.equal(admissionController.isAdmitted(newcomer.nodeId), false);
 });
+
+test('official transport closes an established session immediately after persistent admission revocation', async t => {
+  const seed = createNodeIdentity();
+  const newcomer = createNodeIdentity();
+  const guard = {
+    status: { verified: true, quarantined: false },
+    async checkHealthy() {},
+    assertHealthy() {},
+    addQuarantineListener: () => () => {},
+  };
+  let admitted = true;
+  const admissionController = {
+    async admit() { return { ok: true }; },
+    async isAdmitted(nodeId) { return nodeId === newcomer.nodeId && admitted; },
+    async releaseAdmission() { admitted = false; return { ok: true }; },
+  };
+  const server = new PeerTransport({
+    identity: seed,
+    networkMode: 'official',
+    protocolGenesis: testGenesis(),
+    integrityGuard: guard,
+    trustedPeerIds: [seed.nodeId],
+    admissionController,
+    onMessage: async () => {},
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({
+    identity: newcomer,
+    networkMode: 'official',
+    protocolGenesis: testGenesis(),
+    integrityGuard: guard,
+    trustedPeerIds: [seed.nodeId],
+  });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(async () => { socket.destroy(); await client.close(); });
+  await waitFor(() => socket.__zionSession?.authenticated && [...server.connections].some(peer => peer.__zionSession?.authenticated));
+  admitted = false;
+  client.send(socket, { type: 'PING', nonce: 'after-revocation' });
+  await waitFor(() => socket.destroyed);
+});
+
+test('official transport rejects a successful admission write when authoritative reconciliation says not admitted', async t => {
+  const seed = createNodeIdentity();
+  const issuer = createNodeIdentity();
+  const newcomer = createNodeIdentity();
+  const { createPeerIntroductionVoucher } = await import('../src/peer-introduction-vouchers.js');
+  const guard = {
+    status: { verified: true, quarantined: false },
+    async checkHealthy() {},
+    assertHealthy() {},
+    addQuarantineListener: () => () => {},
+  };
+  const admissionController = {
+    async admit() { return { ok: true }; },
+    async isAdmitted() { return false; },
+    async releaseAdmission() {},
+  };
+  const server = new PeerTransport({
+    identity: seed,
+    networkMode: 'official',
+    protocolGenesis: testGenesis(),
+    integrityGuard: guard,
+    trustedPeerIds: [issuer.nodeId],
+    admissionController,
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({
+    identity: newcomer,
+    networkMode: 'official',
+    protocolGenesis: testGenesis(),
+    integrityGuard: guard,
+    trustedPeerIds: [seed.nodeId],
+    admissionVouchers: [createPeerIntroductionVoucher({ issuerIdentity: issuer, subjectNodeId: newcomer.nodeId })],
+  });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(async () => { socket.destroy(); await client.close(); });
+  await waitFor(() => socket.destroyed);
+  assert.equal(server.admittedPeerIds.has(newcomer.nodeId), false);
+});
+
+
+test('official transport rejects an incomplete admission controller contract', () => {
+  const guard = {
+    status: { verified: true, quarantined: false },
+    async checkHealthy() {},
+    assertHealthy() {},
+    addQuarantineListener: () => () => {},
+  };
+  assert.throws(() => new PeerTransport({
+    identity: createNodeIdentity(),
+    networkMode: 'official',
+    protocolGenesis: testGenesis(),
+    integrityGuard: guard,
+    trustedPeerIds: ['a'.repeat(64)],
+    admissionController: {
+      async admit() { return { ok: true }; },
+      async isAdmitted() { return true; },
+      // Missing releaseAdmission: official lifecycle contract is incomplete.
+    },
+  }), /complete admission controller/);
+});
+
+
+test('official transport fails closed when authoritative admission state is not boolean', async t => {
+  const seed = createNodeIdentity();
+  const newcomer = createNodeIdentity();
+  const guard = {
+    status: { verified: true, quarantined: false },
+    async checkHealthy() {},
+    assertHealthy() {},
+    addQuarantineListener: () => () => {},
+  };
+  const server = new PeerTransport({
+    identity: seed,
+    networkMode: 'official',
+    protocolGenesis: testGenesis(),
+    integrityGuard: guard,
+    trustedPeerIds: ['a'.repeat(64)],
+    admissionController: {
+      async admit() { return { ok: true }; },
+      async isAdmitted() { return 'false'; },
+      async releaseAdmission() {},
+    },
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({
+    identity: newcomer,
+    networkMode: 'official',
+    protocolGenesis: testGenesis(),
+    integrityGuard: guard,
+    trustedPeerIds: [seed.nodeId],
+  });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(async () => { socket.destroy(); await client.close(); });
+  await waitFor(() => socket.destroyed);
+  assert.equal(server.admittedPeerIds.has(newcomer.nodeId), false);
+});
+
+test('official transport aborts pending admission work when quarantine destroys the session', async t => {
+  const listeners = new Set();
+  const integrityGuard = {
+    status: { verified: true, quarantined: false, reason: null },
+    async checkHealthy() {
+      if (this.status.quarantined) throw Object.assign(new Error('quarantined'), { code: 'ZION_INTEGRITY_QUARANTINED' });
+    },
+    assertHealthy() {
+      if (this.status.quarantined) throw Object.assign(new Error('quarantined'), { code: 'ZION_INTEGRITY_QUARANTINED' });
+    },
+    addQuarantineListener(listener) { listeners.add(listener); return () => listeners.delete(listener); }
+  };
+  let releaseAdmissionRead;
+  let admissionCalls = 0;
+  let messagesHandled = 0;
+  const admissionController = {
+    async isAdmitted() {
+      return await new Promise(resolve => { releaseAdmissionRead = resolve; });
+    },
+    async admit() { admissionCalls++; return { ok: true }; },
+    async releaseAdmission() {}
+  };
+  const transport = new PeerTransport({
+    identity: createNodeIdentity(),
+    protocolGenesis: testGenesis(),
+    networkMode: 'official',
+    integrityGuard,
+    trustedPeerIds: ['a'.repeat(64)],
+    admissionController,
+    onMessage: async () => { messagesHandled++; }
+  });
+  const address = await transport.listen();
+  const clientGuard = {
+    status: { verified: true, quarantined: false, reason: null },
+    async checkHealthy() {},
+    assertHealthy() {},
+    addQuarantineListener() { return () => {}; }
+  };
+  const client = new PeerTransport({
+    identity: createNodeIdentity(),
+    protocolGenesis: testGenesis(),
+    networkMode: 'official',
+    integrityGuard: clientGuard,
+    trustedPeerIds: [transport.identity.nodeId]
+  });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(async () => { await client.close(); await transport.close(); });
+  await waitFor(() => typeof releaseAdmissionRead === 'function');
+
+  integrityGuard.status = { verified: false, quarantined: true, reason: 'test-quarantine' };
+  for (const listener of listeners) await listener({ reason: integrityGuard.status.reason });
+  releaseAdmissionRead(false);
+  await waitFor(() => socket.destroyed);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(admissionCalls, 0, 'quarantined socket must not continue into voucher admission');
+  assert.equal(messagesHandled, 0, 'quarantined socket must not reach application handlers');
+});
+
+
+test('official transport cannot start listening if quarantine begins during startup preflight', async t => {
+  const listeners = new Set();
+  let releasePreflight;
+  const integrityGuard = {
+    status: { verified: true, quarantined: false, reason: null },
+    async checkHealthy() {
+      await new Promise(resolve => { releasePreflight = resolve; });
+    },
+    assertHealthy() {
+      if (this.status.quarantined) throw Object.assign(new Error('quarantined'), { code: 'ZION_INTEGRITY_QUARANTINED' });
+    },
+    addQuarantineListener(listener) { listeners.add(listener); return () => listeners.delete(listener); }
+  };
+  const transport = new PeerTransport({
+    identity: createNodeIdentity(),
+    protocolGenesis: testGenesis(),
+    networkMode: 'official',
+    integrityGuard
+  });
+  const starting = transport.listen();
+  await waitFor(() => typeof releasePreflight === 'function');
+  integrityGuard.status = { verified: false, quarantined: true, reason: 'startup-race' };
+  for (const listener of listeners) await listener({ reason: 'startup-race' });
+  releasePreflight();
+  await assert.rejects(starting, /quarantined|ZION_INTEGRITY_QUARANTINED/);
+  assert.equal(transport.server, null, 'quarantined startup must not create a server');
+  assert.equal(transport.started, false);
+  await transport.close();
+});
+
+
+test('official transport closes a bound listener when the final startup integrity gate fails', async () => {
+  let assertions = 0;
+  const integrityGuard = {
+    status: { verified: true, quarantined: false },
+    async checkHealthy() {},
+    assertHealthy() {
+      assertions++;
+      if (assertions > 1) {
+        this.status = { verified: false, quarantined: true, reason: 'startup-final-gate' };
+        throw Object.assign(new Error('quarantined at final startup gate'), { code: 'ZION_INTEGRITY_QUARANTINED' });
+      }
+    }
+  };
+  const transport = new PeerTransport({
+    identity: createNodeIdentity(),
+    protocolGenesis: testGenesis(),
+    networkMode: 'official',
+    integrityGuard
+  });
+  await assert.rejects(transport.listen(), /quarantined at final startup gate/);
+  assert.equal(transport.started, false);
+  assert.equal(transport.server, null, 'failed startup must not retain a server handle');
+});
+
+test('official transport rejects inbound sockets after quarantine even without a listener hook', async t => {
+  const integrityGuard = {
+    status: { verified: true, quarantined: false },
+    async checkHealthy() {
+      if (this.status.quarantined) throw Object.assign(new Error('quarantined'), { code: 'ZION_INTEGRITY_QUARANTINED' });
+    },
+    assertHealthy() {
+      if (this.status.quarantined) throw Object.assign(new Error('quarantined'), { code: 'ZION_INTEGRITY_QUARANTINED' });
+    }
+  };
+  const transport = new PeerTransport({
+    identity: createNodeIdentity(),
+    protocolGenesis: testGenesis(),
+    networkMode: 'official',
+    integrityGuard
+  });
+  const address = await transport.listen();
+  t.after(() => transport.close());
+  integrityGuard.status = { verified: false, quarantined: true };
+  const client = new PeerTransport({ identity: createNodeIdentity() });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(() => client.close());
+  await waitFor(() => socket.destroyed);
+  assert.equal(transport.connections.size, 0, 'quarantined inbound socket must never be attached');
+});
+

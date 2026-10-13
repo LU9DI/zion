@@ -36,6 +36,63 @@ const signedManifest = (releaseVersion, files, privateKey) => {
   assert.match(integrityManifestDigest(manifest), /^[a-f0-9]{64}$/);
 });
 
+test('verification uses one manifest snapshot even if caller mutates shared configuration', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'zion-integrity-snapshot-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bytes = Buffer.from('approved release bytes');
+  await writeFile(path.join(root, 'main.js'), bytes);
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const core = createIntegrityManifestCore('0.32.8', [{ path: 'main.js', sha256: sha256(bytes) }]);
+  const manifest = {
+    ...core,
+    files: core.files.map(file => ({ ...file })),
+    signature: sign(null, Buffer.from(canonical(core)), privateKey).toString('base64')
+  };
+  const guard = new IntegrityGuard({
+    root, manifest,
+    trustedPublicKey: publicKey.export({ type: 'spki', format: 'pem' }),
+    expectedReleaseVersion: '0.32.8',
+    requiredPaths: ['main.js']
+  });
+  const verification = guard.verify();
+  // verify() must capture the manifest before yielding to filesystem I/O.
+  manifest.files[0].sha256 = '0'.repeat(64);
+  manifest.files[0].path = '../outside.js';
+  const report = await verification;
+  assert.equal(report.ok, true);
+  assert.equal(report.checkedFiles, 1);
+  assert.equal(guard.status.verified, true);
+});
+
+test('a later successful overlapping verification cannot overwrite quarantine evidence', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'zion-integrity-overlap-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bytes = Buffer.from('approved release bytes');
+  await writeFile(path.join(root, 'main.js'), bytes);
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const valid = signedManifest('0.32.8', [{ path: 'main.js', sha256: sha256(bytes) }], privateKey);
+  const forged = { ...valid, releaseVersion: 'forged-release' };
+  const guard = new IntegrityGuard({
+    root, manifest: valid,
+    trustedPublicKey: publicKey.export({ type: 'spki', format: 'pem' }),
+    expectedReleaseVersion: '0.32.8',
+    requiredPaths: ['main.js']
+  });
+  let manifestReads = 0;
+  Object.defineProperty(guard, 'manifest', {
+    configurable: true,
+    get() { manifestReads++; return manifestReads === 1 ? valid : forged; }
+  });
+  const first = guard.verify();
+  const second = guard.verify();
+  const reports = await Promise.all([first, second]);
+  assert.equal(guard.status.quarantined, true);
+  assert.equal(guard.status.verified, false);
+  assert.equal(guard.status.reason, guard.lastReport.reason);
+  assert.equal(guard.lastReport.ok, false);
+  assert.equal(reports.some(report => report.ok === false), true);
+});
+
 test('tampering quarantines the node and blocks critical operations', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'zion-integrity-tamper-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -140,4 +197,72 @@ test('send and fetch operations check integrity before touching the transport', 
   await assert.rejects(service.sendStoreChunk(transport, socket, Buffer.alloc(40), 'a'.repeat(64), () => ({})), { code: 'ZION_INTEGRITY_QUARANTINED' });
   await assert.rejects(service.fetchChunk(transport, socket, 'a'.repeat(64), 'b'.repeat(64)), { code: 'ZION_INTEGRITY_QUARANTINED' });
   assert.equal(sends, 0);
+});
+
+test('a slow quarantine alert cannot delay subsystem isolation listeners', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'zion-integrity-alert-delay-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bytes = Buffer.from('approved release bytes');
+  await writeFile(path.join(root, 'main.js'), bytes);
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const valid = signedManifest('0.32.8', [{ path: 'main.js', sha256: sha256(bytes) }], privateKey);
+  let releaseAlert;
+  let signalAlertStarted;
+  const alertStarted = new Promise(resolve => { signalAlertStarted = resolve; });
+  const alertPending = new Promise(resolve => { releaseAlert = resolve; });
+  let listenerCalled = false;
+  const guard = new IntegrityGuard({
+    root, manifest: { ...valid, releaseVersion: 'forged-release' },
+    trustedPublicKey: publicKey.export({ type: 'spki', format: 'pem' }),
+    expectedReleaseVersion: '0.32.8',
+    requiredPaths: ['main.js'],
+    onQuarantine: () => { signalAlertStarted(); return alertPending; }
+  });
+  guard.addQuarantineListener(async () => { listenerCalled = true; });
+  const verification = guard.verify();
+  try {
+    await alertStarted;
+    await Promise.resolve();
+    assert.equal(listenerCalled, true, 'containment listeners must run without waiting for the alert sink');
+    assert.equal(guard.status.quarantined, true);
+    const completed = await Promise.race([
+      verification.then(report => report.ok === false),
+      new Promise(resolve => setTimeout(() => resolve(false), 500))
+    ]);
+    assert.equal(completed, true, 'a hung alert sink must not hold integrity verification open');
+  } finally {
+    releaseAlert();
+  }
+  assert.equal((await verification).ok, false);
+});
+
+test('verification snapshots root, version, key, and required paths before asynchronous I/O', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'zion-integrity-config-snapshot-'));
+  const replacementRoot = await mkdtemp(path.join(tmpdir(), 'zion-integrity-config-replacement-'));
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true });
+    await rm(replacementRoot, { recursive: true, force: true });
+  });
+  const approved = Buffer.from('approved release bytes');
+  await writeFile(path.join(root, 'main.js'), approved);
+  await writeFile(path.join(replacementRoot, 'main.js'), Buffer.from('different bytes'));
+  await writeFile(path.join(replacementRoot, 'other.js'), Buffer.from('other release bytes'));
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const replacementKeys = generateKeyPairSync('ed25519');
+  const manifest = signedManifest('0.32.8', [{ path: 'main.js', sha256: sha256(approved) }], privateKey);
+  const guard = new IntegrityGuard({
+    root, manifest,
+    trustedPublicKey: publicKey.export({ type: 'spki', format: 'pem' }),
+    expectedReleaseVersion: '0.32.8',
+    requiredPaths: ['main.js']
+  });
+  const verification = guard.verify();
+  guard.root = replacementRoot;
+  guard.expectedReleaseVersion = 'replacement-release';
+  guard.trustedPublicKey = replacementKeys.publicKey;
+  guard.requiredPaths = ['other.js'];
+  const report = await verification;
+  assert.equal(report.ok, true);
+  assert.equal(report.releaseVersion, '0.32.8');
+  assert.equal(report.checkedFiles, 1);
 });

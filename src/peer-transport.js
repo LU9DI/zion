@@ -54,7 +54,7 @@ export class PeerTransport {
     this.genesis = protocolGenesis === null ? null : validateGenesisDocument(protocolGenesis);
     if (this.genesis && maxFrameBytes > this.genesis.limits.maxFrameBytes) throw new RangeError('Transport frame limit exceeds protocol genesis');
     if (networkMode === 'official' && (!integrityGuard || typeof integrityGuard.checkHealthy !== 'function' || typeof integrityGuard.assertHealthy !== 'function')) throw new Error('Official Zion mode requires a verified IntegrityGuard');
-    if (admissionController !== null && (networkMode !== 'official' || !protocolGenesis || !trustedPeerIds || trustedPeerIds.length === 0 || typeof admissionController.admit !== 'function' || typeof admissionController.isAdmitted !== 'function')) throw new Error('Invite admission requires an official network, genesis, bootstrap allowlist, and compatible admission controller');
+    if (admissionController !== null && (networkMode !== 'official' || !protocolGenesis || !trustedPeerIds || trustedPeerIds.length === 0 || typeof admissionController.admit !== 'function' || typeof admissionController.isAdmitted !== 'function' || typeof admissionController.releaseAdmission !== 'function')) throw new Error('Invite admission requires an official network, genesis, bootstrap allowlist, and a complete admission controller');
     if (!Array.isArray(admissionVouchers) || admissionVouchers.length > 16) throw new TypeError('admissionVouchers must be an array of at most 16 vouchers');
     if (admissionVouchers.length && (networkMode !== 'official' || !protocolGenesis)) throw new Error('Admission vouchers require an official network with a protocol genesis');
     this.integrityGuard = integrityGuard;
@@ -75,30 +75,57 @@ export class PeerTransport {
 
   async listen() {
     if (this.started) throw new Error('Transport already started');
-    if (this.networkMode === 'official') await this.integrityGuard.checkHealthy();
-    this.server = this.tlsOptions
+    if (this.networkMode === 'official') {
+      await this.integrityGuard.checkHealthy();
+      // Revalidate after the async preflight before creating a listening socket.
+      this.integrityGuard.assertHealthy();
+    }
+    const server = this.tlsOptions
       ? createTlsServer({ ...this.tlsOptions, requestCert: true, rejectUnauthorized: true, minVersion: 'TLSv1.2', handshakeTimeout: this.tlsHandshakeTimeoutMs }, socket => this.#accept(socket))
       : createTcpServer(socket => this.#accept(socket));
-    this.server.maxConnections = this.maxConnections;
-    await new Promise((resolve, reject) => {
-      const onError = error => { this.server.off('listening', onListening); reject(error); };
-      const onListening = () => { this.server.off('error', onError); resolve(); };
-      this.server.once('error', onError); this.server.once('listening', onListening);
-      this.server.listen({ host: this.host, port: this.port, backlog: this.maxConnections });
-    });
-    this.started = true;
-    const address = this.server.address();
-    return Object.freeze({ host: address.address, port: address.port });
+    this.server = server;
+    server.maxConnections = this.maxConnections;
+    try {
+      await new Promise((resolve, reject) => {
+        const onError = error => { server.off('listening', onListening); reject(error); };
+        const onListening = () => { server.off('error', onError); resolve(); };
+        server.once('error', onError); server.once('listening', onListening);
+        server.listen({ host: this.host, port: this.port, backlog: this.maxConnections });
+      });
+      if (this.networkMode === 'official') this.integrityGuard.assertHealthy();
+      if (!server.listening) throw new Error('Transport listener closed before startup completed');
+      this.started = true;
+      const address = server.address();
+      return Object.freeze({ host: address.address, port: address.port });
+    } catch (error) {
+      // A quarantine can close the listener between the listening event and the
+      // final integrity gate. Never leave a bound server behind after failed startup.
+      this.started = false;
+      if (this.server === server) this.server = null;
+      if (server.listening) {
+        await new Promise(resolve => server.close(() => resolve()));
+      }
+      throw error;
+    }
   }
 
   #accept(socket) {
+    if (this.networkMode === 'official') {
+      try { this.integrityGuard.assertHealthy(); }
+      catch { socket.destroy(); return; }
+    }
     if (this.connections.size >= this.maxConnections) { socket.destroy(); return; }
     this.#attach(socket);
   }
 
   #attach(socket) {
     this.connections.add(socket);
-    const session = { localNonce: randomBytes(32).toString('hex'), remoteNonce: null, authenticated: !this.genesis };
+    const session = {
+      localNonce: randomBytes(32).toString('hex'),
+      remoteNonce: null,
+      authenticated: !this.genesis,
+      rateLimitAbortController: new AbortController(),
+    };
     socket.__zionSession = session;
     socket.setTimeout(15_000, () => socket.destroy());
     socket.setNoDelay(true);
@@ -127,13 +154,19 @@ export class PeerTransport {
       if (pending.length > this.maxFrameBytes) socket.destroy();
     });
     socket.on('error', () => {});
-    socket.on('close', () => this.connections.delete(socket));
+    socket.on('close', () => {
+      session.rateLimitAbortController.abort();
+      this.connections.delete(socket);
+    });
     if (this.genesis) this.#sendHandshake(socket, { type: 'ZION_HANDSHAKE', networkId: this.networkId, protocolMajor: this.genesis.protocolMajor, nonce: session.localNonce });
   }
 
   /** Open an authenticated-message TCP connection and attach the inbound frame parser. */
   async connect(host, port) {
     if (typeof host !== 'string' || !host || !Number.isInteger(port) || port < 1 || port > 65535) throw new TypeError('Invalid peer address');
+    // Outbound dialing is also a network action: do not send even a handshake
+    // while an official node is quarantined or its integrity state is unknown.
+    if (this.networkMode === 'official') await this.integrityGuard.checkHealthy();
     if (!isLoopbackAddress(host) && !this.tlsOptions) throw new Error('Remote peer connections require mutual TLS; plaintext TCP is restricted to loopback IP literals');
     if (this.connections.size >= this.maxConnections) throw new Error('Connection capacity reached');
     const useTls = Boolean(this.tlsOptions);
@@ -165,6 +198,21 @@ export class PeerTransport {
       socket.once('error', onError); socket.once(readyEvent, onReady);
     });
     if (this.connections.size >= this.maxConnections) { socket.destroy(); throw new Error('Connection capacity reached'); }
+    if (this.networkMode === 'official') {
+      try {
+        // Recheck after the asynchronous TCP/TLS handshake. Quarantine may have
+        // started while the dial was pending; in that case never attach/send a
+        // protocol handshake, and ensure a failed socket cannot emit an unhandled error.
+        await this.integrityGuard.checkHealthy();
+        // Synchronous final gate closes the microtask race between the awaited
+        // check and attaching/sending the first protocol handshake.
+        this.integrityGuard.assertHealthy();
+      } catch (error) {
+        socket.on('error', () => {});
+        socket.destroy();
+        throw error;
+      }
+    }
     this.#attach(socket);
     return socket;
   }
@@ -179,7 +227,12 @@ export class PeerTransport {
   }
 
   async #processFrame(socket, frame) {
-    if (this.networkMode === 'official') await this.integrityGuard.checkHealthy();
+    if (this.networkMode === 'official') {
+      await this.integrityGuard.checkHealthy();
+      if (socket.destroyed) return;
+      this.integrityGuard.assertHealthy();
+    }
+    if (socket.destroyed) return;
     let message;
     try { message = JSON.parse(frame.toString('utf8')); }
     catch { socket.destroy(); return; }
@@ -187,13 +240,55 @@ export class PeerTransport {
     if (!checked.ok) { socket.destroy(); return; }
     const trustedByAllowlist = !this.trustedPeerIds || this.trustedPeerIds.has(checked.nodeId);
     // Admission backends may be transactional and remote, so their fresh reads can be async.
-    const controllerAdmitted = this.admissionController
-      ? await this.admissionController.isAdmitted(checked.nodeId)
-      : false;
-    const previouslyAdmitted = this.admittedPeerIds.has(checked.nodeId) || controllerAdmitted === true;
+    // A database outage must close the connection, not leave an unhandled rejection
+    // or fall back to process-local admission state.
+    let controllerAdmitted = false;
+    if (this.admissionController) {
+      try {
+        controllerAdmitted = await this.admissionController.isAdmitted(checked.nodeId);
+      } catch {
+        socket.destroy();
+        return;
+      }
+      // A quarantine can destroy the socket while a remote admission read is pending.
+      // Never continue protocol or admission side effects after that asynchronous boundary.
+      if (socket.destroyed) return;
+      if (this.networkMode === 'official') this.integrityGuard.assertHealthy();
+      // Admission state is a security decision, not a truthy/falsy hint. Reject
+      // malformed backend values so e.g. the string "false" cannot authorize a peer.
+      if (controllerAdmitted !== true && controllerAdmitted !== false) {
+        socket.destroy();
+        return;
+      }
+    }
+    // With a persistent controller, its fresh authoritative result must override
+    // any process-local cache so a released/revoked admission cannot linger.
+    const previouslyAdmitted = this.admissionController
+      ? controllerAdmitted === true
+      : this.admittedPeerIds.has(checked.nodeId);
+    // Recheck every frame, and terminate an established session immediately after
+    // authoritative revocation/release. The initial handshake is exempt so a new
+    // peer can present vouchers; allowlisted bootstrap peers remain trusted.
+    if (this.admissionController && socket.__zionSession?.authenticated &&
+      !trustedByAllowlist && !controllerAdmitted) {
+      socket.destroy();
+      return;
+    }
     if (!trustedByAllowlist && !previouslyAdmitted && !this.admissionController) { socket.destroy(); return; }
     // Admission control applies to handshake frames as well as application traffic.
-    if (!this.rateLimiter.allow(checked.nodeId) || !this.replayGuard.accept(message, this.now())) { socket.destroy(); return; }
+    // Sustained but otherwise valid traffic is throttled, not disconnected. Pause
+    // inbound reads while waiting so TCP applies backpressure to the sender.
+    if (typeof this.rateLimiter.wait === 'function') {
+      socket.pause();
+      let admitted;
+      try { admitted = await this.rateLimiter.wait(checked.nodeId, 1, { signal: socket.__zionSession?.rateLimitAbortController.signal }); }
+      finally { if (!socket.destroyed) socket.resume(); }
+      if (socket.destroyed || admitted !== true) { if (!socket.destroyed) socket.destroy(); return; }
+    } else if (!this.rateLimiter.allow(checked.nodeId)) {
+      socket.destroy();
+      return;
+    }
+    if (!this.replayGuard.accept(message, this.now())) { socket.destroy(); return; }
     let payloadBytes;
     try { payloadBytes = Buffer.byteLength(JSON.stringify(checked.payload), 'utf8'); }
     catch { socket.destroy(); return; }
@@ -207,8 +302,21 @@ export class PeerTransport {
           let admission;
           try { admission = await this.admissionController.admit({ subjectNodeId: checked.nodeId, vouchers: payload.vouchers }); }
           catch { socket.destroy(); return; }
-          const admittedAfterAttempt = await this.admissionController.isAdmitted(checked.nodeId);
-          if (!admission?.ok && !admittedAfterAttempt) { socket.destroy(); return; }
+          if (socket.destroyed) return;
+          if (this.networkMode === 'official') this.integrityGuard.assertHealthy();
+          let admittedAfterAttempt;
+          try {
+            admittedAfterAttempt = await this.admissionController.isAdmitted(checked.nodeId);
+          } catch {
+            socket.destroy();
+            return;
+          }
+          if (socket.destroyed) return;
+          if (this.networkMode === 'official') this.integrityGuard.assertHealthy();
+          // The post-write authoritative read is the final admission decision. A
+          // successful write response alone cannot authorize a session if the row
+          // is already absent/revoked by the time the read completes.
+          if (admittedAfterAttempt !== true) { socket.destroy(); return; }
           this.admittedPeerIds.add(checked.nodeId);
         }
         session.remoteNonce = payload.nonce;
@@ -229,6 +337,8 @@ export class PeerTransport {
       const operation = validateProtocolOperation(checked.payload, { genesis: this.genesis, now: this.now() });
       if (!operation.ok) { socket.destroy(); return; }
     }
+    if (socket.destroyed) return;
+    if (this.networkMode === 'official') this.integrityGuard.assertHealthy();
     try {
       await this.onMessage(Object.freeze({ nodeId: checked.nodeId, payload: checked.payload, envelope: message }), socket);
     } catch {

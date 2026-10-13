@@ -145,8 +145,38 @@ export class PeerAdmissionController {
       issuerNodeIds: [...accepted.keys()] };
   }
 
+  releaseAdmission(subjectNodeId, status = 'released') {
+    const operation = this.queue.then(async () => {
+      if (this.persistenceFailed) return { ok: false, reason: 'admission-state-unavailable' };
+      if (!ID.test(subjectNodeId ?? '') || typeof status !== 'string' || status.length < 1 || status.length > 64) {
+        return { ok: false, reason: 'invalid-input' };
+      }
+      const existing = this.state.admissions.find(record => record.subjectNodeId === subjectNodeId);
+      if (!existing) return { ok: true, released: false, subjectNodeId };
+      // Keep consumed invitation nonces permanently consumed even after revocation.
+      const next = {
+        version: 1,
+        consumed: [...this.state.consumed],
+        admissions: this.state.admissions.filter(record => record.subjectNodeId !== subjectNodeId),
+      };
+      try {
+        await this.stateStore.save(next);
+      } catch (error) {
+        // The save may have reached durable storage despite reporting failure. Stop
+        // subsequent writes and reads from authorizing peers until restart/reconciliation.
+        this.persistenceFailed = true;
+        throw error;
+      }
+      this.state = next;
+      return { ok: true, released: true, subjectNodeId, status };
+    });
+    this.queue = operation.catch(() => {});
+    return operation;
+  }
+
   isAdmitted(subjectNodeId) {
-    return ID.test(subjectNodeId ?? '') && this.state.admissions.some(record => record.subjectNodeId === subjectNodeId);
+    return !this.persistenceFailed && ID.test(subjectNodeId ?? '') &&
+      this.state.admissions.some(record => record.subjectNodeId === subjectNodeId);
   }
 
   snapshot() {

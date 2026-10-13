@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 #[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -61,6 +61,13 @@ impl StorageCore {
     }
 
     pub fn init(&self) -> Result<(), StorageError> {
+        // Reject existing symlink components before create_dir_all can follow
+        // them. This closes the deterministic ancestor-symlink case; because
+        // the rest of the implementation still uses path-based filesystem
+        // calls, it does not eliminate races with a hostile concurrent local
+        // process replacing ancestors. Strong isolation requires descriptor-
+        // relative operations throughout the storage implementation.
+        reject_existing_symlink_ancestors(&self.root)?;
         fs::create_dir_all(&self.root)?;
         let metadata = fs::symlink_metadata(&self.root)?;
         if !metadata.is_dir() || metadata.file_type().is_symlink() { return Err(StorageError::UnsafePath); }
@@ -73,6 +80,28 @@ impl StorageCore {
     }
 
     fn sync_config_locked(&self) -> Result<(), StorageError> {
+        // Every write path (including direct CLI put calls) must reject a
+        // symlinked root; init() is not a prerequisite enforced by the CLI.
+        let root_meta = fs::symlink_metadata(&self.root)?;
+        if !root_meta.is_dir() || root_meta.file_type().is_symlink() {
+            return Err(StorageError::UnsafePath);
+        }
+        // A process may be interrupted after creating the config temp file.
+        // Since this runs under the storage lock, reclaim only our exact temp
+        // namespace and only regular, non-symlink files; preserve unknown entries.
+        for entry in fs::read_dir(&self.root)? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with(".rea-rust-storage-config.tmp-") {
+                continue;
+            }
+            let metadata = fs::symlink_metadata(entry.path())?;
+            if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 256 {
+                return Err(StorageError::UnsafePath);
+            }
+            fs::remove_file(entry.path())?;
+        }
+
         let path = self.root.join(".rea-rust-storage-config");
         let expected = format!("version=1\nmax_chunk_bytes={}\nmax_storage_bytes={}\n", self.max_chunk_bytes, self.max_storage_bytes);
         match fs::symlink_metadata(&path) {
@@ -133,6 +162,8 @@ impl StorageCore {
 
     pub fn get(&self, chunk_id: &str) -> Result<Vec<u8>, StorageError> {
         if !valid_digest(chunk_id) { return Err(StorageError::InvalidChunkId); }
+        // CLI get does not require init(), so enforce the ancestor boundary here too.
+        reject_existing_symlink_ancestors(&self.root)?;
         let path = self.chunk_path(chunk_id);
         // Validate the root and shard before opening a chunk. The final file
         // is also opened with O_NOFOLLOW on Unix below. This is defense in
@@ -168,7 +199,19 @@ impl StorageCore {
         Ok(bytes)
     }
 
-    pub fn used_bytes(&self) -> Result<u64, StorageError> { self.scan_bytes() }
+    pub fn used_bytes(&self) -> Result<u64, StorageError> {
+        // Usage is externally observable accounting, so take the same
+        // cross-process lock as writers to avoid reporting a partial active
+        // .tmp-* write as stable quota usage. Preserve the historical empty
+        // result for a root that has not been created yet.
+        match fs::symlink_metadata(&self.root) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => return Err(StorageError::UnsafePath),
+            Err(error) => return Err(StorageError::Io(error.to_string())),
+        }
+        self.with_lock(|| self.scan_bytes())
+    }
     pub fn quota_bytes(&self) -> u64 { self.max_storage_bytes }
 
     fn put_locked(&self, chunk_id: &str, envelope: &[u8]) -> Result<PutReceipt, StorageError> {
@@ -205,40 +248,84 @@ impl StorageCore {
         let write_result = (|| -> Result<(), StorageError> { file.write_all(envelope)?; file.sync_all()?; Ok(()) })();
         drop(file);
         if let Err(error) = write_result { let _ = fs::remove_file(&temp); return Err(error); }
-        let result = match fs::hard_link(&temp, &target) {
-            Ok(()) => {
-                // The file contents are synced before linking. Sync the containing directory
-                // as well so the new content-addressed name survives a crash on Unix filesystems.
-                #[cfg(unix)]
-                File::open(parent)?.sync_all()?;
-                Ok(PutReceipt { chunk_id: chunk_id.into(), bytes: size, already_present: false })
-            },
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                let existing = self.get(chunk_id)?;
-                if existing == envelope { Ok(PutReceipt { chunk_id: chunk_id.into(), bytes: size, already_present: true }) } else { Err(StorageError::DigestMismatch) }
+        // Keep fallible publication work inside a closure so every error path
+        // reaches the temporary-file cleanup below. Using ? directly in the
+        // match would return from put_locked and strand .tmp-* files when the
+        // directory fsync or AlreadyExists read-back fails.
+        let result = (|| -> Result<PutReceipt, StorageError> {
+            match fs::hard_link(&temp, &target) {
+                Ok(()) => {
+                    // The file contents are synced before linking. Sync the containing directory
+                    // as well so the new content-addressed name survives a crash on Unix filesystems.
+                    #[cfg(unix)]
+                    File::open(parent)?.sync_all()?;
+                    Ok(PutReceipt { chunk_id: chunk_id.into(), bytes: size, already_present: false })
+                },
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let existing = self.get(chunk_id)?;
+                    if existing == envelope { Ok(PutReceipt { chunk_id: chunk_id.into(), bytes: size, already_present: true }) } else { Err(StorageError::DigestMismatch) }
+                }
+                Err(error) => Err(StorageError::Io(error.to_string())),
             }
-            Err(error) => Err(StorageError::Io(error.to_string())),
-        };
-        let _ = fs::remove_file(temp);
+        })();
+        let _ = fs::remove_file(&temp);
         result
     }
 
     fn scan_bytes(&self) -> Result<u64, StorageError> {
         let mut total = 0u64;
-        if !self.root.exists() { return Ok(0); }
+        match fs::symlink_metadata(&self.root) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => return Err(StorageError::UnsafePath),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(error) => return Err(StorageError::Io(error.to_string())),
+        }
         for shard in fs::read_dir(&self.root)? {
             let shard = shard?;
             let name = shard.file_name().to_string_lossy().into_owned();
-            // Only the active lock directory is metadata. Silently skipping every
-            // dotfile would let unexpected root entries evade quota accounting.
-            if name == ".rea-rust-storage-lock" || name == ".rea-rust-storage-config" { continue; }
+            // Only the active lock directory and the validated config file are
+            // metadata. Interrupted config writes are accounted until init/put
+            // can reclaim them under the lock; unknown root entries still fail closed.
+            if name == ".rea-rust-storage-lock" { 
+                let metadata = fs::symlink_metadata(shard.path())?;
+                if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                    return Err(StorageError::UnsafePath);
+                }
+                continue;
+            }
+            if name == ".rea-rust-storage-config" {
+                let metadata = fs::symlink_metadata(shard.path())?;
+                if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 256 {
+                    return Err(StorageError::UnsafePath);
+                }
+                continue;
+            }
+            if name.starts_with(".rea-rust-storage-config.tmp-") {
+                let metadata = fs::symlink_metadata(shard.path())?;
+                if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 256 {
+                    return Err(StorageError::UnsafePath);
+                }
+                total = total.checked_add(metadata.len()).ok_or(StorageError::InvalidConfiguration)?;
+                continue;
+            }
             let meta = fs::symlink_metadata(shard.path())?;
             if !meta.is_dir() || meta.file_type().is_symlink() || name.len() != 2 || !name.bytes().all(is_hex) { return Err(StorageError::UnsafePath); }
             for entry in fs::read_dir(shard.path())? {
                 let entry = entry?;
                 let file_name = entry.file_name().to_string_lossy().into_owned();
                 let file_meta = fs::symlink_metadata(entry.path())?;
-                if file_name.starts_with(".tmp-") { continue; }
+                // A crash can leave a partially or fully written temporary chunk
+                // behind. Count regular temporary files against quota rather than
+                // ignoring them: otherwise repeated interrupted writes can consume
+                // unaccounted disk space. `.tmp-` entries are only created while holding
+                // the storage lock, so a scan should not see an active writer's temp.
+                if file_name.starts_with(".tmp-") {
+                    if !file_meta.is_file() || file_meta.file_type().is_symlink() {
+                        return Err(StorageError::UnsafePath);
+                    }
+                    total = total.checked_add(file_meta.len()).ok_or(StorageError::InvalidConfiguration)?;
+                    continue;
+                }
                 if file_name.len() != 62 || !file_name.bytes().all(is_hex) || !file_meta.is_file() || file_meta.file_type().is_symlink() {
                     return Err(StorageError::UnsafePath);
                 }
@@ -251,6 +338,13 @@ impl StorageCore {
     fn chunk_path(&self, id: &str) -> PathBuf { self.root.join(&id[..2]).join(&id[2..]) }
 
     fn with_lock<T>(&self, operation: impl FnOnce() -> Result<T, StorageError>) -> Result<T, StorageError> {
+        // Validate every existing component before creating lock metadata. This
+        // also protects direct CLI put/usage calls that do not invoke init().
+        reject_existing_symlink_ancestors(&self.root)?;
+        let root_meta = fs::symlink_metadata(&self.root)?;
+        if !root_meta.is_dir() || root_meta.file_type().is_symlink() {
+            return Err(StorageError::UnsafePath);
+        }
         let lock = self.root.join(".rea-rust-storage-lock");
         let started = Instant::now();
         let owner = format!("{}:{}\n", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos());
@@ -265,7 +359,11 @@ impl StorageCore {
                         Ok(())
                     })();
                     if let Err(error) = owner_result {
-                        let _ = fs::remove_dir_all(&lock);
+                        // Do not recursively remove `lock` here: after a stale-lock
+                        // rename, another process may already have created a new lock
+                        // at the same pathname. Deleting by pathname could remove that
+                        // other process's lock. A metadata-less lock is reaped only
+                        // after the conservative stale age in `reap_stale_lock`.
                         return Err(error);
                     }
                     break;
@@ -279,11 +377,23 @@ impl StorageCore {
             }
         }
         let result = operation();
-        // Remove only the lock that still carries our exact owner token.
-        if fs::symlink_metadata(&lock).map(|m| m.is_dir() && !m.file_type().is_symlink()).unwrap_or(false) {
-            let owner_path = lock.join("owner");
-            if fs::read_to_string(&owner_path).ok().as_deref() == Some(owner.as_str()) {
-                let _ = fs::remove_file(owner_path);
+        // The live owner PID prevents cooperative stale-lock reapers from
+        // reclaiming this directory. Do not rename the shared lock path during
+        // release: a replacement owner could otherwise be moved out from under
+        // the process that just acquired it. Verify the exact owner token and
+        // remove only our own empty lock directory.
+        let lock_is_directory = fs::symlink_metadata(&lock)
+            .map(|m| m.is_dir() && !m.file_type().is_symlink())
+            .unwrap_or(false);
+        let owner_path = lock.join("owner");
+        let owner_is_regular = fs::symlink_metadata(&owner_path)
+            .map(|m| m.is_file() && !m.file_type().is_symlink() && m.len() <= 128)
+            .unwrap_or(false);
+        if lock_is_directory
+            && owner_is_regular
+            && fs::read_to_string(&owner_path).ok().as_deref() == Some(owner.as_str())
+        {
+            if fs::remove_file(&owner_path).is_ok() {
                 let _ = fs::remove_dir(&lock);
             }
         }
@@ -299,24 +409,60 @@ impl StorageCore {
         let owner_path = lock.join("owner");
         let owner = fs::symlink_metadata(&owner_path).ok().filter(|m| m.is_file() && !m.file_type().is_symlink() && m.len() <= 128)
             .and_then(|_| fs::read_to_string(&owner_path).ok());
-        let stale = if let Some(owner) = owner {
-            let pid = owner.split(':').next().and_then(|value| value.parse::<i32>().ok());
-            match pid {
-                Some(pid) if pid > 0 => {
-                    // A live or permission-protected PID is never reaped. ESRCH is the
-                    // only positive evidence that the recorded owner process is gone.
-                    let rc = unsafe { libc::kill(pid, 0) };
-                    rc != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
-                }
-                _ => metadata.modified().ok().and_then(|time| time.elapsed().ok()).map(|age| age >= Duration::from_secs(30)).unwrap_or(false),
+        // Only trust a fully formed owner token. A valid PID with a malformed
+        // nonce must not be enough to reclaim a lock immediately: corruption or
+        // partial writes fall back to the conservative metadata-age policy.
+        let parsed_pid = owner.as_deref().and_then(|value| {
+            let token = value.strip_suffix('\n')?;
+            let (pid, nonce) = token.split_once(':')?;
+            if pid.is_empty()
+                || nonce.is_empty()
+                || !pid.bytes().all(|byte| byte.is_ascii_digit())
+                || !nonce.bytes().all(|byte| byte.is_ascii_digit())
+                || token.matches(':').count() != 1
+            {
+                return None;
             }
-        } else {
-            metadata.modified().ok().and_then(|time| time.elapsed().ok()).map(|age| age >= Duration::from_secs(30)).unwrap_or(false)
+            pid.parse::<i32>().ok().filter(|pid| *pid > 0)
+        });
+        let stale = match parsed_pid {
+            Some(pid) => {
+                // A live or permission-protected PID is never reaped. ESRCH is the
+                // only positive evidence that the recorded owner process is gone.
+                let rc = unsafe { libc::kill(pid, 0) };
+                rc != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+            }
+            None => metadata.modified().ok().and_then(|time| time.elapsed().ok())
+                .map(|age| age >= Duration::from_secs(30)).unwrap_or(false),
         };
         if stale {
             let suffix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
             let quarantine = self.root.join(format!(".rea-rust-storage-lock.stale-{}-{suffix}", std::process::id()));
-            if fs::rename(lock, &quarantine).is_ok() { let _ = fs::remove_dir_all(quarantine); }
+            if fs::rename(lock, &quarantine).is_ok() {
+                // The lock pathname may have been replaced after the stale check but
+                // before rename. Verify the moved directory still matches the object
+                // we inspected; never recursively delete an unverified replacement.
+                let moved = fs::symlink_metadata(&quarantine).ok();
+                let same_directory = moved.as_ref().map(|m| {
+                    m.is_dir()
+                        && !m.file_type().is_symlink()
+                        && m.dev() == metadata.dev()
+                        && m.ino() == metadata.ino()
+                }).unwrap_or(false);
+                let moved_owner = fs::symlink_metadata(quarantine.join("owner")).ok()
+                    .filter(|m| m.is_file() && !m.file_type().is_symlink() && m.len() <= 128)
+                    .and_then(|_| fs::read_to_string(quarantine.join("owner")).ok());
+                if same_directory && moved_owner == owner {
+                    let _ = fs::remove_dir_all(quarantine);
+                } else {
+                    // Restore only if no other process has already established a lock
+                    // at the original path. If occupied, leave quarantine untouched:
+                    // preserving the moved data is safer than deleting another owner's lock.
+                    if !lock.exists() {
+                        let _ = fs::rename(&quarantine, lock);
+                    }
+                }
+            }
         }
     }
 
@@ -324,6 +470,36 @@ impl StorageCore {
     fn reap_stale_lock(&self, _lock: &Path) {
         // Without a portable process-liveness primitive, retain the lock and fail closed.
     }
+}
+
+/// Reject symlinks in every existing component leading to a storage root.
+/// Missing suffix components are fine: create_dir_all will create them only
+/// after all existing prefixes have been checked.
+fn reject_existing_symlink_ancestors(root: &Path) -> Result<(), StorageError> {
+    let absolute = if root.is_absolute() {
+        root.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(root)
+    };
+    let mut current = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => current.push(prefix.as_os_str()),
+            std::path::Component::RootDir => current.push(component.as_os_str()),
+            std::path::Component::CurDir => continue,
+            std::path::Component::ParentDir => current.push(component.as_os_str()),
+            std::path::Component::Normal(part) => current.push(part),
+        }
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(StorageError::UnsafePath);
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(StorageError::Io(error.to_string())),
+        }
+    }
+    Ok(())
 }
 
 fn valid_digest(value: &str) -> bool { value.len() == 64 && value.bytes().all(is_hex) }
@@ -343,11 +519,150 @@ mod tests {
     fn id(bytes: &[u8]) -> String { hex(&Sha256::digest(bytes)) }
 
     #[test]
+    fn interrupted_config_temp_is_accounted_until_init_reclaims_it() {
+        let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
+        let stale = root.join(".rea-rust-storage-config.tmp-123-456");
+        fs::write(&stale, b"partial config").unwrap();
+        let store = StorageCore::new(&root, 1024, 2048).unwrap();
+
+        assert_eq!(store.used_bytes().unwrap(), b"partial config".len() as u64);
+        store.init().unwrap();
+        assert!(!stale.exists(), "a stale config temp should be reclaimed under the lock");
+        assert_eq!(store.used_bytes().unwrap(), 0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn rejects_chunk_limits_above_the_supported_ceiling() {
         assert!(matches!(
             StorageCore::new(temp_root(), MAX_CHUNK_BYTES + 1, MAX_CHUNK_BYTES + 1),
             Err(StorageError::InvalidConfiguration)
         ));
+    }
+
+    #[test]
+    fn lock_release_preserves_a_replacement_owned_by_another_process() {
+        let root = temp_root();
+        let store = StorageCore::new(&root, 1024, 2048).unwrap();
+        fs::create_dir_all(&root).unwrap();
+        let lock = root.join(".rea-rust-storage-lock");
+        let displaced = root.join(".test-displaced-lock");
+        let result = store.with_lock(|| {
+            // Simulate another actor moving our lock and establishing a new one
+            // before this process reaches its release path.
+            fs::rename(&lock, &displaced)?;
+            fs::create_dir(&lock)?;
+            fs::write(lock.join("owner"), "another-owner:replacement\n")?;
+            Ok(())
+        });
+        assert!(result.is_ok());
+        assert_eq!(
+            fs::read_to_string(lock.join("owner")).unwrap(),
+            "another-owner:replacement\n",
+            "release must not delete or strand a replacement lock with a different owner"
+        );
+        assert!(displaced.join("owner").exists(), "the displaced original must be preserved");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn lock_release_runs_when_the_protected_operation_fails() {
+        let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
+        let store = StorageCore::new(&root, 1024, 2048).unwrap();
+        let result: Result<(), StorageError> =
+            store.with_lock(|| Err(StorageError::UnsafePath));
+        assert!(matches!(result, Err(StorageError::UnsafePath)));
+        assert!(
+            !root.join(".rea-rust-storage-lock").exists(),
+            "a failed operation must not leave its successfully acquired lock behind"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlinked_root_for_put_and_quota_scan_without_writing_through_it() {
+        use std::os::unix::fs::symlink;
+        let root = temp_root();
+        let outside = temp_root().with_extension("outside");
+        fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, &root).unwrap();
+        let store = StorageCore::new(&root, 1024, 2048).unwrap();
+        let bytes = envelope(9);
+        let digest = id(&bytes);
+
+        assert!(matches!(store.put(&digest, &bytes), Err(StorageError::UnsafePath)));
+        assert!(matches!(store.used_bytes(), Err(StorageError::UnsafePath)));
+        assert!(!outside.join(".rea-rust-storage-config").exists(),
+            "a direct put must not write configuration through a symlinked root");
+        assert!(!outside.join(".rea-rust-storage-lock").exists(),
+            "a direct put must reject a symlinked root before creating lock metadata");
+
+        let _ = fs::remove_file(&root);
+        let _ = fs::remove_dir_all(outside);
+    }
+
+
+    #[cfg(unix)]
+    #[test]
+    fn init_rejects_symlinked_ancestor_before_creating_storage_root() {
+        use std::os::unix::fs::symlink;
+        let base = temp_root();
+        let outside = temp_root().with_extension("outside-ancestor");
+        fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, base.with_extension("ancestor-link")).unwrap();
+        let linked_ancestor = base.with_extension("ancestor-link");
+        let root = linked_ancestor.join("nested").join("store");
+        let store = StorageCore::new(&root, 1024, 2048).unwrap();
+
+        assert!(matches!(store.init(), Err(StorageError::UnsafePath)));
+        assert!(!outside.join("nested").exists(),
+            "init must not create the storage tree through an existing symlink ancestor");
+
+        let _ = fs::remove_file(&linked_ancestor);
+        let _ = fs::remove_dir_all(outside);
+    }
+
+
+    #[cfg(unix)]
+    #[test]
+    fn direct_operations_reject_symlinked_ancestor_without_writing_through_it() {
+        use std::os::unix::fs::symlink;
+        let base = temp_root();
+        let outside = temp_root().with_extension("outside-direct-ancestor");
+        fs::create_dir_all(&outside).unwrap();
+        let linked_ancestor = base.with_extension("direct-ancestor-link");
+        symlink(&outside, &linked_ancestor).unwrap();
+        let root = linked_ancestor.join("nested").join("store");
+        let store = StorageCore::new(&root, 1024, 2048).unwrap();
+        let bytes = envelope(19);
+        let digest = id(&bytes);
+
+        assert!(matches!(store.put(&digest, &bytes), Err(StorageError::UnsafePath)));
+        assert!(matches!(store.get(&digest), Err(StorageError::UnsafePath)));
+        assert!(!outside.join("nested").exists(),
+            "direct operations must not create or access a storage tree through a symlinked ancestor");
+
+        let _ = fs::remove_file(&linked_ancestor);
+        let _ = fs::remove_dir_all(outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quota_scan_rejects_symlinked_config_file() {
+        use std::os::unix::fs::symlink;
+        let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
+        let outside = temp_root().with_extension("config");
+        fs::write(&outside, b"version=1\nmax_chunk_bytes=1024\nmax_storage_bytes=2048\n").unwrap();
+        symlink(&outside, root.join(".rea-rust-storage-config")).unwrap();
+        let store = StorageCore::new(&root, 1024, 2048).unwrap();
+
+        assert!(matches!(store.used_bytes(), Err(StorageError::UnsafePath)));
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_file(outside);
     }
 
     #[cfg(unix)]
@@ -361,6 +676,23 @@ mod tests {
         let store = StorageCore::new(&root, 1024, 2048).unwrap();
         store.reap_stale_lock(&lock);
         assert!(!lock.exists(), "a lock owned by a definitively dead process should be recoverable");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn malformed_lock_owner_token_is_not_reaped_just_from_its_pid() {
+        let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
+        let lock = root.join(".rea-rust-storage-lock");
+        fs::create_dir(&lock).unwrap();
+        // The PID resembles a valid, likely-dead PID, but the nonce is malformed.
+        // Corrupt owner metadata must use the age-based fallback instead.
+        fs::write(lock.join("owner"), format!("{}:not-a-nonce\n", i32::MAX)).unwrap();
+        let store = StorageCore::new(&root, 1024, 2048).unwrap();
+
+        store.reap_stale_lock(&lock);
+        assert!(lock.exists(), "malformed owner metadata must not trigger immediate lock reclamation");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -383,6 +715,18 @@ mod tests {
         store.init().unwrap();
         fs::write(root.join(".unexpected-data"), b"hidden data").unwrap();
         assert!(matches!(store.used_bytes(), Err(StorageError::UnsafePath)));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn counts_abandoned_temporary_chunks_against_quota() {
+        let root = temp_root();
+        let store = StorageCore::new(&root, 1024, 2048).unwrap();
+        store.init().unwrap();
+        let shard = root.join("ab");
+        fs::create_dir_all(&shard).unwrap();
+        fs::write(shard.join(".tmp-interrupted-write"), vec![7u8; 137]).unwrap();
+        assert_eq!(store.used_bytes().unwrap(), 137);
         let _ = fs::remove_dir_all(root);
     }
 

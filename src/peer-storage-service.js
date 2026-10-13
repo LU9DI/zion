@@ -380,7 +380,7 @@ export class PeerStorageService {
       const transferId = randomBytes(16).toString('hex');
       const partCount = Math.ceil(bytes.length / this.partBytes);
       for (let partIndex = 0; partIndex < partCount; partIndex++) {
-        transport.send(socket, { type: 'CHUNK_DATA', transferId, requestId: payload.requestId, chunkId: payload.chunkId, totalBytes: bytes.length,
+        await transport.send(socket, { type: 'CHUNK_DATA', transferId, requestId: payload.requestId, chunkId: payload.chunkId, totalBytes: bytes.length,
           partIndex, partCount, data: bytes.subarray(partIndex * this.partBytes, (partIndex + 1) * this.partBytes).toString('base64') });
       }
       return;
@@ -409,6 +409,15 @@ export class PeerStorageService {
         if (!requestCheck.ok) { const error = new Error(`Invalid or expired store request: ${requestCheck.reason}`); error.code = 'REA_INVALID_STORE_REQUEST'; throw error; }
       }
       transfer = { nodeId, chunkId: payload.chunkId, requestId: response ? payload.requestId : undefined, totalBytes: payload.totalBytes, partCount: payload.partCount, parts: new Array(payload.partCount), received: 0, bytes: 0, expiresAt: this.now() + this.transferTtlMs, request: payload.request };
+      // Expire incomplete transfers even if the peer goes silent. The timer is
+      // unref'ed so an abandoned transfer cannot keep an otherwise idle process alive.
+      transfer.expiryTimer = setTimeout(() => {
+        if (this.transfers.get(transferKey) !== transfer) return;
+        this.transfers.delete(transferKey);
+        this.bufferedBytes -= transfer.totalBytes;
+        for (const part of transfer.parts) if (Buffer.isBuffer(part)) part.fill(0);
+      }, this.transferTtlMs);
+      transfer.expiryTimer.unref?.();
       this.transfers.set(transferKey, transfer); this.bufferedBytes += payload.totalBytes;
     } else if (transfer.chunkId !== payload.chunkId || transfer.totalBytes !== payload.totalBytes || transfer.partCount !== payload.partCount || (response && transfer.requestId !== payload.requestId)) throw new Error('Chunk transfer metadata changed');
     if (transfer.parts[payload.partIndex]) throw new Error('Duplicate chunk transfer segment');
@@ -416,10 +425,18 @@ export class PeerStorageService {
     if (part.length !== expectedLen) throw new Error('Chunk segment has unexpected length');
     transfer.parts[payload.partIndex] = part; transfer.received++; transfer.bytes += part.length;
     if (transfer.received !== transfer.partCount) return;
-    this.transfers.delete(transferKey); this.bufferedBytes -= transfer.totalBytes;
+    this.transfers.delete(transferKey); clearTimeout(transfer.expiryTimer); this.bufferedBytes -= transfer.totalBytes;
     const complete = Buffer.concat(transfer.parts, transfer.totalBytes);
-    if (complete.length !== transfer.totalBytes || createHash('sha256').update(complete).digest('hex') !== transfer.chunkId) throw new Error('Transferred chunk digest mismatch');
-    if (response) {
+    // Buffer.concat copies the bytes; wipe the per-segment allocations immediately
+    // so successful and digest-failing transfers do not retain duplicate plaintext
+    // buffers until garbage collection.
+    for (const part of transfer.parts) if (Buffer.isBuffer(part)) part.fill(0);
+    if (complete.length !== transfer.totalBytes || createHash('sha256').update(complete).digest('hex') !== transfer.chunkId) {
+      complete.fill(0);
+      throw new Error('Transferred chunk digest mismatch');
+    }
+    try {
+      if (response) {
       const key = `${nodeId}:${transfer.requestId}`;
       const pending = this.pendingGets.get(key);
       if (!pending) throw new Error('Unsolicited chunk response');
@@ -428,7 +445,7 @@ export class PeerStorageService {
     }
     const admission = await this.abuseGuard?.reserve(nodeId, complete.length);
     if (admission && !admission.ok) {
-      transport.send(socket, { type: 'STORE_REJECTED', requestId: transfer.request?.requestId, chunkId: transfer.chunkId, code: 'FAIR_USE_LIMIT', availableBytes: 0 });
+      await transport.send(socket, { type: 'STORE_REJECTED', requestId: transfer.request?.requestId, chunkId: transfer.chunkId, code: 'FAIR_USE_LIMIT', availableBytes: 0 });
       return;
     }
     let result;
@@ -436,7 +453,7 @@ export class PeerStorageService {
     catch (error) {
       await admission?.release();
       if (error?.code === 'REA_CAPACITY_EXHAUSTED') {
-        transport.send(socket, { type: 'STORE_REJECTED', requestId: transfer.request?.requestId, chunkId: transfer.chunkId, code: 'CAPACITY_EXHAUSTED', availableBytes: error.availableBytes ?? 0 });
+        await transport.send(socket, { type: 'STORE_REJECTED', requestId: transfer.request?.requestId, chunkId: transfer.chunkId, code: 'CAPACITY_EXHAUSTED', availableBytes: error.availableBytes ?? 0 });
         return;
       }
       throw error;
@@ -444,6 +461,7 @@ export class PeerStorageService {
     // A successful put() result is not sufficient evidence for a receipt: adapters and
     // filesystems can fail after reporting success. Read back the committed object and
     // verify both its content address and byte count before granting credit or signing.
+    let persisted;
     try {
       // Both OpaqueReplicaStore ({ id }) and the optional RustStorageAdapter
       // ({ chunkId }) implement the same persistence contract.
@@ -452,7 +470,7 @@ export class PeerStorageService {
           typeof this.store.get !== 'function') {
         throw new Error('Storage adapter did not provide verifiable persistence evidence');
       }
-      const persisted = await this.store.get(transfer.chunkId);
+      persisted = await this.store.get(transfer.chunkId);
       if (!Buffer.isBuffer(persisted) || persisted.length !== complete.length ||
           createHash('sha256').update(persisted).digest('hex') !== transfer.chunkId ||
           !persisted.equals(complete)) {
@@ -468,9 +486,16 @@ export class PeerStorageService {
     } catch (error) {
       await admission?.release();
       throw error;
+    } finally {
+      if (Buffer.isBuffer(persisted)) persisted.fill(0);
     }
-    await this.#assertIntegrity();
-    transport.send(socket, receipt.payload);
+      await this.#assertIntegrity();
+      await transport.send(socket, receipt.payload);
+    } finally {
+      // The assembled copy contains the full encrypted envelope. Its consumers
+      // have completed by this point, so do not retain it through Buffer pooling/GC.
+      complete.fill(0);
+    }
   }
   /** Refresh contribution credit from a fresh local integrity audit, never from peer claims. */
   async refreshVerifiedContribution(fairSharePolicy, { maxEntries = 10_000, batchSize = 128, shouldContinue = null, checkpointPath = null } = {}) {
@@ -498,6 +523,7 @@ export class PeerStorageService {
   #enterQuarantine(reason = 'Zion integrity quarantine') {
     // Shed volatile data immediately; never delete persisted user chunks.
     for (const transfer of this.transfers.values()) {
+      clearTimeout(transfer.expiryTimer);
       for (const part of transfer.parts ?? []) if (Buffer.isBuffer(part)) part.fill(0);
     }
     this.transfers.clear();
@@ -519,7 +545,10 @@ export class PeerStorageService {
 
   #prune() {
     const now = this.now();
-    for (const [key, transfer] of this.transfers) if (transfer.expiresAt <= now) { this.transfers.delete(key); this.bufferedBytes -= transfer.totalBytes; }
+    for (const [key, transfer] of this.transfers) if (transfer.expiresAt <= now) {
+      this.transfers.delete(key); clearTimeout(transfer.expiryTimer); this.bufferedBytes -= transfer.totalBytes;
+      for (const part of transfer.parts) if (Buffer.isBuffer(part)) part.fill(0);
+    }
   }
 
   /** Fetch one chunk from a specific authenticated peer; rejects on timeout or integrity failure. */
@@ -531,16 +560,40 @@ export class PeerStorageService {
     const requestId = randomBytes(16).toString('hex');
     const key = `${peerNodeId}:${requestId}`;
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => { this.pendingGets.delete(key); reject(new Error('Chunk fetch timed out')); }, timeoutMs);
+      const cleanup = () => {
+        clearTimeout(timeout);
+        socket.off?.('close', onClose);
+        socket.off?.('error', onError);
+      };
+      const finishReject = error => {
+        if (!this.pendingGets.has(key)) return;
+        this.pendingGets.delete(key);
+        cleanup();
+        reject(error);
+      };
+      const onClose = () => finishReject(new Error('Peer socket closed during chunk fetch'));
+      const onError = error => finishReject(new Error(`Peer socket failed during chunk fetch: ${error?.message ?? 'socket error'}`));
+      const timeout = setTimeout(() => finishReject(new Error('Chunk fetch timed out')), timeoutMs);
       timeout.unref?.();
-      this.pendingGets.set(key, { chunkId, resolve, reject, timeout });
-      try { transport.send(socket, { type: 'GET_CHUNK', requestId, chunkId }); }
-      catch (error) { clearTimeout(timeout); this.pendingGets.delete(key); reject(error); }
+      this.pendingGets.set(key, { chunkId, resolve: value => { cleanup(); resolve(value); }, reject: finishReject, timeout, cleanup });
+      socket.once?.('close', onClose);
+      socket.once?.('error', onError);
+      // A socket may close between the initial writable check and listener setup.
+      if (socket.destroyed || !socket.writable) {
+        finishReject(new Error('Peer socket closed before chunk request was sent'));
+        return;
+      }
+      try {
+        Promise.resolve(transport.send(socket, { type: 'GET_CHUNK', requestId, chunkId })).catch(finishReject);
+      } catch (error) { finishReject(error); }
     });
   }
 
   closePendingGets(reason = 'Storage service closed') {
-    for (const pending of this.pendingGets.values()) { clearTimeout(pending.timeout); pending.reject(new Error(reason)); }
+    for (const pending of this.pendingGets.values()) {
+      pending.cleanup?.();
+      pending.reject(new Error(reason));
+    }
     this.pendingGets.clear();
   }
 
@@ -554,7 +607,7 @@ export class PeerStorageService {
     const transferId = randomBytes(16).toString('hex'); const partCount = Math.ceil(envelope.length / this.partBytes);
     for (let partIndex = 0; partIndex < partCount; partIndex++) {
       const data = envelope.subarray(partIndex * this.partBytes, (partIndex + 1) * this.partBytes).toString('base64');
-      transport.send(socket, { type: 'STORE_CHUNK', transferId, chunkId, totalBytes: envelope.length, partIndex, partCount, data, ...(partIndex === 0 ? { request } : {}) });
+      await transport.send(socket, { type: 'STORE_CHUNK', transferId, chunkId, totalBytes: envelope.length, partIndex, partCount, data, ...(partIndex === 0 ? { request } : {}) });
     }
     return Object.freeze({ chunkId, bytes: envelope.length, request, transferId });
   }

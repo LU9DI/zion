@@ -37,14 +37,15 @@ export class PostgresPeerAdmissionStore {
     }
     this.pool = pool;
     this.maxTransactionRetries = maxTransactionRetries;
-    this.commitOutcomeUnknown = false;
+    this.unknownCommitSubjects = new Map();
   }
 
-  async #transaction(work) {
+  async #transaction(work, subjectNodeId) {
     for (let attempt = 0; ; attempt++) {
       const client = await this.pool.connect();
       let began = false;
       let commitStarted = false;
+      let releaseError;
       try {
         await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
         began = true;
@@ -56,24 +57,42 @@ export class PostgresPeerAdmissionStore {
         if (commitStarted) {
           // COMMIT may have reached PostgreSQL even when the connection failed.
           // Never replay this transaction automatically; reconcile from authoritative state.
-          this.commitOutcomeUnknown = true;
+          // Destroy the client rather than returning a session with unknown transaction state.
+          releaseError = error;
+          if (typeof subjectNodeId === 'string' && NODE_ID.test(subjectNodeId)) {
+            // A unique marker prevents an older in-flight read from clearing a newer
+            // ambiguous outcome for the same subject.
+            this.unknownCommitSubjects.set(subjectNodeId, {});
+          }
           throw Object.assign(new Error('PostgreSQL commit outcome is unknown; reconcile authoritative state before retrying'), {
             code: 'ZION_ADMISSION_COMMIT_OUTCOME_UNKNOWN', cause: error,
           });
         }
-        if (began) {
-          try { await client.query('ROLLBACK'); } catch { /* preserve original error */ }
+        if (!began) {
+          // BEGIN is fixed SQL; a failure here is treated as a potentially broken
+          // connection and must not return the client to the pool.
+          releaseError = error;
+        } else {
+          try {
+            await client.query('ROLLBACK');
+          } catch (rollbackError) {
+            // A failed rollback leaves transaction/session state uncertain. Preserve
+            // the original operation error, but discard the unsafe pooled connection.
+            releaseError = rollbackError;
+          }
         }
-        if (RETRYABLE.has(error?.code) && attempt < this.maxTransactionRetries) continue;
+        if (!releaseError && RETRYABLE.has(error?.code) && attempt < this.maxTransactionRetries) continue;
         throw error;
       } finally {
-        client.release();
+        // node-postgres destroys a client released with an error instead of pooling
+        // a connection whose transaction state may be uncertain.
+        client.release(releaseError);
       }
     }
   }
 
   async commitAdmission(input) {
-    if (this.commitOutcomeUnknown) return { ok: false, reason: 'admission-state-unavailable' };
+    if (this.unknownCommitSubjects.has(input?.subjectNodeId)) return { ok: false, reason: 'admission-state-unavailable' };
     if (!validateInput(input)) return { ok: false, reason: 'invalid-input' };
     try {
       return await this.#transaction(async client => {
@@ -134,7 +153,7 @@ export class PostgresPeerAdmissionStore {
           trustedIntroductions: input.issuerNodeIds.length,
           issuerNodeIds: [...input.issuerNodeIds],
         };
-      });
+      }, input.subjectNodeId);
     } catch (error) {
       if (error?.code === '23505') {
         if (error.constraint === 'peer_admissions_pkey') {
@@ -153,8 +172,219 @@ export class PostgresPeerAdmissionStore {
     }
   }
 
+  /**
+   * Authoritative read used by the transport after admission and to reconcile an
+   * ambiguous COMMIT. This remains available even when writes are fail-closed.
+   */
+  async isAdmitted(subjectNodeId) {
+    if (!NODE_ID.test(subjectNodeId ?? '')) return false;
+    // Capture the exact unresolved outcome before connecting. A read that began
+    // before a later ambiguous COMMIT must never clear that newer marker.
+    const unresolvedMarker = this.unknownCommitSubjects.get(subjectNodeId);
+    const client = await this.pool.connect();
+    let releaseError;
+    let reconciliationTransaction = false;
+    let commitStarted = false;
+    try {
+      // An ambiguous COMMIT may still be resolving on the server. If this subject
+      // is marked, take the same capacity-row lock used by every admission write
+      // before reading its row. Under READ COMMITTED, the following SELECT sees
+      // the state after the competing transaction commits or rolls back.
+      if (unresolvedMarker !== undefined) {
+        await client.query('BEGIN');
+        reconciliationTransaction = true;
+      }
+      const roleResult = await client.query('SELECT pg_is_in_recovery() AS in_recovery');
+      if (roleResult.rows?.[0]?.in_recovery !== false) {
+        throw Object.assign(new Error('Authoritative admission reconciliation requires a writable PostgreSQL primary'), {
+          code: 'ZION_ADMISSION_PRIMARY_REQUIRED',
+        });
+      }
+      if (unresolvedMarker !== undefined) {
+        const capacityResult = await client.query(
+          'SELECT active_reservations FROM peer_admission_capacity WHERE singleton = true FOR UPDATE',
+        );
+        if (!capacityResult.rows?.[0]) {
+          throw Object.assign(new Error('Admission capacity row missing during ambiguous-COMMIT reconciliation'), {
+            code: 'ZION_ADMISSION_CONFIG_MISSING',
+          });
+        }
+      }
+      const result = await client.query(
+        "SELECT 1 AS admitted FROM peer_admissions WHERE subject_node_id = $1 AND status = 'active' LIMIT 1",
+        [subjectNodeId],
+      );
+      const admitted = Boolean(result.rows?.length);
+      if (unresolvedMarker !== undefined) {
+        // Do not clear the marker until the reconciliation transaction releases
+        // its lock successfully; a failed COMMIT leaves the outcome unresolved.
+        commitStarted = true;
+        await client.query('COMMIT');
+        reconciliationTransaction = false;
+      }
+      if (unresolvedMarker !== undefined &&
+        this.unknownCommitSubjects.get(subjectNodeId) === unresolvedMarker) {
+        this.unknownCommitSubjects.delete(subjectNodeId);
+      }
+      return admitted;
+    } catch (error) {
+      // Never attempt rollback after an ambiguous reconciliation COMMIT. For
+      // earlier failures, attempt rollback but discard the client regardless.
+      if (reconciliationTransaction && !commitStarted) {
+        try { await client.query('ROLLBACK'); } catch (rollbackError) { releaseError = rollbackError; }
+      }
+      releaseError ??= error;
+      throw error;
+    } finally {
+      client.release(releaseError);
+    }
+  }
+
+  /**
+   * Fail-closed startup preflight. Locks the policy/capacity rows in the same
+   * order as admission transactions and verifies the reservation counter against
+   * authoritative active rows before an official listener is opened.
+   */
+  async verifyPersistentState() {
+    const client = await this.pool.connect();
+    let began = false;
+    let commitStarted = false;
+    let releaseError;
+    try {
+      await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+      began = true;
+      const roleResult = await client.query('SELECT pg_is_in_recovery() AS in_recovery');
+      if (roleResult.rows?.[0]?.in_recovery !== false) {
+        throw Object.assign(new Error('Official peer admission requires a writable PostgreSQL primary'), {
+          code: 'ZION_ADMISSION_PRIMARY_REQUIRED',
+        });
+      }
+      const policyResult = await client.query(
+        'SELECT max_active_peers, max_admissions_per_issuer, min_storage_headroom_ratio, policy_version FROM peer_admission_policy WHERE singleton = true FOR UPDATE',
+      );
+      const capacityResult = await client.query(
+        'SELECT active_reservations FROM peer_admission_capacity WHERE singleton = true FOR UPDATE',
+      );
+      const policy = policyResult.rows?.[0];
+      const capacity = capacityResult.rows?.[0];
+      if (!policy || !capacity) {
+        throw Object.assign(new Error('Admission policy/capacity row missing during startup preflight'), {
+          code: 'ZION_ADMISSION_CONFIG_MISSING',
+        });
+      }
+      const maxActivePeers = Number(policy.max_active_peers);
+      const maxAdmissionsPerIssuer = Number(policy.max_admissions_per_issuer);
+      const minHeadroom = Number(policy.min_storage_headroom_ratio);
+      const policyVersion = Number(policy.policy_version);
+      const activeReservations = Number(capacity.active_reservations);
+      if (!Number.isSafeInteger(maxActivePeers) || maxActivePeers < 1 ||
+          !Number.isSafeInteger(maxAdmissionsPerIssuer) || maxAdmissionsPerIssuer < 1 ||
+          !Number.isFinite(minHeadroom) || minHeadroom < 0 || minHeadroom > 1 ||
+          !Number.isSafeInteger(policyVersion) || policyVersion < 1 ||
+          !Number.isSafeInteger(activeReservations) || activeReservations < 0) {
+        throw Object.assign(new Error('Admission policy/capacity values are invalid'), {
+          code: 'ZION_ADMISSION_STATE_INCONSISTENT',
+        });
+      }
+      const countResult = await client.query(
+        "SELECT count(*)::bigint AS active_count FROM peer_admissions WHERE status = 'active'",
+      );
+      const activeCount = Number(countResult.rows?.[0]?.active_count);
+      if (!Number.isSafeInteger(activeCount) || activeCount < 0 || activeCount !== activeReservations) {
+        throw Object.assign(new Error('Active admission rows do not match the capacity reservation counter'), {
+          code: 'ZION_ADMISSION_STATE_INCONSISTENT',
+        });
+      }
+      if (activeCount > maxActivePeers) {
+        throw Object.assign(new Error('Active admissions exceed the persisted peer-capacity policy'), {
+          code: 'ZION_ADMISSION_STATE_INCONSISTENT',
+        });
+      }
+      const issuerQuotaResult = await client.query(
+        `SELECT i.issuer_node_id
+         FROM peer_admission_issuers i
+         JOIN peer_admissions a ON a.subject_node_id = i.subject_node_id
+         WHERE a.status = 'active'
+         GROUP BY i.issuer_node_id
+         HAVING count(*) > $1
+         LIMIT 1`,
+        [maxAdmissionsPerIssuer],
+      );
+      if (issuerQuotaResult.rows?.length) {
+        throw Object.assign(new Error('Active admissions exceed a persisted issuer quota'), {
+          code: 'ZION_ADMISSION_STATE_INCONSISTENT',
+        });
+      }
+      const stalePolicyResult = await client.query(
+        'SELECT subject_node_id FROM peer_admissions WHERE status = $1 AND policy_version > $2 LIMIT 1',
+        ['active', policyVersion],
+      );
+      if (stalePolicyResult.rows?.length) {
+        throw Object.assign(new Error('An active admission references a future policy version'), {
+          code: 'ZION_ADMISSION_STATE_INCONSISTENT',
+        });
+      }
+      const malformedResult = await client.query(
+        `SELECT a.subject_node_id
+         FROM peer_admissions a
+         LEFT JOIN peer_admission_issuers i ON i.subject_node_id = a.subject_node_id
+         LEFT JOIN consumed_peer_invitations c
+           ON c.subject_node_id = a.subject_node_id AND c.issuer_node_id = i.issuer_node_id
+         WHERE a.status = 'active'
+         GROUP BY a.subject_node_id
+         HAVING count(DISTINCT i.issuer_node_id) = 0
+            OR count(DISTINCT i.issuer_node_id) <> count(DISTINCT c.issuer_node_id)
+            OR count(c.issuer_node_id) <> count(DISTINCT c.issuer_node_id)
+         LIMIT 1`,
+      );
+      if (malformedResult.rows?.length) {
+        throw Object.assign(new Error('An active admission has inconsistent issuer/invitation records'), {
+          code: 'ZION_ADMISSION_STATE_INCONSISTENT',
+        });
+      }
+      // Also reject consumed invitation evidence whose issuer is not part of
+      // that subject's admission. The previous left-join check intentionally
+      // starts from issuer rows and cannot see these extra/orphaned records.
+      const unexpectedEvidenceResult = await client.query(
+        `SELECT c.subject_node_id
+         FROM consumed_peer_invitations c
+         JOIN peer_admissions a ON a.subject_node_id = c.subject_node_id
+         LEFT JOIN peer_admission_issuers i
+           ON i.subject_node_id = c.subject_node_id AND i.issuer_node_id = c.issuer_node_id
+         WHERE a.status = 'active' AND i.issuer_node_id IS NULL
+         LIMIT 1`,
+      );
+      if (unexpectedEvidenceResult.rows?.length) {
+        throw Object.assign(new Error('An active admission has consumed-invitation evidence from an unrecorded issuer'), {
+          code: 'ZION_ADMISSION_STATE_INCONSISTENT',
+        });
+      }
+      commitStarted = true;
+      await client.query('COMMIT');
+      began = false;
+      return Object.freeze({ ok: true, activeAdmissions: activeCount, activeReservations, policyVersion });
+    } catch (error) {
+      if (commitStarted) {
+        // A failed COMMIT leaves the session outcome uncertain even though this
+        // transaction only reads; never recycle that connection into the pool.
+        releaseError = error;
+      } else if (began) {
+        try {
+          await client.query('ROLLBACK');
+        } catch (rollbackError) {
+          releaseError = rollbackError;
+        }
+      } else {
+        releaseError = error;
+      }
+      throw error;
+    } finally {
+      client.release(releaseError);
+    }
+  }
+
   async releaseAdmission(subjectNodeId, status = 'released') {
-    if (this.commitOutcomeUnknown) return { ok: false, reason: 'admission-state-unavailable' };
+    if (this.unknownCommitSubjects.has(subjectNodeId)) return { ok: false, reason: 'admission-state-unavailable' };
     if (!NODE_ID.test(subjectNodeId ?? '') || !['released', 'revoked'].includes(status)) {
       return { ok: false, reason: 'invalid-input' };
     }
@@ -162,20 +392,32 @@ export class PostgresPeerAdmissionStore {
       const capacityResult = await client.query(
         'SELECT active_reservations FROM peer_admission_capacity WHERE singleton = true FOR UPDATE',
       );
-      if (!capacityResult.rows?.[0]) {
+      const capacity = capacityResult.rows?.[0];
+      if (!capacity) {
         throw Object.assign(new Error('Admission capacity row missing'), { code: 'ZION_ADMISSION_CONFIG_MISSING' });
+      }
+      const activeReservations = Number(capacity.active_reservations);
+      if (!Number.isSafeInteger(activeReservations) || activeReservations < 0) {
+        throw Object.assign(new Error('Admission capacity counter is invalid'), { code: 'ZION_ADMISSION_STATE_INCONSISTENT' });
       }
       const updated = await client.query(
         "UPDATE peer_admissions SET status = $2, updated_at = now() WHERE subject_node_id = $1 AND status = 'active' RETURNING subject_node_id",
         [subjectNodeId, status],
       );
       if (updated.rows?.length) {
+        // Do not silently clamp counter drift: a release that hides an inconsistent
+        // active-row/reservation pair would make later admission decisions unsafe.
+        if (activeReservations === 0) {
+          throw Object.assign(new Error('Active admission exists while the capacity reservation counter is zero'), {
+            code: 'ZION_ADMISSION_STATE_INCONSISTENT',
+          });
+        }
         await client.query(
-          'UPDATE peer_admission_capacity SET active_reservations = GREATEST(0, active_reservations - 1), updated_at = now() WHERE singleton = true',
+          'UPDATE peer_admission_capacity SET active_reservations = active_reservations - 1, updated_at = now() WHERE singleton = true',
         );
       }
       return { ok: true, changed: Boolean(updated.rows?.length), subjectNodeId, status };
-    }).catch(error => {
+    }, subjectNodeId).catch(error => {
       if (error?.code === 'ZION_ADMISSION_CONFIG_MISSING' ||
         error?.code === 'ZION_ADMISSION_COMMIT_OUTCOME_UNKNOWN') {
         return { ok: false, reason: 'admission-state-unavailable' };

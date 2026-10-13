@@ -14,6 +14,9 @@ const issue = (code, detail) => ({ code, detail });
 function inspectRegularJson(path) {
   let fd;
   try {
+    // O_NOFOLLOW is not reliably enforced by Node.js on Windows; inspect the path first.
+    const pathStat = lstatSync(path);
+    if (pathStat.isSymbolicLink() || !pathStat.isFile()) return { status: 'unsafe', issue: issue('SYMLINK_REFUSED', 'Symbolic links and non-regular files are not followed') };
     fd = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
     const stat = fstatSync(fd);
     if (!stat.isFile()) return { status: 'unsafe', issue: issue('UNSAFE_FILE', 'Path is not a regular file') };
@@ -32,6 +35,9 @@ function inspectRegularJson(path) {
 function inspectRegularText(path) {
   let fd;
   try {
+    // O_NOFOLLOW is not reliably enforced by Node.js on Windows; inspect the path first.
+    const pathStat = lstatSync(path);
+    if (pathStat.isSymbolicLink() || !pathStat.isFile()) return { status: 'unsafe', issue: issue('SYMLINK_REFUSED', 'Symbolic links and non-regular files are not followed') };
     fd = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
     const stat = fstatSync(fd);
     if (!stat.isFile()) return { status: 'unsafe' };
