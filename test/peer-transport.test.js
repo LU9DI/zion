@@ -87,6 +87,24 @@ test('transport serializes async handlers and bounds queued frames per socket', 
 });
 
 
+test('transport throttles sustained valid traffic instead of disconnecting the peer', async t => {
+  const received = [];
+  const server = new PeerTransport({
+    identity: createNodeIdentity(),
+    rateLimiter: new (await import('../src/peer-security.js')).PeerRateLimiter({ capacity: 1, refillPerSecond: 100 }),
+    onMessage: async message => { received.push(message.payload.nonce); },
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({ identity: createNodeIdentity() });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(async () => { socket.destroy(); await client.close(); });
+  for (let i = 0; i < 8; i++) client.send(socket, { type: 'PING', nonce: `throttle-${i}` });
+  await waitFor(() => received.length === 8);
+  assert.deepEqual(received, Array.from({ length: 8 }, (_, i) => `throttle-${i}`));
+  assert.equal(socket.destroyed, false, 'rate pressure must not terminate a valid peer session');
+});
+
 test('transport applies rate limiting before replay-cache admission', async t => {
   const replayGuard = {
     accepted: 0,
