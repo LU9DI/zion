@@ -48,7 +48,7 @@ function runCrashWorker(f, mode) {
 test('Witness publication crash before atomic link leaves no destination and does not expose partial evidence', async t => {
   const f = fixture(t);
   const result = await runCrashWorker(f, 'before-link');
-  assert.equal(result.signal, 'SIGKILL', JSON.stringify(result));
+  assert.equal(process.platform === 'win32' ? result.code : result.signal, process.platform === 'win32' ? 137 : 'SIGKILL', JSON.stringify(result));
   assert.equal(existsSync(f.outputPath), false, 'destination must remain absent before commit');
   const leftovers = readdirSync(f.dir).filter(name => name.startsWith('evidence.json.') && name.endsWith('.tmp'));
   assert.equal(leftovers.length, 1, 'hard-killed process may leave its uniquely named temporary file');
