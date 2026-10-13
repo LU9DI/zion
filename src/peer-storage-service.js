@@ -527,7 +527,7 @@ export class PeerStorageService {
     await this.#assertIntegrity();
     if (typeof peerNodeId !== 'string' || !SHA256.test(peerNodeId) || !SHA256.test(chunkId ?? '') ||
       !Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 120_000 ||
-      (signal !== undefined && (typeof signal.aborted !== 'boolean' || typeof signal.addEventListener !== 'function'))) throw new TypeError('Invalid chunk fetch request');
+      (signal !== undefined && (typeof signal.aborted !== 'boolean' || typeof signal.addEventListener !== 'function' || typeof signal.removeEventListener !== 'function'))) throw new TypeError('Invalid chunk fetch request');
     if (signal?.aborted) throw Object.assign(new Error('Chunk fetch aborted'), { name: 'AbortError' });
     if (!socket || socket.destroyed || !socket.writable) return Promise.reject(new Error('Peer socket is not writable'));
     const requestId = randomBytes(16).toString('hex');
