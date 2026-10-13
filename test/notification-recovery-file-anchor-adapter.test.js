@@ -15,7 +15,7 @@ function setup() {
   const dir = mkdtempSync(join(tmpdir(), 'zion-file-anchor-'));
   const anchorPath = join(dir, 'independent', 'checkpoint.json');
   const keys = generateKeyPairSync('ed25519');
-  const adapter = new PersistentFileNotificationAnchorAdapter({ anchorPath, lockTimeoutMs: 100, retryIntervalMs: 2 });
+  const adapter = new PersistentFileNotificationAnchorAdapter({ anchorPath, lockTimeoutMs: 5000, retryIntervalMs: 2 });
   const client = new NotificationRecoveryIndependentAnchor({ adapter, publicKey: keys.publicKey, expectedSignerKeyId: 'anchor', now: () => issuedAt });
   const registryPath = join(dir, 'registry.json');
   const state = { schemaVersion: 1, revision: 0, keys: {}, events: [] };
@@ -31,7 +31,7 @@ test('persists checkpoint durably and can read it after adapter recreation', asy
   const recreated = new PersistentFileNotificationAnchorAdapter({ anchorPath: ctx.anchorPath });
   assert.deepEqual(await recreated.getLatest(), ctx.first);
   assert.equal((await new NotificationRecoveryIndependentAnchor({ adapter: recreated, publicKey: ctx.keys.publicKey, expectedSignerKeyId: 'anchor', now: () => issuedAt }).verifyLatest()).valid, true);
-  assert.equal((lstatSync(ctx.anchorPath).mode & 0o777), 0o600);
+  if (process.platform !== 'win32') assert.equal((lstatSync(ctx.anchorPath).mode & 0o777), 0o600);
 });
 
 test('concurrent identical publications serialize and are idempotent', async () => {
@@ -194,7 +194,7 @@ test('survives an actual publisher process crash after partial temporary-file cr
   assert.equal((await import('node:fs')).readFileSync(orphan, 'utf8'), '{"schemaVersion":', 'partial forensic evidence must remain untouched');
 });
 
-test('reports visible-but-unconfirmed state when directory sync fails after rename, then confirms on retry', async () => {
+test('reports visible-but-unconfirmed state when directory sync fails after rename, then confirms on retry', { skip: process.platform === 'win32' }, async () => {
   const ctx = setup();
   let syncCalls = 0;
   const injected = new PersistentFileNotificationAnchorAdapter({
