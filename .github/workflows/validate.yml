@@ -3,8 +3,8 @@ name: Zion validation
 on:
   push:
     branches: [main]
+  # Stacked PRs target other feature branches; validate them too.
   pull_request:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
