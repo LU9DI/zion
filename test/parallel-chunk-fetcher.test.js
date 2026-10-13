@@ -136,6 +136,32 @@ test('parallel fetch honors a signal already aborted before scheduling', async (
 });
 
 
+test('keeps failures separate for duplicate chunk IDs with different peer restrictions', async () => {
+  const chunkId = 'c'.repeat(64);
+  const storageService = {
+    identity: { nodeId: 'z'.repeat(64) },
+    maxTransfers: 2, maxBufferedBytes: 2048, maxChunkBytes: 1024,
+    async fetchChunk(_transport, _socket, peerNodeId) {
+      throw new Error(`failure-${peerNodeId[0]}`);
+    }
+  };
+  const peers = ['a', 'b'].map(letter => ({
+    nodeId: letter.repeat(64),
+    socket: { destroyed: false, writable: true }
+  }));
+  await assert.rejects(fetchChunksParallel({
+    transport: { send() {} }, storageService, peers,
+    chunks: [
+      { chunkId, peerIds: [peers[0].nodeId] },
+      { chunkId, peerIds: [peers[1].nodeId] }
+    ]
+  }), error => {
+    assert.ok(error instanceof AggregateError);
+    assert.deepEqual(error.errors.map(item => item.message), ['failure-a', 'failure-b']);
+    return true;
+  });
+});
+
 test('parallel fetch rejects a non-Buffer response even when its bytes would hash correctly', async () => {
   const bytes = Buffer.from('x');
   const nodeId = 'a'.repeat(64);
