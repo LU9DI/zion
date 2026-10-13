@@ -31,6 +31,14 @@ function readToken(path, clientId) {
   if (Buffer.byteLength(token) < 32 || /[\r\n]/.test(token)) throw new Error('Token must be at least 32 bytes and contain no line breaks');
   return token;
 }
+function syncDirectory(path) {
+  // Directory-handle fsync is not portable in Node.js on Windows (EPERM).
+  // File data is fsynced before publication; Windows directory-entry durability is weaker.
+  if (process.platform === 'win32') return;
+  const dirFd = openSync(path, fsConstants.O_RDONLY);
+  try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
+}
+
 function writeNewPrivateJson(path, value) {
   const target = resolve(path);
   const tmp = `${target}.${randomUUID()}.tmp`;
@@ -43,11 +51,9 @@ function writeNewPrivateJson(path, value) {
     // at the destination in one link operation. A crash cannot expose a partially-written target.
     // linkSync also fails with EEXIST, preserving any prior evidence.
     linkSync(tmp, target);
-    const dirFd = openSync(dirname(target), fsConstants.O_RDONLY);
-    try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
+    syncDirectory(dirname(target));
     unlinkSync(tmp);
-    const cleanupDirFd = openSync(dirname(target), fsConstants.O_RDONLY);
-    try { fsyncSync(cleanupDirFd); } finally { closeSync(cleanupDirFd); }
+    syncDirectory(dirname(target));
   } catch (error) {
     // Once linked, do not roll back the target: the commit may already be durable and
     // deleting it after a directory-sync error could destroy valid evidence.
