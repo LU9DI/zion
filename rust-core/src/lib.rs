@@ -61,6 +61,13 @@ impl StorageCore {
     }
 
     pub fn init(&self) -> Result<(), StorageError> {
+        // Reject existing symlink components before create_dir_all can follow
+        // them. This closes the deterministic ancestor-symlink case; because
+        // the rest of the implementation still uses path-based filesystem
+        // calls, it does not eliminate races with a hostile concurrent local
+        // process replacing ancestors. Strong isolation requires descriptor-
+        // relative operations throughout the storage implementation.
+        reject_existing_symlink_ancestors(&self.root)?;
         fs::create_dir_all(&self.root)?;
         let metadata = fs::symlink_metadata(&self.root)?;
         if !metadata.is_dir() || metadata.file_type().is_symlink() { return Err(StorageError::UnsafePath); }
@@ -451,6 +458,36 @@ impl StorageCore {
     }
 }
 
+/// Reject symlinks in every existing component leading to a storage root.
+/// Missing suffix components are fine: create_dir_all will create them only
+/// after all existing prefixes have been checked.
+fn reject_existing_symlink_ancestors(root: &Path) -> Result<(), StorageError> {
+    let absolute = if root.is_absolute() {
+        root.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(root)
+    };
+    let mut current = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => current.push(prefix.as_os_str()),
+            std::path::Component::RootDir => current.push(component.as_os_str()),
+            std::path::Component::CurDir => continue,
+            std::path::Component::ParentDir => current.push(component.as_os_str()),
+            std::path::Component::Normal(part) => current.push(part),
+        }
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(StorageError::UnsafePath);
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(StorageError::Io(error.to_string())),
+        }
+    }
+    Ok(())
+}
+
 fn valid_digest(value: &str) -> bool { value.len() == 64 && value.bytes().all(is_hex) }
 fn is_hex(byte: u8) -> bool { byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte) }
 fn hex(bytes: &[u8]) -> String { const TABLE: &[u8; 16] = b"0123456789abcdef"; let mut out = String::with_capacity(bytes.len() * 2); for b in bytes { out.push(TABLE[(b >> 4) as usize] as char); out.push(TABLE[(b & 0x0f) as usize] as char); } out }
@@ -550,6 +587,27 @@ mod tests {
             "a direct put must reject a symlinked root before creating lock metadata");
 
         let _ = fs::remove_file(&root);
+        let _ = fs::remove_dir_all(outside);
+    }
+
+
+    #[cfg(unix)]
+    #[test]
+    fn init_rejects_symlinked_ancestor_before_creating_storage_root() {
+        use std::os::unix::fs::symlink;
+        let base = temp_root();
+        let outside = temp_root().with_extension("outside-ancestor");
+        fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, base.with_extension("ancestor-link")).unwrap();
+        let linked_ancestor = base.with_extension("ancestor-link");
+        let root = linked_ancestor.join("nested").join("store");
+        let store = StorageCore::new(&root, 1024, 2048).unwrap();
+
+        assert!(matches!(store.init(), Err(StorageError::UnsafePath)));
+        assert!(!outside.join("nested").exists(),
+            "init must not create the storage tree through an existing symlink ancestor");
+
+        let _ = fs::remove_file(&linked_ancestor);
         let _ = fs::remove_dir_all(outside);
     }
 
