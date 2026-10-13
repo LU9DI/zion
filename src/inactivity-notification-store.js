@@ -11,6 +11,9 @@ const nowIso = () => new Date().toISOString();
 const sleep = ms => new Promise(resolveSleep => setTimeout(resolveSleep, ms));
 
 function syncDirectoryEntry(directory) {
+  // Node.js cannot portably fsync directory handles on Windows (EPERM).
+  // Individual state/backup files are fsynced before publication; directory-entry durability is weaker on Windows.
+  if (process.platform === 'win32') return;
   const dirFd = openSync(directory, 'r');
   try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
 }
