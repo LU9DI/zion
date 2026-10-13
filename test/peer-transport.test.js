@@ -81,7 +81,7 @@ test('transport serializes async handlers and bounds queued frames per socket', 
   t.after(() => socket.destroy());
   await once(socket, 'connect');
   for (let i = 0; i < 70; i++) client.send(socket, { type: 'PING', nonce: String(i) });
-  await waitFor(() => socket.destroyed || entered > 0);
+  await waitFor(() => socket.destroyed, 3000);
   assert.equal(maxConcurrent, 1);
   assert.equal(socket.destroyed, true, 'socket is closed when its per-connection work queue overflows');
 });
