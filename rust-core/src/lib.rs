@@ -190,7 +190,19 @@ impl StorageCore {
         Ok(bytes)
     }
 
-    pub fn used_bytes(&self) -> Result<u64, StorageError> { self.scan_bytes() }
+    pub fn used_bytes(&self) -> Result<u64, StorageError> {
+        // Usage is externally observable accounting, so take the same
+        // cross-process lock as writers to avoid reporting a partial active
+        // .tmp-* write as stable quota usage. Preserve the historical empty
+        // result for a root that has not been created yet.
+        match fs::symlink_metadata(&self.root) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => return Err(StorageError::UnsafePath),
+            Err(error) => return Err(StorageError::Io(error.to_string())),
+        }
+        self.with_lock(|| self.scan_bytes())
+    }
     pub fn quota_bytes(&self) -> u64 { self.max_storage_bytes }
 
     fn put_locked(&self, chunk_id: &str, envelope: &[u8]) -> Result<PutReceipt, StorageError> {
