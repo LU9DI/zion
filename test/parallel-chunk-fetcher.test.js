@@ -72,6 +72,7 @@ test('aborting an in-flight chunk request cleans up pending state promptly', asy
   const transport = { send() {} };
   const pending = service.fetchChunk(transport, socket, peers[0]?.nodeId ?? createNodeIdentity().nodeId,
     'a'.repeat(64), { timeoutMs: 10_000, signal: controller.signal });
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(service.pendingGets.size, 1);
   controller.abort();
   await assert.rejects(pending, error => error.name === 'AbortError');
