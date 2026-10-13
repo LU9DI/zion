@@ -19,7 +19,7 @@ const SHA256 = /^[a-f0-9]{64}$/;
  * every chunk that no peer could supply.
  */
 export async function fetchChunksParallel({ transport, storageService, peers, chunks, concurrencyPerPeer = 2, timeoutMs = 10_000, signal } = {}) {
-  if (!transport || !storageService || !Array.isArray(peers) || !Array.isArray(chunks) ||
+  if (!transport || typeof transport.send !== 'function' || !storageService || typeof storageService.fetchChunk !== 'function' || !Array.isArray(peers) || !Array.isArray(chunks) ||
     !Number.isSafeInteger(concurrencyPerPeer) || concurrencyPerPeer < 1 || concurrencyPerPeer > 16 ||
     !Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 120_000 ||
     (signal !== undefined && (!signal || typeof signal.aborted !== 'boolean' ||
