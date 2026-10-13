@@ -72,8 +72,9 @@ test('aborting an in-flight chunk request cleans up pending state promptly', asy
   const sent = [];
   const transport = { send(_socket, message) { sent.push(message); } };
   const peerNodeId = peers[0]?.nodeId ?? createNodeIdentity().nodeId;
+  const lateBytes = envelope(100);
   const pending = service.fetchChunk(transport, socket, peerNodeId,
-    'a'.repeat(64), { timeoutMs: 10_000, signal: controller.signal });
+    sha(lateBytes), { timeoutMs: 10_000, signal: controller.signal });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(service.pendingGets.size, 1);
   controller.abort();
@@ -83,7 +84,6 @@ test('aborting an in-flight chunk request cleans up pending state promptly', asy
 
   // A response already on the wire after cancellation must not be treated as an unsolicited attack
   // and destroy the shared socket, which may carry other parallel chunk requests.
-  const lateBytes = envelope(100);
   await assert.doesNotReject(service.handle({ nodeId: peerNodeId, payload: {
     type: 'CHUNK_DATA', transferId: 'd'.repeat(32), requestId: sent[0].requestId,
     chunkId: sha(lateBytes), totalBytes: lateBytes.length, partIndex: 0, partCount: 1,
