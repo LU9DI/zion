@@ -75,7 +75,7 @@ export async function fetchChunksParallel({ transport, storageService, peers, ch
         results[item.index] = envelope;
       } catch (error) {
         triedBy[item.index].add(peer.nodeId);
-        if (candidatesFor(item).every(candidate => triedBy[item.index].has(candidate.nodeId))) failed.set(item.chunkId, error);
+        if (candidatesFor(item).every(candidate => triedBy[item.index].has(candidate.nodeId))) failed.set(item.index, error);
         else queue.push(item);
       } finally { release(); inFlight--; wake(); }
     }
@@ -84,9 +84,9 @@ export async function fetchChunksParallel({ transport, storageService, peers, ch
   for (const peer of usable) for (let slot = 0; slot < concurrencyPerPeer; slot++) workers.push(worker(peer));
   await Promise.all(workers);
   if (signal?.aborted) throw Object.assign(new Error('Parallel chunk fetch aborted'), { name: 'AbortError' });
-  const missing = wanted.filter((_, index) => results[index] === undefined).map(entry => entry.chunkId);
+  const missing = wanted.map((entry, index) => ({ ...entry, index })).filter(item => results[item.index] === undefined);
   if (missing.length) {
-    throw new AggregateError(missing.map(id => failed.get(id) ?? new Error('No usable peer could supply the chunk')), `Could not fetch ${missing.length} chunk(s) from any peer`);
+    throw new AggregateError(missing.map(item => failed.get(item.index) ?? new Error('No usable peer could supply the chunk')), `Could not fetch ${missing.length} chunk(s) from any peer`);
   }
   return results;
 }
