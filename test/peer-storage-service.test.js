@@ -4,7 +4,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { mkdtemp, rm, readFile, lstat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { once } from 'node:events';
+import { once, EventEmitter } from 'node:events';
 import { createNodeIdentity } from '../src/peer-security.js';
 import { PeerTransport } from '../src/peer-transport.js';
 import { OpaqueReplicaStore, PeerStorageService } from '../src/peer-storage-service.js';
@@ -209,6 +209,24 @@ test('propagates asynchronous transport write failures through storage transfer 
   ), /socket write failed/);
 });
  
+test('fetchChunk rejects immediately when the peer socket closes', async () => {
+  const identity = createNodeIdentity();
+  const bytes = envelope(32);
+  const chunkId = createHash('sha256').update(bytes).digest('hex');
+  const service = new PeerStorageService({ identity, store: {}, maxChunkBytes: 1024, partBytes: 1024 });
+  const socket = new EventEmitter();
+  socket.destroyed = false;
+  socket.writable = true;
+  const transport = { send() { return true; } };
+  const pending = service.fetchChunk(transport, socket, createNodeIdentity().nodeId, chunkId, { timeoutMs: 10_000 });
+  await new Promise(resolve => setImmediate(resolve));
+  socket.destroyed = true;
+  socket.writable = false;
+  socket.emit('close');
+  await assert.rejects(pending, /Peer socket closed during chunk fetch/);
+  assert.equal(service.pendingGets.size, 0);
+});
+
 test('audits actual replica inventory and grants contribution credit only for verified bytes', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'rea-peer-audit-'));
   t.after(() => rm(root, { recursive: true, force: true }));
