@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { PostgresPeerAdmissionStore } from '../src/peer-admission-postgres-store.js';
 import { createNodeIdentity } from '../src/peer-security.js';
 import { createPeerIntroductionVoucher } from '../src/peer-introduction-vouchers.js';
@@ -28,7 +29,7 @@ function admissionInput(subjectDigit, issuerDigits, nonceDigits) {
 function runAdmissionWorker(input) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [
-      new URL('../scripts/test-fixtures/postgres-admission-worker.mjs', import.meta.url).pathname,
+      fileURLToPath(new URL('../scripts/test-fixtures/postgres-admission-worker.mjs', import.meta.url)),
     ], {
       env: { ...process.env, ZION_ADMISSION_INPUT_JSON: JSON.stringify(input) },
       stdio: ['ignore', 'pipe', 'pipe'],
