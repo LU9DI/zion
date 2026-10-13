@@ -54,3 +54,14 @@ test('replay guard expires entries through an ordered heap and rejects invalid c
   assert.equal(guard.accept({ nodeId: 'e', nonce: '5' }, Number.NaN), false);
   assert.equal(guard.seen.size, 3);
 });
+
+
+test('rate limiter wait can be cancelled when a peer socket closes', async () => {
+  const limiter = new PeerRateLimiter({ capacity: 1, refillPerSecond: 0.001 });
+  assert.equal(limiter.allow('peer'), true);
+  const controller = new AbortController();
+  const waiting = limiter.wait('peer', 1, { signal: controller.signal });
+  controller.abort();
+  assert.equal(await waiting, false);
+  assert.equal(limiter.buckets.size, 1, 'cancellation must not create extra peer buckets');
+});
