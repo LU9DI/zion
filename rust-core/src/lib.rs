@@ -316,6 +316,13 @@ impl StorageCore {
     fn chunk_path(&self, id: &str) -> PathBuf { self.root.join(&id[..2]).join(&id[2..]) }
 
     fn with_lock<T>(&self, operation: impl FnOnce() -> Result<T, StorageError>) -> Result<T, StorageError> {
+        // Validate the root before creating the lock directory. Otherwise a
+        // direct put/usage call could write lock metadata through a symlink
+        // even though the later config scan rejects the root.
+        let root_meta = fs::symlink_metadata(&self.root)?;
+        if !root_meta.is_dir() || root_meta.file_type().is_symlink() {
+            return Err(StorageError::UnsafePath);
+        }
         let lock = self.root.join(".rea-rust-storage-lock");
         let started = Instant::now();
         let owner = format!("{}:{}\n", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos());
@@ -526,6 +533,8 @@ mod tests {
         assert!(matches!(store.used_bytes(), Err(StorageError::UnsafePath)));
         assert!(!outside.join(".rea-rust-storage-config").exists(),
             "a direct put must not write configuration through a symlinked root");
+        assert!(!outside.join(".rea-rust-storage-lock").exists(),
+            "a direct put must reject a symlinked root before creating lock metadata");
 
         let _ = fs::remove_file(&root);
         let _ = fs::remove_dir_all(outside);
