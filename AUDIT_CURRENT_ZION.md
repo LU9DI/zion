@@ -83,3 +83,20 @@ Until P0 blockers are closed and independently reviewed, use Zion only for local
 - PR #22 merged: added [the transactional peer-admission backend contract](docs/TRANSACTIONAL_PEER_ADMISSION_CONTRACT.md). This specifies the required database transaction boundary, uniqueness/quota/capacity invariants, and real multi-process integration tests. **It is a design contract, not a deployed database adapter.**
 - PR #23 merged: reject malformed and duplicate consumed-invitation keys, duplicate admission subjects, empty issuer lists, and duplicate issuer IDs in persisted/controller state. Updated regression fixtures to remain structurally valid while testing size limits. Validation and both CodeQL analyses passed.
 - The current file-backed controller remains single-process only; distributed admission is still a production blocker. The next safe implementation step is a real transactional adapter plus schema/migrations and independent-process integration tests—not a wrapper around the existing `load()`/`save()` API.
+
+
+## Follow-up hardening — 2026-10-13
+
+The current draft PR #33 continues the experimental Rust storage-core hardening. The following changes are now present on `feat/verified-postgres-admission-boundary`:
+
+- Clean up abandoned temporary chunk files when publication fails, including directory-sync and post-`AlreadyExists` read failures.
+- Reject a symlinked storage root in direct operations, before creating lock/config metadata; quota scans also reject a symlinked root.
+- Recover only recognized, bounded, regular non-symlink config-temp files while holding the cooperative storage lock; count abandoned config-temp bytes until recovery.
+- Persist and verify quota configuration, serialize usage snapshots with writers, and validate lock/config metadata during quota scans.
+- Preserve a replacement lock during release and reclaim stale locks only with conservative evidence; PID reuse and hostile same-user filesystem races remain outside the complete guarantees of this cooperative file-lock design.
+
+CI for head `5bfdc3874bea267531f5f50f944e178c90dbeceb` completed successfully:
+- [Zion validation run 38405410779](https://github.com/LU9DI/zion/actions/runs/38405410779) — success.
+- [CodeQL run 38405410809](https://github.com/LU9DI/zion/actions/runs/38405410809) — success.
+
+These checks validate the current automated suite and static analysis only; they are not a production security certification. The storage sidecar remains experimental, quota accounting is not OS-enforced, and hostile concurrent local filesystem mutation is not fully prevented. PR #33 remains a draft and must not be merged as a production-readiness signal.
