@@ -61,7 +61,7 @@ export async function fetchChunksParallel({ transport, storageService, peers, ch
       inFlight++;
       await acquire();
       try {
-        const envelope = await storageService.fetchChunk(transport, peer.socket, peer.nodeId, item.chunkId, { timeoutMs });
+        const envelope = await storageService.fetchChunk(transport, peer.socket, peer.nodeId, item.chunkId, { timeoutMs, signal });
         if (createHash('sha256').update(envelope).digest('hex') !== item.chunkId) throw new Error('Fetched chunk digest mismatch');
         results[item.index] = envelope;
       } catch (error) {
