@@ -58,7 +58,7 @@ test('Witness publication crash before atomic link leaves no destination and doe
 test('Witness publication crash immediately after atomic link leaves complete evidence and may leave an orphan alias', async t => {
   const f = fixture(t);
   const result = await runCrashWorker(f, 'after-link');
-  assert.equal(result.signal, 'SIGKILL', JSON.stringify(result));
+  assert.equal(process.platform === 'win32' ? result.code : result.signal, process.platform === 'win32' ? 137 : 'SIGKILL', JSON.stringify(result));
   assert.equal(existsSync(f.outputPath), true, 'link commit makes the complete target visible');
   const saved = JSON.parse(readFileSync(f.outputPath, 'utf8'));
   assert.equal(saved.witnessId, 'witness-process-race');
