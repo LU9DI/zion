@@ -162,6 +162,8 @@ impl StorageCore {
 
     pub fn get(&self, chunk_id: &str) -> Result<Vec<u8>, StorageError> {
         if !valid_digest(chunk_id) { return Err(StorageError::InvalidChunkId); }
+        // CLI get does not require init(), so enforce the ancestor boundary here too.
+        reject_existing_symlink_ancestors(&self.root)?;
         let path = self.chunk_path(chunk_id);
         // Validate the root and shard before opening a chunk. The final file
         // is also opened with O_NOFOLLOW on Unix below. This is defense in
@@ -336,9 +338,9 @@ impl StorageCore {
     fn chunk_path(&self, id: &str) -> PathBuf { self.root.join(&id[..2]).join(&id[2..]) }
 
     fn with_lock<T>(&self, operation: impl FnOnce() -> Result<T, StorageError>) -> Result<T, StorageError> {
-        // Validate the root before creating the lock directory. Otherwise a
-        // direct put/usage call could write lock metadata through a symlink
-        // even though the later config scan rejects the root.
+        // Validate every existing component before creating lock metadata. This
+        // also protects direct CLI put/usage calls that do not invoke init().
+        reject_existing_symlink_ancestors(&self.root)?;
         let root_meta = fs::symlink_metadata(&self.root)?;
         if !root_meta.is_dir() || root_meta.file_type().is_symlink() {
             return Err(StorageError::UnsafePath);
@@ -606,6 +608,30 @@ mod tests {
         assert!(matches!(store.init(), Err(StorageError::UnsafePath)));
         assert!(!outside.join("nested").exists(),
             "init must not create the storage tree through an existing symlink ancestor");
+
+        let _ = fs::remove_file(&linked_ancestor);
+        let _ = fs::remove_dir_all(outside);
+    }
+
+
+    #[cfg(unix)]
+    #[test]
+    fn direct_operations_reject_symlinked_ancestor_without_writing_through_it() {
+        use std::os::unix::fs::symlink;
+        let base = temp_root();
+        let outside = temp_root().with_extension("outside-direct-ancestor");
+        fs::create_dir_all(&outside).unwrap();
+        let linked_ancestor = base.with_extension("direct-ancestor-link");
+        symlink(&outside, &linked_ancestor).unwrap();
+        let root = linked_ancestor.join("nested").join("store");
+        let store = StorageCore::new(&root, 1024, 2048).unwrap();
+        let bytes = envelope(19);
+        let digest = id(&bytes);
+
+        assert!(matches!(store.put(&digest, &bytes), Err(StorageError::UnsafePath)));
+        assert!(matches!(store.get(&digest), Err(StorageError::UnsafePath)));
+        assert!(!outside.join("nested").exists(),
+            "direct operations must not create or access a storage tree through a symlinked ancestor");
 
         let _ = fs::remove_file(&linked_ancestor);
         let _ = fs::remove_dir_all(outside);
