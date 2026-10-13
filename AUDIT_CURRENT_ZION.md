@@ -100,3 +100,6 @@ CI for head `5bfdc3874bea267531f5f50f944e178c90dbeceb` completed successfully:
 - [CodeQL run 38405410809](https://github.com/LU9DI/zion/actions/runs/38405410809) — success.
 
 These checks validate the current automated suite and static analysis only; they are not a production security certification. The storage sidecar remains experimental, quota accounting is not OS-enforced, and hostile concurrent local filesystem mutation is not fully prevented. PR #33 remains a draft and must not be merged as a production-readiness signal.
+
+- Follow-up review corrected the symlinked-config regression fixture to contain a syntactically valid configuration payload, so the test isolates the symlink metadata behavior rather than malformed fixture bytes. This is test-quality hardening, not a new runtime guarantee.
+- Remaining filesystem boundary: `init()` currently calls `create_dir_all(root)` before validating the final root component. A path whose ancestor component is a symlink can therefore resolve through that ancestor before the final-component check. Do not treat final-component symlink rejection as protection against hostile ancestor-path substitution; deployment must use a trusted, pre-created parent directory. A descriptor-relative, no-follow traversal is the stronger long-term fix.
