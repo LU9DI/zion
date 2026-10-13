@@ -114,3 +114,10 @@ These checks validate the current automated suite and static analysis only; they
 - These changes improve continuity and error latency; they do not establish a higher bulk-transfer throughput ceiling. CPU cost from repeated JSON/base64 conversion, canonical signing/verification, hashing, and Ed25519 operations remains. A binary frame protocol would be a compatibility-affecting change and should be separately versioned, benchmarked, and reviewed before adoption.
 - Backpressure only applies after a frame has been parsed and queued. Existing per-socket frame/queue limits still close a peer that exceeds those hard bounds; these are protective resource limits, not the rate limiter.
 - Validation for this change is pending CI at the current branch head. No new benchmark numbers are claimed.
+
+
+### Repeatable loopback transfer benchmark
+
+- Added `npm run bench:peer-transfer` as an opt-in benchmark for sequential 4 MiB reads over the actual signed TCP peer transport and the existing 96 KiB JSON/base64 chunk segments. It verifies every fetched chunk before recording elapsed time and reports per-iteration and aggregate MiB/s.
+- Compare the standard limiter with `npm run bench:peer-transfer -- --relaxed`; set `ZION_BENCH_ITERATIONS` and `ZION_BENCH_CHUNK_BYTES` to change run count and chunk size. Run both modes on the same machine under similar load. The benchmark is a local regression instrument, not a predictor of WAN performance.
+- The benchmark has been committed but has not yet been executed in this environment; no performance improvement is claimed. Current CI is validating the updated branch.
