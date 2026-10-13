@@ -530,10 +530,19 @@ export class PeerStorageService {
     if (!socket || socket.destroyed || !socket.writable) return Promise.reject(new Error('Peer socket is not writable'));
     const requestId = randomBytes(16).toString('hex');
     const key = `${peerNodeId}:${requestId}`;
-    return new Promise((resolve, reject) => {
+    return new Promise((outerResolve, outerReject) => {
+      // Fail as soon as the peer connection closes (rate limit, quarantine, remote exit) instead of
+      // waiting for the full timeout; the listener is always removed when the request settles.
+      const onClose = () => {
+        if (!this.pendingGets.delete(key)) return;
+        clearTimeout(timeout); outerReject(new Error('Peer connection closed before chunk fetch completed'));
+      };
+      const resolve = value => { socket.off('close', onClose); outerResolve(value); };
+      const reject = error => { socket.off('close', onClose); outerReject(error); };
       const timeout = setTimeout(() => { this.pendingGets.delete(key); reject(new Error('Chunk fetch timed out')); }, timeoutMs);
       timeout.unref?.();
       this.pendingGets.set(key, { chunkId, resolve, reject, timeout });
+      socket.once('close', onClose);
       try { transport.send(socket, { type: 'GET_CHUNK', requestId, chunkId }); }
       catch (error) { clearTimeout(timeout); this.pendingGets.delete(key); reject(error); }
     });
