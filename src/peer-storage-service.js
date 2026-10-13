@@ -364,7 +364,7 @@ export class PeerStorageService {
     if (abuseGuard !== null && typeof abuseGuard.reserve !== 'function') throw new TypeError('Invalid peer abuse guard');
     if (integrityGuard !== null && typeof integrityGuard.assertHealthy !== 'function') throw new TypeError('Invalid integrity guard');
     this.maxTransfers = maxTransfers; this.maxBufferedBytes = maxBufferedBytes; this.transferTtlMs = transferTtlMs; this.abuseGuard = abuseGuard; this.integrityGuard = integrityGuard; this.now = now;
-    this.transfers = new Map(); this.bufferedBytes = 0; this.pendingGets = new Map();
+    this.transfers = new Map(); this.bufferedBytes = 0; this.pendingGets = new Map(); this.cancelledGets = new Map();
     this.removeQuarantineListener = typeof integrityGuard?.addQuarantineListener === 'function'
       ? integrityGuard.addQuarantineListener(report => this.#enterQuarantine(report?.reason ?? 'Zion integrity quarantine'))
       : null;
@@ -398,6 +398,11 @@ export class PeerStorageService {
     const part = Buffer.from(payload.data, 'base64');
     if (part.length === 0 || part.length > this.partBytes || part.toString('base64') !== payload.data) throw new Error('Invalid base64 chunk segment');
     const transferKey = `${nodeId}:${payload.transferId}:${response ? 'get' : 'put'}`;
+    if (response) {
+      const cancelled = this.cancelledGets.get(`${nodeId}:${payload.requestId}`);
+      if (cancelled && cancelled.expiresAt > this.now() && cancelled.chunkId === payload.chunkId) return;
+      if (cancelled) this.cancelledGets.delete(`${nodeId}:${payload.requestId}`);
+    }
     let transfer = this.transfers.get(transferKey);
     if (!transfer) {
       if (this.transfers.size >= this.maxTransfers || this.bufferedBytes + payload.totalBytes > this.maxBufferedBytes) throw new Error('Transfer capacity exceeded');
@@ -517,9 +522,18 @@ export class PeerStorageService {
     }
   }
 
+  #rememberCancelledGet(key, chunkId, timeoutMs) {
+    const now = this.now();
+    for (const [cancelledKey, cancelled] of this.cancelledGets) if (cancelled.expiresAt <= now) this.cancelledGets.delete(cancelledKey);
+    // Bound tombstones even if a caller repeatedly aborts without receiving late network frames.
+    while (this.cancelledGets.size >= 10_000) this.cancelledGets.delete(this.cancelledGets.keys().next().value);
+    this.cancelledGets.set(key, { chunkId, expiresAt: now + timeoutMs + this.transferTtlMs });
+  }
+
   #prune() {
     const now = this.now();
     for (const [key, transfer] of this.transfers) if (transfer.expiresAt <= now) { this.transfers.delete(key); this.bufferedBytes -= transfer.totalBytes; }
+    for (const [key, cancelled] of this.cancelledGets) if (cancelled.expiresAt <= now) this.cancelledGets.delete(key);
   }
 
   /** Fetch one chunk from a specific authenticated peer; rejects on timeout or integrity failure. */
@@ -549,9 +563,14 @@ export class PeerStorageService {
       const onAbort = () => {
         if (!this.pendingGets.delete(key)) return;
         clearTimeout(timeout);
+        this.#rememberCancelledGet(key, chunkId, timeoutMs);
         reject(Object.assign(new Error('Chunk fetch aborted'), { name: 'AbortError' }));
       };
-      const timeout = setTimeout(() => { this.pendingGets.delete(key); reject(new Error('Chunk fetch timed out')); }, timeoutMs);
+      const timeout = setTimeout(() => {
+        this.pendingGets.delete(key);
+        this.#rememberCancelledGet(key, chunkId, timeoutMs);
+        reject(new Error('Chunk fetch timed out'));
+      }, timeoutMs);
       timeout.unref?.();
       this.pendingGets.set(key, { chunkId, resolve, reject, timeout });
       socket.once('close', onClose);
