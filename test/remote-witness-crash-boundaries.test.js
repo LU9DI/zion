@@ -62,7 +62,7 @@ test('Witness publication crash immediately after atomic link leaves complete ev
   assert.equal(existsSync(f.outputPath), true, 'link commit makes the complete target visible');
   const saved = JSON.parse(readFileSync(f.outputPath, 'utf8'));
   assert.equal(saved.witnessId, 'witness-process-race');
-  assert.equal((statSync(f.outputPath).mode & 0o777), 0o600);
+  if (process.platform !== 'win32') assert.equal((statSync(f.outputPath).mode & 0o777), 0o600);
   const leftovers = readdirSync(f.dir).filter(name => name.startsWith('evidence.json.') && name.endsWith('.tmp'));
   assert.equal(leftovers.length, 1, 'crash can leave the temporary hard-link alias');
   assert.equal(readFileSync(join(f.dir, leftovers[0]), 'utf8'), readFileSync(f.outputPath, 'utf8'), 'both names refer to complete identical bytes');
