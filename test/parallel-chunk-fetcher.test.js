@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { EventEmitter } from 'node:events';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -60,6 +61,22 @@ test('retries a chunk on the next candidate peer when the first one drops the co
   assert.ok(Date.now() - started < 1_000, 'retry should not wait for the closed peer request timeout');
   await assert.rejects(fetchChunksParallel({ transport, storageService: service, peers: [peers[1]], chunks: [{ chunkId: sha(missing), peerIds: [full.identity.nodeId] }], timeoutMs: 10_000 }),
     error => error instanceof AggregateError && error.errors.length === 1);
+});
+
+test('aborting an in-flight chunk request cleans up pending state promptly', async t => {
+  const { service, peers } = await client(t, []);
+  const controller = new AbortController();
+  const socket = new EventEmitter();
+  socket.destroyed = false;
+  socket.writable = true;
+  const transport = { send() {} };
+  const pending = service.fetchChunk(transport, socket, peers[0]?.nodeId ?? createNodeIdentity().nodeId,
+    'a'.repeat(64), { timeoutMs: 10_000, signal: controller.signal });
+  assert.equal(service.pendingGets.size, 1);
+  controller.abort();
+  await assert.rejects(pending, error => error.name === 'AbortError');
+  assert.equal(service.pendingGets.size, 0);
+  assert.equal(socket.listenerCount('close'), 0);
 });
 
 test('rejects invalid requests and unusable peers without touching the network', async t => {
