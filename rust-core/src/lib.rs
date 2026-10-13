@@ -205,21 +205,27 @@ impl StorageCore {
         let write_result = (|| -> Result<(), StorageError> { file.write_all(envelope)?; file.sync_all()?; Ok(()) })();
         drop(file);
         if let Err(error) = write_result { let _ = fs::remove_file(&temp); return Err(error); }
-        let result = match fs::hard_link(&temp, &target) {
-            Ok(()) => {
-                // The file contents are synced before linking. Sync the containing directory
-                // as well so the new content-addressed name survives a crash on Unix filesystems.
-                #[cfg(unix)]
-                File::open(parent)?.sync_all()?;
-                Ok(PutReceipt { chunk_id: chunk_id.into(), bytes: size, already_present: false })
-            },
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                let existing = self.get(chunk_id)?;
-                if existing == envelope { Ok(PutReceipt { chunk_id: chunk_id.into(), bytes: size, already_present: true }) } else { Err(StorageError::DigestMismatch) }
+        // Keep fallible publication work inside a closure so every error path
+        // reaches the temporary-file cleanup below. Using ? directly in the
+        // match would return from put_locked and strand .tmp-* files when the
+        // directory fsync or AlreadyExists read-back fails.
+        let result = (|| -> Result<PutReceipt, StorageError> {
+            match fs::hard_link(&temp, &target) {
+                Ok(()) => {
+                    // The file contents are synced before linking. Sync the containing directory
+                    // as well so the new content-addressed name survives a crash on Unix filesystems.
+                    #[cfg(unix)]
+                    File::open(parent)?.sync_all()?;
+                    Ok(PutReceipt { chunk_id: chunk_id.into(), bytes: size, already_present: false })
+                },
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let existing = self.get(chunk_id)?;
+                    if existing == envelope { Ok(PutReceipt { chunk_id: chunk_id.into(), bytes: size, already_present: true }) } else { Err(StorageError::DigestMismatch) }
+                }
+                Err(error) => Err(StorageError::Io(error.to_string())),
             }
-            Err(error) => Err(StorageError::Io(error.to_string())),
-        };
-        let _ = fs::remove_file(temp);
+        })();
+        let _ = fs::remove_file(&temp);
         result
     }
 
