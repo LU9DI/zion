@@ -96,8 +96,12 @@ function persistState(state) {
     fsyncSync(fd);
     closeSync(fd); fd = undefined;
     renameSync(tmp, statePath);
-    const dirFd = openSync(dirname(statePath), fsConstants.O_RDONLY);
-    try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
+    // Directory-handle fsync is not portable in Node.js on Windows (EPERM).
+    // The state file itself is fsynced before rename; Windows directory-entry durability is weaker.
+    if (process.platform !== 'win32') {
+      const dirFd = openSync(dirname(statePath), fsConstants.O_RDONLY);
+      try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
+    }
   } catch (error) {
     if (fd !== undefined) try { closeSync(fd); } catch {}
     try { unlinkSync(tmp); } catch {}
@@ -162,8 +166,11 @@ function persistRateState(state) {
     fd = openSync(tmp, 'wx', 0o600);
     writeFileSync(fd, `${JSON.stringify(state)}\n`); fsyncSync(fd); closeSync(fd); fd = undefined;
     renameSync(tmp, rateStatePath);
-    const dirFd = openSync(dirname(rateStatePath), fsConstants.O_RDONLY);
-    try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
+    // Directory-handle fsync is not portable in Node.js on Windows (EPERM).
+    if (process.platform !== 'win32') {
+      const dirFd = openSync(dirname(rateStatePath), fsConstants.O_RDONLY);
+      try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
+    }
   } catch (error) {
     if (fd !== undefined) try { closeSync(fd); } catch {}
     try { unlinkSync(tmp); } catch {}
