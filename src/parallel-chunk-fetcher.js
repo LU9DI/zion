@@ -21,6 +21,9 @@ const SHA256 = /^[a-f0-9]{64}$/;
 export async function fetchChunksParallel({ transport, storageService, peers, chunks, concurrencyPerPeer = 2, timeoutMs = 10_000, signal } = {}) {
   if (!transport || !storageService || !Array.isArray(peers) || !Array.isArray(chunks) ||
     !Number.isSafeInteger(concurrencyPerPeer) || concurrencyPerPeer < 1 || concurrencyPerPeer > 16 ||
+    !Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 120_000 ||
+    (signal !== undefined && (!signal || typeof signal.aborted !== 'boolean' ||
+      typeof signal.addEventListener !== 'function' || typeof signal.removeEventListener !== 'function')) ||
     chunks.some(entry => {
       if (typeof entry === 'string') return !SHA256.test(entry);
       if (!entry || typeof entry !== 'object' || !SHA256.test(entry.chunkId ?? '')) return true;
