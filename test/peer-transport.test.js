@@ -300,7 +300,10 @@ test('official transport immediately closes peer sessions and stops listening on
   assert.equal(transport.server.listening, true);
   integrityGuard.status = { verified: false, quarantined: true, reason: 'hash-mismatch:src/peer-transport.js' };
   for (const listener of listeners) await listener({ reason: integrityGuard.status.reason });
-  await waitFor(() => socket.destroyed && transport.connections.size === 0 && !transport.server.listening, 5000);
+  // Quarantine destroys the server-side session. The client observes the remote close
+  // asynchronously and does not necessarily set its local `destroyed` flag on receipt.
+  await waitFor(() => transport.connections.size === 0 && !transport.server.listening, 5000);
+  await once(socket, 'close');
   assert.equal(transport.started, false);
   assert.throws(() => transport.send(socket, { type: 'PING', nonce: 'after-quarantine' }), /ZION_INTEGRITY_QUARANTINED|not writable|quarantined/);
 });
