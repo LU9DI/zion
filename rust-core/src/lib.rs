@@ -79,6 +79,22 @@ impl StorageCore {
         if !root_meta.is_dir() || root_meta.file_type().is_symlink() {
             return Err(StorageError::UnsafePath);
         }
+        // A process may be interrupted after creating the config temp file.
+        // Since this runs under the storage lock, reclaim only our exact temp
+        // namespace and only regular, non-symlink files; preserve unknown entries.
+        for entry in fs::read_dir(&self.root)? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with(".rea-rust-storage-config.tmp-") {
+                continue;
+            }
+            let metadata = fs::symlink_metadata(entry.path())?;
+            if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 256 {
+                return Err(StorageError::UnsafePath);
+            }
+            fs::remove_file(entry.path())?;
+        }
+
         let path = self.root.join(".rea-rust-storage-config");
         let expected = format!("version=1\nmax_chunk_bytes={}\nmax_storage_bytes={}\n", self.max_chunk_bytes, self.max_storage_bytes);
         match fs::symlink_metadata(&path) {
@@ -409,6 +425,21 @@ mod tests {
     }
     fn envelope(fill: u8) -> Vec<u8> { let mut value = b"REAC1".to_vec(); value.extend(std::iter::repeat(fill).take(64)); value }
     fn id(bytes: &[u8]) -> String { hex(&Sha256::digest(bytes)) }
+
+    #[test]
+    fn init_reclaims_only_regular_stale_config_temporary_files() {
+        let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
+        let stale = root.join(".rea-rust-storage-config.tmp-123-456");
+        fs::write(&stale, b"partial config").unwrap();
+        let store = StorageCore::new(&root, 1024, 2048).unwrap();
+
+        store.init().unwrap();
+
+        assert!(!stale.exists(), "a stale config temp should be reclaimed under the lock");
+        assert_eq!(store.used_bytes().unwrap(), 0);
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn rejects_chunk_limits_above_the_supported_ceiling() {
