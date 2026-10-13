@@ -27,7 +27,8 @@
     "content:verify-uploader": "node scripts/verify-uploader-attribution.js",
     "client:demo": "node scripts/demo-consumer-client.js",
     "db:migrate": "node scripts/migrate-postgres.js",
-    "start:official": "node scripts/start-official-node.js"
+    "start:official": "node scripts/start-official-node.js",
+    "bench:peer-transfer": "node scripts/benchmark-peer-transfer.js"
   },
   "license": "AGPL-3.0-only",
   "dependencies": {
