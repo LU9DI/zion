@@ -433,6 +433,7 @@ mod tests {
     #[test]
     fn lock_release_runs_when_the_protected_operation_fails() {
         let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
         let store = StorageCore::new(&root, 1024, 2048).unwrap();
         let result: Result<(), StorageError> =
             store.with_lock(|| Err(StorageError::UnsafePath));
