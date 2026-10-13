@@ -1,6 +1,8 @@
 import test from 'node:test';
 import { EventEmitter } from 'node:events';
 import assert from 'node:assert/strict';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { installShutdownHandlers, startOfficialNode } from '../scripts/start-official-node.js';
 import { createNodeIdentity } from '../src/peer-security.js';
 
@@ -48,7 +50,7 @@ test('official launcher refuses an adapter module without the explicit dependenc
     env,
     PoolClass: FakePool,
     loadAdapterModule: async specifier => {
-      assert.equal(specifier, 'file:///opt/zion/deployment/official-adapter.mjs');
+      assert.equal(specifier, pathToFileURL(resolve(env.ZION_OFFICIAL_ADAPTER_MODULE)).href);
       return {};
     },
   }), /createOfficialNodeDependencies/);
