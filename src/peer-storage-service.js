@@ -560,19 +560,40 @@ export class PeerStorageService {
     const requestId = randomBytes(16).toString('hex');
     const key = `${peerNodeId}:${requestId}`;
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => { this.pendingGets.delete(key); reject(new Error('Chunk fetch timed out')); }, timeoutMs);
+      const cleanup = () => {
+        clearTimeout(timeout);
+        socket.off?.('close', onClose);
+        socket.off?.('error', onError);
+      };
+      const finishReject = error => {
+        if (!this.pendingGets.has(key)) return;
+        this.pendingGets.delete(key);
+        cleanup();
+        reject(error);
+      };
+      const onClose = () => finishReject(new Error('Peer socket closed during chunk fetch'));
+      const onError = error => finishReject(new Error(`Peer socket failed during chunk fetch: ${error?.message ?? 'socket error'}`));
+      const timeout = setTimeout(() => finishReject(new Error('Chunk fetch timed out')), timeoutMs);
       timeout.unref?.();
-      this.pendingGets.set(key, { chunkId, resolve, reject, timeout });
+      this.pendingGets.set(key, { chunkId, resolve: value => { cleanup(); resolve(value); }, reject: finishReject, timeout, cleanup });
+      socket.once?.('close', onClose);
+      socket.once?.('error', onError);
+      // A socket may close between the initial writable check and listener setup.
+      if (socket.destroyed || !socket.writable) {
+        finishReject(new Error('Peer socket closed before chunk request was sent'));
+        return;
+      }
       try {
-        Promise.resolve(transport.send(socket, { type: 'GET_CHUNK', requestId, chunkId })).catch(error => {
-          clearTimeout(timeout); this.pendingGets.delete(key); reject(error);
-        });
-      } catch (error) { clearTimeout(timeout); this.pendingGets.delete(key); reject(error); }
+        Promise.resolve(transport.send(socket, { type: 'GET_CHUNK', requestId, chunkId })).catch(finishReject);
+      } catch (error) { finishReject(error); }
     });
   }
 
   closePendingGets(reason = 'Storage service closed') {
-    for (const pending of this.pendingGets.values()) { clearTimeout(pending.timeout); pending.reject(new Error(reason)); }
+    for (const pending of this.pendingGets.values()) {
+      pending.cleanup?.();
+      pending.reject(new Error(reason));
+    }
     this.pendingGets.clear();
   }
 
