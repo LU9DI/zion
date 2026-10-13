@@ -10,6 +10,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 function readRegularNoFollow(path) {
   let fd;
   try {
+    const pathStat = lstatSync(path);
+    if (pathStat.isSymbolicLink() || !pathStat.isFile()) throw Object.assign(new Error('not-regular-file'), { code: 'UNSAFE_FILE' });
     fd = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
     const before = fstatSync(fd);
     if (!before.isFile()) throw new Error('not-regular-file');
