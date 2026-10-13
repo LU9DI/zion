@@ -31,7 +31,10 @@ export class PersistentFileNotificationAnchorAdapter {
     let fd;
     let raw;
     try {
-      // O_NOFOLLOW closes the symlink check/read race on platforms that support it.
+      // Check the path itself first because Windows may not implement O_NOFOLLOW.
+      const pathStat = lstatSync(this.anchorPath);
+      if (pathStat.isSymbolicLink() || !pathStat.isFile()) throw fail('NOTIFICATION_ANCHOR_UNSAFE_FILE', 'Anchor must be a regular non-symlink file');
+      // O_NOFOLLOW additionally closes the symlink check/read race on platforms that support it.
       const flags = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
       fd = openSync(this.anchorPath, flags);
       const stat = fstatSync(fd);
@@ -39,6 +42,7 @@ export class PersistentFileNotificationAnchorAdapter {
       raw = readFileSync(fd, 'utf8');
     } catch (error) {
       if (error.code === 'ENOENT') return null;
+      if (error.code === 'NOTIFICATION_ANCHOR_UNSAFE_FILE') throw error;
       if (error.code === 'ELOOP') throw fail('NOTIFICATION_ANCHOR_UNSAFE_FILE', 'Anchor must be a regular non-symlink file');
       if (error.code === 'NOTIFICATION_ANCHOR_UNSAFE_FILE') throw error;
       throw error;
@@ -125,11 +129,13 @@ export class PersistentFileNotificationAnchorAdapter {
     try {
       fileFd = openSync(this.anchorPath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
       if (!fstatSync(fileFd).isFile()) throw fail('NOTIFICATION_ANCHOR_UNSAFE_FILE', 'Anchor must be a regular non-symlink file');
-      this._fsyncSync(fileFd);
+      // The checkpoint was fsynced before its original publication. Windows can reject fsync
+      // on a read-only handle with EPERM, so validate visibility/type without re-syncing it.
+      if (process.platform !== 'win32') this._fsyncSync(fileFd);
     } finally {
       if (fileFd !== undefined) closeSync(fileFd);
     }
-    // The checkpoint file is fsynced above. Directory-entry durability is weaker on Windows.
+    // The checkpoint file is fsynced above during publication. Directory-entry durability is weaker on Windows.
     if (process.platform !== 'win32') {
       const dirFd = openSync(directory, 'r');
       try { this._fsyncSync(dirFd); } finally { closeSync(dirFd); }
