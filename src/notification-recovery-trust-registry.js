@@ -45,7 +45,14 @@ export class NotificationRecoveryTrustRegistry {
           lockFd = undefined;
           try { unlinkSync(this.lockPath); } catch {}
         }
-        if (error?.code !== 'EEXIST') throw error;
+        // Windows may report EPERM for a concurrent exclusive-create race. Treat it as
+        // contention only when the lock path actually exists; otherwise preserve the error.
+        let lockExists = error?.code === 'EEXIST';
+        if (error?.code === 'EPERM') {
+          try { lstatSync(this.lockPath); lockExists = true; }
+          catch (statError) { if (statError?.code !== 'ENOENT') throw statError; }
+        }
+        if (!lockExists) throw error;
         // Only reclaim a lock when its recorded owner is demonstrably gone.
         try {
           const st = lstatSync(this.lockPath);
