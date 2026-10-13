@@ -288,3 +288,17 @@ test('accepts Rust storage adapter receipt shape after verified read-back', asyn
   } }, {}, transport);
   assert.equal(sent.some(message => message.type === 'STORE_RECEIPT'), true);
 });
+
+test('fetchChunk rejects promptly when the peer connection closes instead of waiting for the timeout', async t => {
+  const serverIdentity = createNodeIdentity(); const clientIdentity = createNodeIdentity();
+  const server = new PeerTransport({ identity: serverIdentity, onMessage: async (_message, socket) => { socket.destroy(); } });
+  const addr = await server.listen(); t.after(() => server.close());
+  const client = new PeerTransport({ identity: clientIdentity });
+  const service = new PeerStorageService({ identity: clientIdentity, store: {}, maxChunkBytes: 1024 * 1024 });
+  const socket = await client.connect('127.0.0.1', addr.port); t.after(() => { socket.destroy(); client.close(); });
+  const started = Date.now();
+  await assert.rejects(service.fetchChunk(client, socket, serverIdentity.nodeId, 'a'.repeat(64), { timeoutMs: 30_000 }), /connection closed/);
+  assert.ok(Date.now() - started < 2000, 'must not wait for the 30s timeout');
+  assert.equal(service.pendingGets.size, 0);
+  assert.equal(socket.listenerCount('close') <= 2, true); // transport's own listener only; ours was removed
+});
