@@ -69,8 +69,10 @@ test('aborting an in-flight chunk request cleans up pending state promptly', asy
   const socket = new EventEmitter();
   socket.destroyed = false;
   socket.writable = true;
-  const transport = { send() {} };
-  const pending = service.fetchChunk(transport, socket, peers[0]?.nodeId ?? createNodeIdentity().nodeId,
+  const sent = [];
+  const transport = { send(_socket, message) { sent.push(message); } };
+  const peerNodeId = peers[0]?.nodeId ?? createNodeIdentity().nodeId;
+  const pending = service.fetchChunk(transport, socket, peerNodeId,
     'a'.repeat(64), { timeoutMs: 10_000, signal: controller.signal });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(service.pendingGets.size, 1);
@@ -78,6 +80,15 @@ test('aborting an in-flight chunk request cleans up pending state promptly', asy
   await assert.rejects(pending, error => error.name === 'AbortError');
   assert.equal(service.pendingGets.size, 0);
   assert.equal(socket.listenerCount('close'), 0);
+
+  // A response already on the wire after cancellation must not be treated as an unsolicited attack
+  // and destroy the shared socket, which may carry other parallel chunk requests.
+  const lateBytes = envelope(100);
+  await assert.doesNotReject(service.handle({ nodeId: peerNodeId, payload: {
+    type: 'CHUNK_DATA', transferId: 'd'.repeat(32), requestId: sent[0].requestId,
+    chunkId: sha(lateBytes), totalBytes: lateBytes.length, partIndex: 0, partCount: 1,
+    data: lateBytes.toString('base64')
+  } }, socket, transport));
 });
 
 test('rejects invalid requests and unusable peers without touching the network', async t => {
