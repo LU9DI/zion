@@ -288,3 +288,15 @@ test('accepts Rust storage adapter receipt shape after verified read-back', asyn
   } }, {}, transport);
   assert.equal(sent.some(message => message.type === 'STORE_RECEIPT'), true);
 });
+
+
+test('rejects abort signals without cleanup support before registering a request', async () => {
+  const identity = createNodeIdentity();
+  const service = new PeerStorageService({ identity, store: {} });
+  const signal = { aborted: false, addEventListener() {} };
+  await assert.rejects(
+    service.fetchChunk({}, {}, identity.nodeId, 'a'.repeat(64), { signal }),
+    error => error instanceof TypeError && /Invalid chunk fetch request/.test(error.message)
+  );
+  assert.equal(service.pendingGets.size, 0);
+});
