@@ -409,19 +409,31 @@ impl StorageCore {
         let owner_path = lock.join("owner");
         let owner = fs::symlink_metadata(&owner_path).ok().filter(|m| m.is_file() && !m.file_type().is_symlink() && m.len() <= 128)
             .and_then(|_| fs::read_to_string(&owner_path).ok());
-        let stale = if let Some(ref owner) = owner {
-            let pid = owner.split(':').next().and_then(|value| value.parse::<i32>().ok());
-            match pid {
-                Some(pid) if pid > 0 => {
-                    // A live or permission-protected PID is never reaped. ESRCH is the
-                    // only positive evidence that the recorded owner process is gone.
-                    let rc = unsafe { libc::kill(pid, 0) };
-                    rc != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
-                }
-                _ => metadata.modified().ok().and_then(|time| time.elapsed().ok()).map(|age| age >= Duration::from_secs(30)).unwrap_or(false),
+        // Only trust a fully formed owner token. A valid PID with a malformed
+        // nonce must not be enough to reclaim a lock immediately: corruption or
+        // partial writes fall back to the conservative metadata-age policy.
+        let parsed_pid = owner.as_deref().and_then(|value| {
+            let token = value.strip_suffix('\n')?;
+            let (pid, nonce) = token.split_once(':')?;
+            if pid.is_empty()
+                || nonce.is_empty()
+                || !pid.bytes().all(|byte| byte.is_ascii_digit())
+                || !nonce.bytes().all(|byte| byte.is_ascii_digit())
+                || token.matches(':').count() != 1
+            {
+                return None;
             }
-        } else {
-            metadata.modified().ok().and_then(|time| time.elapsed().ok()).map(|age| age >= Duration::from_secs(30)).unwrap_or(false)
+            pid.parse::<i32>().ok().filter(|pid| *pid > 0)
+        });
+        let stale = match parsed_pid {
+            Some(pid) => {
+                // A live or permission-protected PID is never reaped. ESRCH is the
+                // only positive evidence that the recorded owner process is gone.
+                let rc = unsafe { libc::kill(pid, 0) };
+                rc != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+            }
+            None => metadata.modified().ok().and_then(|time| time.elapsed().ok())
+                .map(|age| age >= Duration::from_secs(30)).unwrap_or(false),
         };
         if stale {
             let suffix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
@@ -664,6 +676,23 @@ mod tests {
         let store = StorageCore::new(&root, 1024, 2048).unwrap();
         store.reap_stale_lock(&lock);
         assert!(!lock.exists(), "a lock owned by a definitively dead process should be recoverable");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn malformed_lock_owner_token_is_not_reaped_just_from_its_pid() {
+        let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
+        let lock = root.join(".rea-rust-storage-lock");
+        fs::create_dir(&lock).unwrap();
+        // The PID resembles a valid, likely-dead PID, but the nonce is malformed.
+        // Corrupt owner metadata must use the age-based fallback instead.
+        fs::write(lock.join("owner"), format!("{}:not-a-nonce\\n", i32::MAX)).unwrap();
+        let store = StorageCore::new(&root, 1024, 2048).unwrap();
+
+        store.reap_stale_lock(&lock);
+        assert!(lock.exists(), "malformed owner metadata must not trigger immediate lock reclamation");
         let _ = fs::remove_dir_all(root);
     }
 
