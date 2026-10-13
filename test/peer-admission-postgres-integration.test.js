@@ -28,7 +28,7 @@ function admissionInput(subjectDigit, issuerDigits, nonceDigits) {
 function runAdmissionWorker(input) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [
-      new URL('./fixtures/postgres-admission-worker.js', import.meta.url).pathname,
+      new URL('../scripts/test-fixtures/postgres-admission-worker.mjs', import.meta.url).pathname,
     ], {
       env: { ...process.env, ZION_ADMISSION_INPUT_JSON: JSON.stringify(input) },
       stdio: ['ignore', 'pipe', 'pipe'],
