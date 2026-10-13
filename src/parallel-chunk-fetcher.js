@@ -21,8 +21,13 @@ const SHA256 = /^[a-f0-9]{64}$/;
 export async function fetchChunksParallel({ transport, storageService, peers, chunks, concurrencyPerPeer = 2, timeoutMs = 10_000, signal } = {}) {
   if (!transport || !storageService || !Array.isArray(peers) || !Array.isArray(chunks) ||
     !Number.isSafeInteger(concurrencyPerPeer) || concurrencyPerPeer < 1 || concurrencyPerPeer > 16 ||
-    chunks.some(entry => !SHA256.test((typeof entry === 'string' ? entry : entry?.chunkId) ?? ''))) throw new TypeError('Invalid parallel fetch request');
-  const wanted = chunks.map(entry => typeof entry === 'string' ? { chunkId: entry, peerIds: null } : { chunkId: entry.chunkId, peerIds: Array.isArray(entry.peerIds) ? new Set(entry.peerIds) : null });
+    chunks.some(entry => {
+      if (typeof entry === 'string') return !SHA256.test(entry);
+      if (!entry || typeof entry !== 'object' || !SHA256.test(entry.chunkId ?? '')) return true;
+      return entry.peerIds !== undefined &&
+        (!Array.isArray(entry.peerIds) || entry.peerIds.some(peerId => typeof peerId !== 'string' || !SHA256.test(peerId)));
+    })) throw new TypeError('Invalid parallel fetch request');
+  const wanted = chunks.map(entry => typeof entry === 'string' ? { chunkId: entry, peerIds: null } : { chunkId: entry.chunkId, peerIds: entry.peerIds === undefined ? null : new Set(entry.peerIds) });
   const seen = new Set();
   const usable = peers.filter(peer => {
     const ok = peer && typeof peer.nodeId === 'string' && SHA256.test(peer.nodeId) && peer.nodeId !== storageService.identity?.nodeId &&
