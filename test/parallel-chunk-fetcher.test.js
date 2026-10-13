@@ -83,6 +83,8 @@ test('aborting an in-flight chunk request cleans up pending state promptly', asy
 test('rejects invalid requests and unusable peers without touching the network', async t => {
   const { transport, service } = await client(t, []);
   await assert.rejects(fetchChunksParallel({ transport, storageService: service, peers: [], chunks: ['nope'] }), TypeError);
+  await assert.rejects(fetchChunksParallel({ transport, storageService: service, peers: [], chunks: [], timeoutMs: 1 }), TypeError);
+  await assert.rejects(fetchChunksParallel({ transport, storageService: service, peers: [], chunks: [], signal: {} }), TypeError);
   await assert.rejects(fetchChunksParallel({ transport, storageService: service, peers: [], chunks: [{ chunkId: 'a'.repeat(64), peerIds: 'malformed' }] }), TypeError);
   await assert.rejects(fetchChunksParallel({ transport, storageService: service, peers: [], chunks: ['a'.repeat(64)] }), AggregateError);
 });
