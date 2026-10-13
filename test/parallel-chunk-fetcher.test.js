@@ -127,6 +127,25 @@ test('parallel fetch rejects with AbortError when cancelled in flight', async ()
   await assert.rejects(promise, error => error.name === 'AbortError');
 });
 
+test('direct chunk fetch rejects a pre-aborted signal before a blocked integrity check', async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const identity = createNodeIdentity();
+  const service = new PeerStorageService({
+    identity, store: {},
+    integrityGuard: {
+      assertHealthy() {},
+      checkHealthy() { return new Promise(() => {}); }
+    }
+  });
+  await assert.rejects(
+    service.fetchChunk({ send() { throw new Error('must not send'); } },
+      { destroyed: false, writable: true }, 'a'.repeat(64), 'b'.repeat(64),
+      { signal: controller.signal }),
+    error => error.name === 'AbortError'
+  );
+});
+
 test('parallel fetch honors a signal already aborted before scheduling', async () => {
   const controller = new AbortController(); controller.abort();
   await assert.rejects(fetchChunksParallel({
