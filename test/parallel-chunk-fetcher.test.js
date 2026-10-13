@@ -107,7 +107,7 @@ test('parallel fetch rejects with AbortError when cancelled in flight', async ()
     }
   };
   const promise = fetchChunksParallel({
-    transport: {}, storageService,
+    transport: { send() {} }, storageService,
     peers: [{ nodeId, socket: { destroyed: false, writable: true } }],
     chunks: ['c'.repeat(64)], signal: controller.signal
   });
