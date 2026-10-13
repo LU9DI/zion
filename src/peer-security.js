@@ -119,4 +119,22 @@ export class PeerRateLimiter {
     this.buckets.set(peerId, { tokens: tokens >= cost ? tokens - cost : tokens, at: time, lastSeen: time });
     return tokens >= cost;
   }
+
+  /**
+   * Wait for a token instead of treating ordinary sustained traffic as abuse.
+   * Returns false when throttling cannot make progress (zero refill or capacity
+   * exhaustion); callers must still enforce socket and queue bounds.
+   */
+  async wait(peerId, cost = 1) {
+    if (typeof peerId !== 'string' || !peerId || peerId.length > 256 ||
+      !Number.isFinite(cost) || cost <= 0 || cost > this.capacity) return false;
+    while (true) {
+      if (this.allow(peerId, cost)) return true;
+      if (this.refillPerMs <= 0) return false;
+      const bucket = this.buckets.get(peerId);
+      if (!bucket) return false;
+      const delayMs = Math.max(1, Math.ceil((cost - bucket.tokens) / this.refillPerMs));
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  }
 }
