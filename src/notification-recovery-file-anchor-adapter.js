@@ -155,7 +155,14 @@ export class PersistentFileNotificationAnchorAdapter {
         closeSync(fd);
         return { path: this.lockPath, token, dev: stat.dev, ino: stat.ino };
       } catch (error) {
-        if (error.code !== 'EEXIST') throw error;
+        // On Windows, a concurrent exclusive-create race can surface as EPERM rather than EEXIST.
+        // Treat it as contention only when lstat confirms that the lock path now exists.
+        let lockExists = false;
+        if (error.code === 'EPERM') {
+          try { lstatSync(this.lockPath); lockExists = true; }
+          catch (statError) { if (statError.code !== 'ENOENT') throw statError; }
+        }
+        if (error.code !== 'EEXIST' && !lockExists) throw error;
         if (Date.now() >= deadline) throw fail('NOTIFICATION_ANCHOR_LOCK_TIMEOUT', 'Anchor is locked; lock is not stolen automatically');
         await sleep(Math.min(this.retryIntervalMs, Math.max(1, deadline - Date.now())));
       }
