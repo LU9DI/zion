@@ -54,9 +54,11 @@ test('retries a chunk on the next candidate peer when the first one drops the co
   const empty = await startPeer(t, []); const full = await startPeer(t, [have]);
   const { transport, service, peers } = await client(t, [empty, full]);
   const both = [empty.identity.nodeId, full.identity.nodeId];
-  const [bytes] = await fetchChunksParallel({ transport, storageService: service, peers, chunks: [{ chunkId: sha(have), peerIds: both }], timeoutMs: 1500 });
+  const started = Date.now();
+  const [bytes] = await fetchChunksParallel({ transport, storageService: service, peers, chunks: [{ chunkId: sha(have), peerIds: both }], timeoutMs: 10_000 });
   assert.deepEqual(bytes, have);
-  await assert.rejects(fetchChunksParallel({ transport, storageService: service, peers: [peers[1]], chunks: [{ chunkId: sha(missing), peerIds: [full.identity.nodeId] }], timeoutMs: 1500 }),
+  assert.ok(Date.now() - started < 1_000, 'retry should not wait for the closed peer request timeout');
+  await assert.rejects(fetchChunksParallel({ transport, storageService: service, peers: [peers[1]], chunks: [{ chunkId: sha(missing), peerIds: [full.identity.nodeId] }], timeoutMs: 10_000 }),
     error => error instanceof AggregateError && error.errors.length === 1);
 });
 
