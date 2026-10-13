@@ -523,27 +523,41 @@ export class PeerStorageService {
   }
 
   /** Fetch one chunk from a specific authenticated peer; rejects on timeout or integrity failure. */
-  async fetchChunk(transport, socket, peerNodeId, chunkId, { timeoutMs = 10_000 } = {}) {
+  async fetchChunk(transport, socket, peerNodeId, chunkId, { timeoutMs = 10_000, signal } = {}) {
     await this.#assertIntegrity();
     if (typeof peerNodeId !== 'string' || !SHA256.test(peerNodeId) || !SHA256.test(chunkId ?? '') ||
-      !Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 120_000) throw new TypeError('Invalid chunk fetch request');
+      !Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 120_000 ||
+      (signal !== undefined && (typeof signal.aborted !== 'boolean' || typeof signal.addEventListener !== 'function'))) throw new TypeError('Invalid chunk fetch request');
+    if (signal?.aborted) throw Object.assign(new Error('Chunk fetch aborted'), { name: 'AbortError' });
     if (!socket || socket.destroyed || !socket.writable) return Promise.reject(new Error('Peer socket is not writable'));
     const requestId = randomBytes(16).toString('hex');
     const key = `${peerNodeId}:${requestId}`;
     return new Promise((outerResolve, outerReject) => {
       // A peer may close the socket on a missing chunk or rate-limit failure. Reject all requests on
       // that socket immediately instead of holding parallel workers until each request times out.
+      const cleanup = () => {
+        socket.off('close', onClose);
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const resolve = value => { cleanup(); outerResolve(value); };
+      const reject = error => { cleanup(); outerReject(error); };
       const onClose = () => {
         if (!this.pendingGets.delete(key)) return;
         clearTimeout(timeout);
-        outerReject(new Error('Peer connection closed before chunk fetch completed'));
+        reject(new Error('Peer connection closed before chunk fetch completed'));
       };
-      const resolve = value => { socket.off('close', onClose); outerResolve(value); };
-      const reject = error => { socket.off('close', onClose); outerReject(error); };
+      const onAbort = () => {
+        if (!this.pendingGets.delete(key)) return;
+        clearTimeout(timeout);
+        reject(Object.assign(new Error('Chunk fetch aborted'), { name: 'AbortError' }));
+      };
       const timeout = setTimeout(() => { this.pendingGets.delete(key); reject(new Error('Chunk fetch timed out')); }, timeoutMs);
       timeout.unref?.();
       this.pendingGets.set(key, { chunkId, resolve, reject, timeout });
       socket.once('close', onClose);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      // Avoid missing an abort between the initial check and listener registration.
+      if (signal?.aborted) { onAbort(); return; }
       try { transport.send(socket, { type: 'GET_CHUNK', requestId, chunkId }); }
       catch (error) { clearTimeout(timeout); this.pendingGets.delete(key); reject(error); }
     });
