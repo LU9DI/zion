@@ -45,7 +45,12 @@ export function persistTrustedHistoryState({ statePath, verification }) {
       tempFd = openSync(temp, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o600);
       writeFileSync(tempFd, `${JSON.stringify(state)}\n`); fsyncSync(tempFd); closeSync(tempFd); tempFd = undefined;
       renameSync(temp, path);
-      const dirFd = openSync(dir, fsConstants.O_RDONLY); try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
+      // Node.js cannot portably fsync directory handles on Windows (EPERM).
+      // The state file is fsynced before rename; Windows directory-entry durability is weaker.
+      if (process.platform !== 'win32') {
+        const dirFd = openSync(dir, fsConstants.O_RDONLY);
+        try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
+      }
     } catch (error) {
       if (tempFd !== undefined) closeSync(tempFd);
       try { unlinkSync(temp); } catch {}
