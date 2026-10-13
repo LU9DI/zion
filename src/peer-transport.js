@@ -268,7 +268,19 @@ export class PeerTransport {
     }
     if (!trustedByAllowlist && !previouslyAdmitted && !this.admissionController) { socket.destroy(); return; }
     // Admission control applies to handshake frames as well as application traffic.
-    if (!this.rateLimiter.allow(checked.nodeId) || !this.replayGuard.accept(message, this.now())) { socket.destroy(); return; }
+    // Sustained but otherwise valid traffic is throttled, not disconnected. Pause
+    // inbound reads while waiting so TCP applies backpressure to the sender.
+    if (typeof this.rateLimiter.wait === 'function') {
+      socket.pause();
+      let admitted;
+      try { admitted = await this.rateLimiter.wait(checked.nodeId); }
+      finally { if (!socket.destroyed) socket.resume(); }
+      if (socket.destroyed || admitted !== true) { if (!socket.destroyed) socket.destroy(); return; }
+    } else if (!this.rateLimiter.allow(checked.nodeId)) {
+      socket.destroy();
+      return;
+    }
+    if (!this.replayGuard.accept(message, this.now())) { socket.destroy(); return; }
     let payloadBytes;
     try { payloadBytes = Buffer.byteLength(JSON.stringify(checked.payload), 'utf8'); }
     catch { socket.destroy(); return; }
