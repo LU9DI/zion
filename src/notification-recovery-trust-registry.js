@@ -6,7 +6,13 @@ const KEY_ID_RE = /^[a-zA-Z0-9._:-]{1,128}$/;
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const canonical = state => JSON.stringify({ schemaVersion: state.schemaVersion, revision: state.revision, keys: state.keys, events: state.events });
-function syncDirectory(path) { const fd = openSync(path, 'r'); try { fsyncSync(fd); } finally { closeSync(fd); } }
+function syncDirectory(path) {
+  // Directory-handle fsync is not portable in Node.js on Windows (EPERM).
+  // State and lock files are still fsynced; directory-entry durability is weaker on Windows.
+  if (process.platform === 'win32') return;
+  const fd = openSync(path, 'r');
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+}
 function validatePublicKey(publicKey) {
   const key = createPublicKey(publicKey);
   if (key.asymmetricKeyType !== 'ed25519') throw new TypeError('Trusted recovery keys must be Ed25519 public keys');
