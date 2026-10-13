@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, writeFileSync, readFileSync, rmSync, readdirSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { NotificationRecoveryAuditAnchor } from '../src/notification-recovery-audit-anchor.js';
 
 function fixture(t) {
