@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createNodeIdentity } from '../src/peer-security.js';
+import { createNodeIdentity, PeerRateLimiter } from '../src/peer-security.js';
 import { PeerTransport } from '../src/peer-transport.js';
 
 function waitFor(predicate, timeoutMs = 1500) {
@@ -417,6 +417,8 @@ test('official transport admits an unknown peer only when its signed handshake c
   const socket = await client.connect('127.0.0.1', address.port);
   t.after(() => { socket.destroy(); client.close(); });
   await waitFor(() => server.admittedPeerIds.has(newcomer.nodeId));
+  // Server-side admission precedes the ACK on the wire; the client may send only after its own session is authenticated.
+  await waitFor(() => socket.__zionSession?.authenticated === true);
   client.send(socket, { type: 'PING', nonce: 'invite-admitted' });
   await waitFor(() => received);
   assert.equal(admissionController.isAdmitted(newcomer.nodeId), true);
@@ -456,4 +458,30 @@ test('official transport rejects an unknown peer with no valid invite vouchers',
   t.after(() => { socket.destroy(); client.close(); });
   await waitFor(() => socket.destroyed);
   assert.equal(admissionController.isAdmitted(newcomer.nodeId), false);
+});
+
+test('rate limit applies backpressure and delivers every frame instead of dropping an honest burst', async t => {
+  const serverIdentity = createNodeIdentity(); const clientIdentity = createNodeIdentity();
+  const received = [];
+  const rateLimiter = new PeerRateLimiter({ capacity: 3, refillPerSecond: 200 });
+  const server = new PeerTransport({ identity: serverIdentity, rateLimiter, onMessage: async m => { received.push(m.payload.nonce); } });
+  const addr = await server.listen(); t.after(() => server.close());
+  const client = new PeerTransport({ identity: clientIdentity, onMessage: async () => {} });
+  const socket = await client.connect('127.0.0.1', addr.port); t.after(() => { socket.destroy(); client.close(); });
+  for (let i = 0; i < 12; i++) client.send(socket, { type: 'PING', nonce: `burst-${i}` });
+  await waitFor(() => received.length === 12);
+  assert.equal(socket.destroyed, false);
+  assert.deepEqual(received, Array.from({ length: 12 }, (_, i) => `burst-${i}`));
+});
+
+test('a limiter that never refills still disconnects an over-budget peer', async t => {
+  const serverIdentity = createNodeIdentity(); const clientIdentity = createNodeIdentity();
+  const received = [];
+  const server = new PeerTransport({ identity: serverIdentity, rateLimiter: new PeerRateLimiter({ capacity: 2, refillPerSecond: 0 }), onMessage: async m => { received.push(m.payload.nonce); } });
+  const addr = await server.listen(); t.after(() => server.close());
+  const client = new PeerTransport({ identity: clientIdentity, onMessage: async () => {} });
+  const socket = await client.connect('127.0.0.1', addr.port); t.after(() => { socket.destroy(); client.close(); });
+  for (let i = 0; i < 5; i++) { try { client.send(socket, { type: 'PING', nonce: `x-${i}` }); } catch { break; } }
+  await waitFor(() => socket.destroyed);
+  assert.ok(received.length <= 2);
 });
