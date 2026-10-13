@@ -121,7 +121,17 @@ export class NotificationRecoveryTrustRegistry {
     try {
       fd = openSync(temp, 'wx', 0o600);
       writeFileSync(fd, `${JSON.stringify(next, null, 2)}\n`, 'utf8'); fsyncSync(fd); closeSync(fd); fd = undefined;
-      renameSync(temp, this.statePath);
+      // Windows can transiently reject replacement while another process has a read handle
+      // open (EPERM/EBUSY). The registry lock serializes writers; retry the same atomic rename
+      // briefly rather than deleting the committed state or failing a valid concurrent mutation.
+      const renameDeadline = Date.now() + 1000;
+      while (true) {
+        try { renameSync(temp, this.statePath); break; }
+        catch (error) {
+          if (process.platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(error?.code) || Date.now() >= renameDeadline) throw error;
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+        }
+      }
       syncDirectory(this.directory);
       this.state = next;
     } catch (error) {
