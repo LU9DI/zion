@@ -248,7 +248,7 @@ test('genesis-enabled peers reject different network IDs before application mess
   const client = new PeerTransport({ identity: createNodeIdentity(), protocolGenesis: testGenesis('Zion B') });
   const socket = await client.connect('127.0.0.1', address.port);
   t.after(() => socket.destroy());
-  await waitFor(() => socket.destroyed || [...server.connections].every(peer => peer.destroyed));
+  await waitFor(() => socket.destroyed, 3000);
   assert.equal(socket.destroyed, true);
 });
 
