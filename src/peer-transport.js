@@ -120,7 +120,12 @@ export class PeerTransport {
 
   #attach(socket) {
     this.connections.add(socket);
-    const session = { localNonce: randomBytes(32).toString('hex'), remoteNonce: null, authenticated: !this.genesis };
+    const session = {
+      localNonce: randomBytes(32).toString('hex'),
+      remoteNonce: null,
+      authenticated: !this.genesis,
+      rateLimitAbortController: new AbortController(),
+    };
     socket.__zionSession = session;
     socket.setTimeout(15_000, () => socket.destroy());
     socket.setNoDelay(true);
@@ -149,7 +154,10 @@ export class PeerTransport {
       if (pending.length > this.maxFrameBytes) socket.destroy();
     });
     socket.on('error', () => {});
-    socket.on('close', () => this.connections.delete(socket));
+    socket.on('close', () => {
+      session.rateLimitAbortController.abort();
+      this.connections.delete(socket);
+    });
     if (this.genesis) this.#sendHandshake(socket, { type: 'ZION_HANDSHAKE', networkId: this.networkId, protocolMajor: this.genesis.protocolMajor, nonce: session.localNonce });
   }
 
@@ -273,7 +281,7 @@ export class PeerTransport {
     if (typeof this.rateLimiter.wait === 'function') {
       socket.pause();
       let admitted;
-      try { admitted = await this.rateLimiter.wait(checked.nodeId); }
+      try { admitted = await this.rateLimiter.wait(checked.nodeId, 1, { signal: socket.__zionSession?.rateLimitAbortController.signal }); }
       finally { if (!socket.destroyed) socket.resume(); }
       if (socket.destroyed || admitted !== true) { if (!socket.destroyed) socket.destroy(); return; }
     } else if (!this.rateLimiter.allow(checked.nodeId)) {
