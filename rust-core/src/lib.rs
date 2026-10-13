@@ -277,7 +277,20 @@ impl StorageCore {
             // Only the active lock directory and the validated config file are
             // metadata. Interrupted config writes are accounted until init/put
             // can reclaim them under the lock; unknown root entries still fail closed.
-            if name == ".rea-rust-storage-lock" || name == ".rea-rust-storage-config" { continue; }
+            if name == ".rea-rust-storage-lock" { 
+                let metadata = fs::symlink_metadata(shard.path())?;
+                if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                    return Err(StorageError::UnsafePath);
+                }
+                continue;
+            }
+            if name == ".rea-rust-storage-config" {
+                let metadata = fs::symlink_metadata(shard.path())?;
+                if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 256 {
+                    return Err(StorageError::UnsafePath);
+                }
+                continue;
+            }
             if name.starts_with(".rea-rust-storage-config.tmp-") {
                 let metadata = fs::symlink_metadata(shard.path())?;
                 if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 256 {
@@ -538,6 +551,22 @@ mod tests {
 
         let _ = fs::remove_file(&root);
         let _ = fs::remove_dir_all(outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quota_scan_rejects_symlinked_config_file() {
+        use std::os::unix::fs::symlink;
+        let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
+        let outside = temp_root().with_extension("config");
+        fs::write(&outside, b"version=1\\nmax_chunk_bytes=1024\\nmax_storage_bytes=2048\\n").unwrap();
+        symlink(&outside, root.join(".rea-rust-storage-config")).unwrap();
+        let store = StorageCore::new(&root, 1024, 2048).unwrap();
+
+        assert!(matches!(store.used_bytes(), Err(StorageError::UnsafePath)));
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_file(outside);
     }
 
     #[cfg(unix)]
