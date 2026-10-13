@@ -107,7 +107,7 @@ test('remote witness client: successful evidence publication is complete, privat
   assert.equal(result.valid, true);
   const saved = JSON.parse(readFileSync(outputPath, 'utf8'));
   assert.equal(saved.witnessId, 'witness-a');
-  assert.equal((statSync(outputPath).mode & 0o777), 0o600);
+  if (process.platform !== 'win32') assert.equal((statSync(outputPath).mode & 0o777), 0o600);
   const leftovers = readdirSync(dirname(outputPath)).filter(name => name.startsWith('evidence.json.') && name.endsWith('.tmp'));
   assert.deepEqual(leftovers, [], 'temporary publication names should be removed after successful commit');
 });
