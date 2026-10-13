@@ -538,10 +538,13 @@ export class PeerStorageService {
 
   /** Fetch one chunk from a specific authenticated peer; rejects on timeout or integrity failure. */
   async fetchChunk(transport, socket, peerNodeId, chunkId, { timeoutMs = 10_000, signal } = {}) {
-    await this.#assertIntegrity();
     if (typeof peerNodeId !== 'string' || !SHA256.test(peerNodeId) || !SHA256.test(chunkId ?? '') ||
       !Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 120_000 ||
       (signal !== undefined && (typeof signal.aborted !== 'boolean' || typeof signal.addEventListener !== 'function' || typeof signal.removeEventListener !== 'function'))) throw new TypeError('Invalid chunk fetch request');
+    // Cancellation must remain prompt even if the integrity guard is slow or unavailable.
+    if (signal?.aborted) throw Object.assign(new Error('Chunk fetch aborted'), { name: 'AbortError' });
+    await this.#assertIntegrity();
+    // The signal may have been aborted while the asynchronous integrity check was running.
     if (signal?.aborted) throw Object.assign(new Error('Chunk fetch aborted'), { name: 'AbortError' });
     if (!socket || socket.destroyed || !socket.writable) return Promise.reject(new Error('Peer socket is not writable'));
     const requestId = randomBytes(16).toString('hex');
