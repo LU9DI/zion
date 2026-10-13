@@ -156,7 +156,7 @@ test('remote witness client: independent processes race safely for one evidence 
   const saved = JSON.parse(readFileSync(outputPath, 'utf8'));
   assert.equal(saved.witnessId, 'witness-process-race');
   assert.equal(saved.witnessKeyId, 'process-race-key');
-  assert.equal((statSync(outputPath).mode & 0o777), 0o600);
+  if (process.platform !== 'win32') assert.equal((statSync(outputPath).mode & 0o777), 0o600);
   const leftovers = readdirSync(dir).filter(name => name.startsWith('evidence.json.') && name.endsWith('.tmp'));
   assert.deepEqual(leftovers, [], 'each process must clean up only its own temporary file');
 });
