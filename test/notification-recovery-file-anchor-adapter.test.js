@@ -54,7 +54,7 @@ test('creates the anchor lock with private permissions before durable publicatio
         const lockPath = `${ctx.anchorPath}.lock`;
         const stat = lstatSync(lockPath);
         assert.equal(stat.isFile(), true);
-        assert.equal(stat.mode & 0o777, 0o600);
+        if (process.platform !== 'win32') assert.equal(stat.mode & 0o777, 0o600);
         assert.equal(JSON.parse((awaitlessReadFile)(lockPath, 'utf8')).pid, process.pid);
       }
       return fsyncSync(fd);
