@@ -80,8 +80,12 @@ test('transport serializes async handlers and bounds queued frames per socket', 
   const socket = connect(address.port, '127.0.0.1');
   t.after(() => socket.destroy());
   await once(socket, 'connect');
+  // Start one blocked handler before flooding the bounded queue. If the whole
+  // batch is written at once, overflow can close the socket before any handler starts.
+  client.send(socket, { type: 'PING', nonce: 'blocking-first' });
+  await waitFor(() => entered === 1, 3000);
   for (let i = 0; i < 70; i++) client.send(socket, { type: 'PING', nonce: String(i) });
-  await waitFor(() => socket.destroyed && entered > 0, 3000);
+  await waitFor(() => socket.destroyed, 3000);
   assert.equal(maxConcurrent, 1);
   assert.equal(socket.destroyed, true, 'socket is closed when its per-connection work queue overflows');
 });
