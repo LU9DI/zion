@@ -85,8 +85,12 @@ export class PersistentFileNotificationAnchorAdapter {
         this._fsyncSync(fd);
         closeSync(fd); fd = undefined;
         renameSync(temporaryPath, this.anchorPath);
-        const dirFd = openSync(directory, 'r');
-        try { this._fsyncSync(dirFd); } finally { closeSync(dirFd); }
+        // Windows does not support portable directory-handle fsync in Node.js (EPERM).
+        // The checkpoint file itself is fsynced; Windows directory-entry durability is weaker.
+        if (process.platform !== 'win32') {
+          const dirFd = openSync(directory, 'r');
+          try { this._fsyncSync(dirFd); } finally { closeSync(dirFd); }
+        }
       } catch (error) {
         if (fd !== undefined) { try { closeSync(fd); } catch {} }
         try { unlinkSync(temporaryPath); } catch {}
@@ -125,8 +129,11 @@ export class PersistentFileNotificationAnchorAdapter {
     } finally {
       if (fileFd !== undefined) closeSync(fileFd);
     }
-    const dirFd = openSync(directory, 'r');
-    try { this._fsyncSync(dirFd); } finally { closeSync(dirFd); }
+    // The checkpoint file is fsynced above. Directory-entry durability is weaker on Windows.
+    if (process.platform !== 'win32') {
+      const dirFd = openSync(directory, 'r');
+      try { this._fsyncSync(dirFd); } finally { closeSync(dirFd); }
+    }
   }
 
   async #acquireLock() {
