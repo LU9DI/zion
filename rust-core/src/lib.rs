@@ -560,7 +560,7 @@ mod tests {
         let root = temp_root();
         fs::create_dir_all(&root).unwrap();
         let outside = temp_root().with_extension("config");
-        fs::write(&outside, b"version=1\\nmax_chunk_bytes=1024\\nmax_storage_bytes=2048\\n").unwrap();
+        fs::write(&outside, b"version=1\nmax_chunk_bytes=1024\nmax_storage_bytes=2048\n").unwrap();
         symlink(&outside, root.join(".rea-rust-storage-config")).unwrap();
         let store = StorageCore::new(&root, 1024, 2048).unwrap();
 
