@@ -6,7 +6,12 @@ const sha256 = value => createHash('sha256').update(value).digest('hex');
 const ID_RE = /^[a-f0-9-]{36}$/i;
 const ACTIONS = new Set(['keep_pending', 'investigate', 'authorize_manual_retry']);
 function fail(code, message) { return Object.assign(new Error(message), { code }); }
-function syncDirectory(path) { const fd = openSync(path, 'r'); try { fsyncSync(fd); } finally { closeSync(fd); } }
+function syncDirectory(path) {
+  // Node.js cannot reliably fsync directory handles on Windows (EPERM).
+  // The record itself is fsynced before publication; directory-entry durability is weaker there.
+  if (process.platform === 'win32') return;
+  const fd = openSync(path, 'r'); try { fsyncSync(fd); } finally { closeSync(fd); }
+}
 function assertDirectory(path) {
   mkdirSync(path, { recursive: true, mode: 0o700 });
   const stat = lstatSync(path);
