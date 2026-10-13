@@ -6,11 +6,11 @@ const originalLinkSync = fs.linkSync.bind(fs);
 const originalFsyncSync = fs.fsyncSync.bind(fs);
 
 if (mode === 'before-link') {
-  fs.linkSync = () => process.kill(process.pid, 'SIGKILL');
+  fs.linkSync = () => process.exit(137);
 } else if (mode === 'after-link') {
   fs.linkSync = (source, target) => {
     originalLinkSync(source, target);
-    process.kill(process.pid, 'SIGKILL');
+    process.exit(137);
   };
 } else if (mode === 'directory-fsync-error') {
   fs.fsyncSync = fd => {
