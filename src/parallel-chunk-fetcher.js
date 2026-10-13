@@ -82,7 +82,7 @@ export async function fetchChunksParallel({ transport, storageService, peers, ch
   const workers = [];
   for (const peer of usable) for (let slot = 0; slot < concurrencyPerPeer; slot++) workers.push(worker(peer));
   await Promise.all(workers);
-  if (signal?.aborted) throw new Error('Parallel chunk fetch aborted');
+  if (signal?.aborted) throw Object.assign(new Error('Parallel chunk fetch aborted'), { name: 'AbortError' });
   const missing = wanted.filter((_, index) => results[index] === undefined).map(entry => entry.chunkId);
   if (missing.length) {
     throw new AggregateError(missing.map(id => failed.get(id) ?? new Error('No usable peer could supply the chunk')), `Could not fetch ${missing.length} chunk(s) from any peer`);
