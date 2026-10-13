@@ -293,10 +293,18 @@ test('official transport immediately closes peer sessions and stops listening on
   };
   const transport = new PeerTransport({ identity: createNodeIdentity(), protocolGenesis: testGenesis(), networkMode: 'official', integrityGuard });
   const address = await transport.listen();
-  const client = new PeerTransport({ identity: createNodeIdentity() });
+  // Official peers must complete the same genesis handshake before the server-side
+  // session remains established; a legacy client is correctly rejected pre-auth.
+  const clientGuard = {
+    status: { verified: true, quarantined: false, reason: null },
+    async checkHealthy() {},
+    assertHealthy() {},
+    addQuarantineListener() { return () => {}; },
+  };
+  const client = new PeerTransport({ identity: createNodeIdentity(), protocolGenesis: testGenesis(), networkMode: 'official', integrityGuard: clientGuard });
   const socket = await client.connect('127.0.0.1', address.port);
   t.after(async () => { await client.close(); await transport.close(); });
-  await waitFor(() => transport.connections.size === 1, 5000);
+  await waitFor(() => transport.connections.size === 1 && [...transport.connections][0]?.__zionSession?.authenticated, 5000);
   assert.equal(transport.server.listening, true);
   const socketClosed = once(socket, 'close');
   integrityGuard.status = { verified: false, quarantined: true, reason: 'hash-mismatch:src/peer-transport.js' };
