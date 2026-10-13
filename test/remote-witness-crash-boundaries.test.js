@@ -71,6 +71,14 @@ test('Witness publication crash immediately after atomic link leaves complete ev
 test('Witness directory-fsync failure reports uncertainty but never rolls back committed evidence', async t => {
   const f = fixture(t);
   const result = await runCrashWorker(f, 'directory-fsync-error');
+  if (process.platform === 'win32') {
+    // The production path intentionally skips directory fsync on Windows because Node
+    // reports EPERM for directory handles. The injected POSIX boundary is not reached.
+    assert.equal(result.code, 0, JSON.stringify(result));
+    assert.equal(JSON.parse(readFileSync(f.outputPath, 'utf8')).witnessId, 'witness-process-race');
+    assert.deepEqual(readdirSync(f.dir).filter(name => name.startsWith('evidence.json.') && name.endsWith('.tmp')), [], 'successful Windows publication removes its temporary alias');
+    return;
+  }
   assert.equal(result.code, 1, JSON.stringify(result));
   assert.match(result.stderr, /injected directory fsync failure/);
   assert.equal(existsSync(f.outputPath), true, 'committed evidence must not be deleted after directory fsync failure');
