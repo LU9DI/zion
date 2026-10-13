@@ -73,6 +73,12 @@ impl StorageCore {
     }
 
     fn sync_config_locked(&self) -> Result<(), StorageError> {
+        // Every write path (including direct CLI put calls) must reject a
+        // symlinked root; init() is not a prerequisite enforced by the CLI.
+        let root_meta = fs::symlink_metadata(&self.root)?;
+        if !root_meta.is_dir() || root_meta.file_type().is_symlink() {
+            return Err(StorageError::UnsafePath);
+        }
         let path = self.root.join(".rea-rust-storage-config");
         let expected = format!("version=1\nmax_chunk_bytes={}\nmax_storage_bytes={}\n", self.max_chunk_bytes, self.max_storage_bytes);
         match fs::symlink_metadata(&path) {
@@ -231,7 +237,12 @@ impl StorageCore {
 
     fn scan_bytes(&self) -> Result<u64, StorageError> {
         let mut total = 0u64;
-        if !self.root.exists() { return Ok(0); }
+        match fs::symlink_metadata(&self.root) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => return Err(StorageError::UnsafePath),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(error) => return Err(StorageError::Io(error.to_string())),
+        }
         for shard in fs::read_dir(&self.root)? {
             let shard = shard?;
             let name = shard.file_name().to_string_lossy().into_owned();
@@ -445,6 +456,27 @@ mod tests {
             "a failed operation must not leave its successfully acquired lock behind"
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlinked_root_for_put_and_quota_scan_without_writing_through_it() {
+        use std::os::unix::fs::symlink;
+        let root = temp_root();
+        let outside = temp_root().with_extension("outside");
+        fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, &root).unwrap();
+        let store = StorageCore::new(&root, 1024, 2048).unwrap();
+        let bytes = envelope(9);
+        let digest = id(&bytes);
+
+        assert!(matches!(store.put(&digest, &bytes), Err(StorageError::UnsafePath)));
+        assert!(matches!(store.used_bytes(), Err(StorageError::UnsafePath)));
+        assert!(!outside.join(".rea-rust-storage-config").exists(),
+            "a direct put must not write configuration through a symlinked root");
+
+        let _ = fs::remove_file(&root);
+        let _ = fs::remove_dir_all(outside);
     }
 
     #[cfg(unix)]
