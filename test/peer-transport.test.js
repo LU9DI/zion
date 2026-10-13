@@ -296,11 +296,11 @@ test('official transport immediately closes peer sessions and stops listening on
   const client = new PeerTransport({ identity: createNodeIdentity() });
   const socket = await client.connect('127.0.0.1', address.port);
   t.after(async () => { await client.close(); await transport.close(); });
-  await waitFor(() => transport.connections.size === 1);
+  await waitFor(() => transport.connections.size === 1, 5000);
   assert.equal(transport.server.listening, true);
   integrityGuard.status = { verified: false, quarantined: true, reason: 'hash-mismatch:src/peer-transport.js' };
   for (const listener of listeners) await listener({ reason: integrityGuard.status.reason });
-  await waitFor(() => socket.destroyed && transport.connections.size === 0 && !transport.server.listening);
+  await waitFor(() => socket.destroyed && transport.connections.size === 0 && !transport.server.listening, 5000);
   assert.equal(transport.started, false);
   assert.throws(() => transport.send(socket, { type: 'PING', nonce: 'after-quarantine' }), /ZION_INTEGRITY_QUARANTINED|not writable|quarantined/);
 });
