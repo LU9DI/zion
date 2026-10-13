@@ -688,7 +688,7 @@ mod tests {
         fs::create_dir(&lock).unwrap();
         // The PID resembles a valid, likely-dead PID, but the nonce is malformed.
         // Corrupt owner metadata must use the age-based fallback instead.
-        fs::write(lock.join("owner"), format!("{}:not-a-nonce\\n", i32::MAX)).unwrap();
+        fs::write(lock.join("owner"), format!("{}:not-a-nonce\n", i32::MAX)).unwrap();
         let store = StorageCore::new(&root, 1024, 2048).unwrap();
 
         store.reap_stale_lock(&lock);
