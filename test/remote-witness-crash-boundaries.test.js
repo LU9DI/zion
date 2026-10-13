@@ -33,7 +33,7 @@ function runCrashWorker(f, mode) {
   const injector = fileURLToPath(new URL('../scripts/test-fixtures/witness-crash-injector.mjs', import.meta.url));
   const worker = fileURLToPath(new URL('../scripts/remote-witness-publication-worker.mjs', import.meta.url));
   return new Promise(resolve => {
-    const child = spawn(process.execPath, ['--import', injector, worker, f.historyPath, f.tokenFile, f.publicKeyPath, f.privateKeyPath, f.outputPath], {
+    const child = spawn(process.execPath, ['--import', pathToFileURL(injector).href, worker, f.historyPath, f.tokenFile, f.publicKeyPath, f.privateKeyPath, f.outputPath], {
       env: { ...process.env, ZION_TEST_CRASH_MODE: mode },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
