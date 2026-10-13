@@ -40,3 +40,17 @@ const peerStorage = new PeerStorageService({ identity, store: storage });
 - The wrapper does not replace `OfficialNodeBootstrap` or automatically wire itself into a running application; the deployment must pass its hooks and use the wrapper as the actual store.
 - The sidecar is one-shot per command; status means the logical adapter is enabled, not that a long-lived Rust process exists.
 - This is not OS-level resource enforcement, does not solve filesystem portability concerns, and does not make replication acknowledgements proof of remote durability.
+
+## Filesystem lock recovery and operator procedure
+
+The Rust storage root is private state. Do not edit it while the sidecar or any process sharing that root is active. The active coordination directory is `.rea-rust-storage-lock`; temporary chunk files live inside two-character shard directories. The stale-lock reaper may preserve a `.rea-rust-storage-lock.stale-*` quarantine directory if it cannot prove that the moved directory is the exact stale lock it inspected and the shared lock path has already been recreated. This is deliberately fail-closed: quota scans reject unknown root entries rather than silently omitting potentially unaccounted bytes.
+
+If storage starts returning `UnsafePath` and a stale-lock quarantine entry is present:
+
+1. Stop all Zion processes and sidecars that can access the storage root; confirm no service supervisor restarts them.
+2. Take a filesystem-level snapshot or backup of the entire root before changing anything.
+3. Inspect the quarantine directory and its `owner` file without following symlinks. Do not assume its name proves that it is safe to delete.
+4. Compare its contents with the active lock and application logs. Preserve evidence when ownership or identity is ambiguous; do not recursively delete an unverified directory.
+5. Only after independently confirming that no process is using the root and retaining a recoverable backup, move the artifact out of the live root for offline analysis. Restart and verify storage health and quota accounting before resuming writes.
+
+This is a manual recovery procedure, not automatic self-healing. The payload quota is not an OS disk quota; use filesystem permissions and an OS-enforced quota for stronger containment against unrelated local writers.
