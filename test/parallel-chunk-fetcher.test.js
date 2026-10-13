@@ -88,3 +88,36 @@ test('rejects invalid requests and unusable peers without touching the network',
   await assert.rejects(fetchChunksParallel({ transport, storageService: service, peers: [], chunks: [{ chunkId: 'a'.repeat(64), peerIds: 'malformed' }] }), TypeError);
   await assert.rejects(fetchChunksParallel({ transport, storageService: service, peers: [], chunks: ['a'.repeat(64)] }), AggregateError);
 });
+
+
+test('parallel fetch rejects with AbortError when cancelled in flight', async () => {
+  const controller = new AbortController();
+  const nodeId = 'a'.repeat(64);
+  const storageService = {
+    identity: { nodeId: 'b'.repeat(64) },
+    maxTransfers: 1,
+    maxBufferedBytes: 1024,
+    maxChunkBytes: 1024,
+    fetchChunk(_transport, _socket, _peerNodeId, _chunkId, { signal }) {
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(Object.assign(new Error('cancelled'), { name: 'AbortError' })), { once: true });
+      });
+    }
+  };
+  const promise = fetchChunksParallel({
+    transport: {}, storageService,
+    peers: [{ nodeId, socket: { destroyed: false, writable: true } }],
+    chunks: ['c'.repeat(64)], signal: controller.signal
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  controller.abort();
+  await assert.rejects(promise, error => error.name === 'AbortError');
+});
+
+test('parallel fetch honors a signal already aborted before scheduling', async () => {
+  const controller = new AbortController(); controller.abort();
+  await assert.rejects(fetchChunksParallel({
+    transport: {}, storageService: { identity: { nodeId: 'b'.repeat(64) } },
+    peers: [], chunks: [], signal: controller.signal
+  }), error => error.name === 'AbortError');
+});
