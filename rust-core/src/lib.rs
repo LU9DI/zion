@@ -294,28 +294,24 @@ impl StorageCore {
             }
         }
         let result = operation();
-        // Atomically detach the lock before inspecting/removing it. Checking the
-        // owner and then deleting by the shared pathname is racy: a stale-lock
-        // reaper can move that directory and another process can create a new lock
-        // between those operations.
-        let suffix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
-        let quarantine = self.root.join(format!(".rea-rust-storage-lock.release-{}-{suffix}", std::process::id()));
-        if fs::rename(&lock, &quarantine).is_ok() {
-            let moved_is_directory = fs::symlink_metadata(&quarantine)
-                .map(|m| m.is_dir() && !m.file_type().is_symlink())
-                .unwrap_or(false);
-            let owner_path = quarantine.join("owner");
-            if moved_is_directory && fs::read_to_string(&owner_path).ok().as_deref() == Some(owner.as_str()) {
-                // The unique owner token proves this is the lock acquired above.
-                if fs::remove_file(&owner_path).is_ok() {
-                    let _ = fs::remove_dir(&quarantine);
-                }
-            } else {
-                // Never delete a directory whose ownership we cannot prove.
-                // Restore only if the shared lock path is still vacant.
-                if fs::symlink_metadata(&lock).is_err() {
-                    let _ = fs::rename(&quarantine, &lock);
-                }
+        // The live owner PID prevents cooperative stale-lock reapers from
+        // reclaiming this directory. Do not rename the shared lock path during
+        // release: a replacement owner could otherwise be moved out from under
+        // the process that just acquired it. Verify the exact owner token and
+        // remove only our own empty lock directory.
+        let lock_is_directory = fs::symlink_metadata(&lock)
+            .map(|m| m.is_dir() && !m.file_type().is_symlink())
+            .unwrap_or(false);
+        let owner_path = lock.join("owner");
+        let owner_is_regular = fs::symlink_metadata(&owner_path)
+            .map(|m| m.is_file() && !m.file_type().is_symlink() && m.len() <= 128)
+            .unwrap_or(false);
+        if lock_is_directory
+            && owner_is_regular
+            && fs::read_to_string(&owner_path).ok().as_deref() == Some(owner.as_str())
+        {
+            if fs::remove_file(&owner_path).is_ok() {
+                let _ = fs::remove_dir(&lock);
             }
         }
         result
