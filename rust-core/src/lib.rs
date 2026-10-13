@@ -262,9 +262,18 @@ impl StorageCore {
         for shard in fs::read_dir(&self.root)? {
             let shard = shard?;
             let name = shard.file_name().to_string_lossy().into_owned();
-            // Only the active lock directory is metadata. Silently skipping every
-            // dotfile would let unexpected root entries evade quota accounting.
+            // Only the active lock directory and the validated config file are
+            // metadata. Interrupted config writes are accounted until init/put
+            // can reclaim them under the lock; unknown root entries still fail closed.
             if name == ".rea-rust-storage-lock" || name == ".rea-rust-storage-config" { continue; }
+            if name.starts_with(".rea-rust-storage-config.tmp-") {
+                let metadata = fs::symlink_metadata(shard.path())?;
+                if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 256 {
+                    return Err(StorageError::UnsafePath);
+                }
+                total = total.checked_add(metadata.len()).ok_or(StorageError::InvalidConfiguration)?;
+                continue;
+            }
             let meta = fs::symlink_metadata(shard.path())?;
             if !meta.is_dir() || meta.file_type().is_symlink() || name.len() != 2 || !name.bytes().all(is_hex) { return Err(StorageError::UnsafePath); }
             for entry in fs::read_dir(shard.path())? {
@@ -427,15 +436,15 @@ mod tests {
     fn id(bytes: &[u8]) -> String { hex(&Sha256::digest(bytes)) }
 
     #[test]
-    fn init_reclaims_only_regular_stale_config_temporary_files() {
+    fn interrupted_config_temp_is_accounted_until_init_reclaims_it() {
         let root = temp_root();
         fs::create_dir_all(&root).unwrap();
         let stale = root.join(".rea-rust-storage-config.tmp-123-456");
         fs::write(&stale, b"partial config").unwrap();
         let store = StorageCore::new(&root, 1024, 2048).unwrap();
 
+        assert_eq!(store.used_bytes().unwrap(), b"partial config".len() as u64);
         store.init().unwrap();
-
         assert!(!stale.exists(), "a stale config temp should be reclaimed under the lock");
         assert_eq!(store.used_bytes().unwrap(), 0);
         let _ = fs::remove_dir_all(root);
