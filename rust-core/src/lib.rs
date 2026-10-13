@@ -434,8 +434,9 @@ mod tests {
     fn lock_release_runs_when_the_protected_operation_fails() {
         let root = temp_root();
         let store = StorageCore::new(&root, 1024, 2048).unwrap();
-        let result = store.with_lock(|| Err(StorageError::UnsafePath));
-        assert_eq!(result, Err(StorageError::UnsafePath));
+        let result: Result<(), StorageError> =
+            store.with_lock(|| Err(StorageError::UnsafePath));
+        assert!(matches!(result, Err(StorageError::UnsafePath)));
         assert!(
             !root.join(".rea-rust-storage-lock").exists(),
             "a failed operation must not leave its successfully acquired lock behind"
