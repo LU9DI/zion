@@ -24,6 +24,11 @@ function signedPayload(meta) {
   return Buffer.from(canonical(payload));
 }
 function fsyncDirectory(path) {
+  // Node.js cannot portably fsync directory handles on Windows: opening a directory
+  // and calling fsyncSync commonly fails with EPERM. File contents and metadata files
+  // are still fsynced individually before publication. Windows does not receive the
+  // same directory-entry crash-durability guarantee as POSIX filesystems here.
+  if (process.platform === 'win32') return;
   const fd = openSync(path, fsConstants.O_RDONLY);
   try { fsyncSync(fd); } finally { closeSync(fd); }
 }
