@@ -125,16 +125,31 @@ export class PeerRateLimiter {
    * Returns false when throttling cannot make progress (zero refill or capacity
    * exhaustion); callers must still enforce socket and queue bounds.
    */
-  async wait(peerId, cost = 1) {
+  async wait(peerId, cost = 1, { signal } = {}) {
     if (typeof peerId !== 'string' || !peerId || peerId.length > 256 ||
       !Number.isFinite(cost) || cost <= 0 || cost > this.capacity) return false;
     while (true) {
+      if (signal?.aborted) return false;
       if (this.allow(peerId, cost)) return true;
-      if (this.refillPerMs <= 0) return false;
+      if (this.refillPerMs <= 0 || signal?.aborted) return false;
       const bucket = this.buckets.get(peerId);
       if (!bucket) return false;
       const delayMs = Math.max(1, Math.ceil((cost - bucket.tokens) / this.refillPerMs));
-      await new Promise(resolve => setTimeout(resolve, delayMs));
+      const continued = await new Promise(resolve => {
+        let settled = false;
+        const finish = value => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          signal?.removeEventListener('abort', onAbort);
+          resolve(value);
+        };
+        const onAbort = () => finish(false);
+        const timer = setTimeout(() => finish(true), delayMs);
+        signal?.addEventListener('abort', onAbort, { once: true });
+        if (signal?.aborted) finish(false);
+      });
+      if (!continued) return false;
     }
   }
 }
