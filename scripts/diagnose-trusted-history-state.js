@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { constants as fsConstants, closeSync, fstatSync, openSync, readFileSync } from 'node:fs';
+import { constants as fsConstants, closeSync, fstatSync, lstatSync, openSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -8,6 +8,9 @@ const sha256 = value => createHash('sha256').update(value).digest('hex');
 function readBoundedRegularFile(path, limit) {
   let fd;
   try {
+    // O_NOFOLLOW is not consistently enforced on Windows; reject symlinks via lstat first.
+    const pathStat = lstatSync(path);
+    if (pathStat.isSymbolicLink() || !pathStat.isFile()) throw Object.assign(new Error('not a regular non-symlink file'), { code: 'UNSAFE_FILE' });
     fd = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
     const before = fstatSync(fd);
     if (!before.isFile()) throw new Error('not a regular file');
