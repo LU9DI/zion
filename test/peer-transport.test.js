@@ -446,6 +446,36 @@ test('close aborts inbound TLS sockets that have not completed their handshake',
   assert.equal(server.serverSockets.size, 0);
 });
 
+test('inbound TLS handshakes share the global connection budget with pending outbound dials', { skip: !opensslAvailable }, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'zion-mtls-capacity-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const material = createTlsTestMaterial(directory);
+  const stalledServer = createTcpServer(() => { /* accept TCP but never perform TLS handshake */ });
+  stalledServer.listen(0, '127.0.0.1');
+  await once(stalledServer, 'listening');
+  t.after(() => stalledServer.close());
+
+  const server = new PeerTransport({
+    identity: createNodeIdentity(), tlsOptions: material.server,
+    maxConnections: 1, tlsHandshakeTimeoutMs: 5000,
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+
+  const pendingDial = server.connect('127.0.0.1', stalledServer.address().port);
+  await waitFor(() => server.pendingConnections === 1);
+  const rawSocket = connect(address.port, '127.0.0.1');
+  t.after(() => rawSocket.destroy());
+  const closed = once(rawSocket, 'close');
+  await once(rawSocket, 'connect');
+  await closed;
+  assert.equal(server.pendingConnections, 1, 'the outbound handshake still holds the only connection reservation');
+  assert.equal(server.connections.size, 0, 'the inbound raw socket must be rejected before TLS negotiation consumes another slot');
+
+  await server.close();
+  await assert.rejects(pendingDial, /closed before peer connection completed|TLS|socket|closed|connect/i);
+});
+
 test('outbound TLS handshake timeout closes an unresponsive peer', { skip: !opensslAvailable }, async t => {
   const directory = mkdtempSync(join(tmpdir(), 'zion-mtls-timeout-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
