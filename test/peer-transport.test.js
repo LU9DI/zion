@@ -75,6 +75,7 @@ test('listen does not start a server if close races with an asynchronous integri
 
   const listening = transport.listen();
   await Promise.resolve();
+  await assert.rejects(transport.listen(), /already started or starting/i);
   const closing = transport.close();
   releaseHealthCheck();
   await closing;
