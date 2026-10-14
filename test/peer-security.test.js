@@ -71,6 +71,8 @@ test('rate limiter rotates bounded cleanup across maps larger than one sweep bat
   assert.equal(limiter.allow('fresh'), true);
   assert.equal(limiter.buckets.size, 67);
   assert.equal(limiter.allow('fresh'), true);
+  assert.equal(limiter.buckets.size, 3);
+  assert.equal(limiter.allow('fresh'), true);
   assert.equal(limiter.buckets.size, 1);
   assert.deepEqual([...limiter.buckets.keys()], ['fresh']);
 });
