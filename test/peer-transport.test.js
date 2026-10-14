@@ -985,6 +985,7 @@ test('socket destroyed during peer-tier admission never reaches replay or the me
   let serverSocket;
   let destroyDuringAdmission = false;
   let handled = 0;
+  const replayGuard = { accepted: 0, accept() { this.accepted += 1; return true; } };
   const rateLimiter = {
     allow() {
       if (destroyDuringAdmission) queueMicrotask(() => serverSocket.destroy());
@@ -994,6 +995,7 @@ test('socket destroyed during peer-tier admission never reaches replay or the me
   const server = new PeerTransport({
     identity: serverIdentity,
     rateLimiter,
+    replayGuard,
     onMessage: async () => { handled += 1; },
   });
   const address = await server.listen();
@@ -1007,5 +1009,6 @@ test('socket destroyed during peer-tier admission never reaches replay or the me
   client.send(socket, { type: 'PING', nonce: 'destroy-during-peer-tier-admission' });
   await waitFor(() => serverSocket.destroyed);
   await new Promise(resolve => setImmediate(resolve));
+  assert.equal(replayGuard.accepted, 0, 'a destroyed socket must not consume replay-cache state after tier admission');
   assert.equal(handled, 0, 'a destroyed socket must not reach application processing after tier admission');
 });
