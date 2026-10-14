@@ -381,6 +381,7 @@ test('mutual TLS peer transport completes a real verified handshake and exchange
   client.send(socket, { type: 'PING', nonce: 'verified-mtls' });
   await waitFor(() => Boolean(received));
   assert.equal(received.payload.nonce, 'verified-mtls');
+  assert.equal(server.pendingInboundTlsSockets.size, 0, 'completed TLS handshakes must release their raw-socket capacity reservations');
 });
 
 test('mutual TLS rejects a server certificate signed by an untrusted CA', { skip: !opensslAvailable }, async t => {
