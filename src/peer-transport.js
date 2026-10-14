@@ -345,6 +345,9 @@ export class PeerTransport {
     // Otherwise a validly signed pre-handshake flood can still force one backend read per frame.
     const tierLimiter = socket.__zionSession?.authenticated ? this.rateLimiter : this.unauthenticatedRateLimiter;
     if (!(await this.#admitWithinRate(socket, tierLimiter, checked.nodeId))) { socket.destroy(); return; }
+    // The async admission helper yields even for an immediate allow. A close can
+    // run before this continuation, so recheck before mutating replay state or dispatching.
+    if (socket.destroyed) return;
     if (!this.replayGuard.accept(message, this.now())) { socket.destroy(); return; }
     let payloadBytes;
     try { payloadBytes = Buffer.byteLength(JSON.stringify(checked.payload), 'utf8'); }
