@@ -58,6 +58,30 @@ test('transport defaults to loopback and bounds frames', async t => {
   await server.close();
 });
 
+test('listen does not start a server if close races with an asynchronous integrity check', async () => {
+  const identity = createNodeIdentity();
+  let releaseHealthCheck;
+  const healthCheck = new Promise(resolve => { releaseHealthCheck = resolve; });
+  const integrityGuard = {
+    status: { quarantined: false },
+    checkHealthy: () => healthCheck,
+    assertHealthy() {},
+  };
+  const genesis = testGenesis();
+  const transport = new PeerTransport({
+    identity, networkMode: 'official', protocolGenesis: genesis, integrityGuard,
+    trustedPeerIds: [identity.nodeId],
+  });
+
+  const listening = transport.listen();
+  await Promise.resolve();
+  await transport.close();
+  releaseHealthCheck();
+  await assert.rejects(listening, /closed before listen completed/i);
+  assert.equal(transport.started, false);
+  assert.equal(transport.server, null, 'shutdown must prevent server creation after the health check');
+});
+
 test('transport serializes async handlers and bounds queued frames per socket', async t => {
   let release;
   let entered = 0;
