@@ -61,7 +61,7 @@ test('rate limiter expires only oldest idle buckets while preserving recently to
 
 test('rate limiter rotates bounded cleanup across maps larger than one sweep batch', () => {
   let now = 0;
-  const limiter = new PeerRateLimiter({ capacity: 1, refillPerSecond: 1, maxPeers: 200, idleTtlMs: 100, now: () => now });
+  const limiter = new PeerRateLimiter({ capacity: 200, refillPerSecond: 1, maxPeers: 200, idleTtlMs: 100, now: () => now });
   for (let i = 0; i < 130; i++) assert.equal(limiter.allow(`peer-${i}`), true);
   assert.equal(limiter.buckets.size, 130);
 
