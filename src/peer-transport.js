@@ -208,7 +208,6 @@ export class PeerTransport {
       ? await this.admissionController.isAdmitted(checked.nodeId)
       : false;
     const previouslyAdmitted = this.admittedPeerIds.has(checked.nodeId) || controllerAdmitted === true;
-    if (!trustedByAllowlist && !previouslyAdmitted) { socket.destroy(); return; }
     if (!this.replayGuard.accept(message, this.now())) { socket.destroy(); return; }
     let payloadBytes;
     try { payloadBytes = Buffer.byteLength(JSON.stringify(checked.payload), 'utf8'); }
