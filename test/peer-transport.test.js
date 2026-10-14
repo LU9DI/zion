@@ -762,7 +762,8 @@ test('socket destroyed during immediate budget admission skips official integrit
   const client = new PeerTransport({ identity: createNodeIdentity(), protocolGenesis: genesis });
   const socket = await client.connect('127.0.0.1', address.port);
   t.after(() => { socket.destroy(); client.close(); });
-  await waitFor(() => server.connections.size === 1);
+  await waitFor(() => server.connections.size === 1 &&
+    socket.__zionSession?.authenticated && [...server.connections][0]?.__zionSession?.authenticated);
   serverSocket = [...server.connections][0];
   destroyOnAdmission = true;
   client.send(socket, { type: 'PING', nonce: 'destroy-during-budget-admission' });
