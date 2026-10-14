@@ -127,9 +127,18 @@ export class PeerTransport {
         }
       });
       if (this.tlsOptions) {
-        // The secure callback above attaches the established socket before this
-        // listener removes it from the pending-handshake budget.
-        server.on('secureConnection', socket => this.pendingInboundTlsSockets.delete(socket));
+        // The raw 'connection' socket and the TLSSocket emitted by
+        // 'secureConnection' are not guaranteed to be the same object. Match the
+        // established TLS socket to its raw TCP socket by the connection endpoint.
+        server.on('secureConnection', socket => {
+          for (const pendingSocket of this.pendingInboundTlsSockets) {
+            if (pendingSocket.remoteAddress === socket.remoteAddress &&
+                pendingSocket.remotePort === socket.remotePort) {
+              this.pendingInboundTlsSockets.delete(pendingSocket);
+              break;
+            }
+          }
+        });
       }
       await new Promise((resolve, reject) => {
         const onError = error => { server.off('listening', onListening); reject(error); };
