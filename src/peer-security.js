@@ -114,6 +114,11 @@ export class PeerRateLimiter {
     const tokens = Math.min(this.capacity, bucket.tokens + Math.max(0, this.now() - bucket.at) * this.refillPerMs);
     return tokens >= cost ? 0 : Math.ceil((cost - tokens) / this.refillPerMs);
   }
+  /** Remove per-peer state when its identity is no longer active (e.g. a closed socket). */
+  forget(peerId) {
+    if (typeof peerId !== 'string' || !peerId) return false;
+    return this.buckets.delete(peerId);
+  }
   allow(peerId, cost = 1) {
     if (typeof peerId !== 'string' || !peerId || peerId.length > 256 || !Number.isFinite(cost) || cost <= 0 || cost > this.capacity) return false;
     const time = this.now();
