@@ -516,3 +516,32 @@ test('peers that have not completed the handshake get the strict tier, authentic
   // Without a genesis the session starts authenticated, so the generous tier applies.
   assert.equal(calls.generous, 1); assert.equal(calls.strict, 0);
 });
+
+
+test('closed sockets release their pre-verification limiter buckets so connection churn cannot exhaust the map', async t => {
+  const received = [];
+  const socketRateLimiter = new PeerRateLimiter({ capacity: 8, refillPerSecond: 8, maxPeers: 1 });
+  const server = new PeerTransport({
+    identity: createNodeIdentity(),
+    socketRateLimiter,
+    onMessage: async message => { received.push(message.payload.nonce); },
+  });
+  const addr = await server.listen(); t.after(() => server.close());
+
+  const firstClient = new PeerTransport({ identity: createNodeIdentity() });
+  const firstSocket = await firstClient.connect('127.0.0.1', addr.port);
+  firstClient.send(firstSocket, { type: 'PING', nonce: 'first-session' });
+  await waitFor(() => received.includes('first-session'));
+  assert.equal(socketRateLimiter.buckets.size, 1);
+
+  firstSocket.destroy();
+  await firstClient.close();
+  await waitFor(() => socketRateLimiter.buckets.size === 0);
+
+  const secondClient = new PeerTransport({ identity: createNodeIdentity() });
+  const secondSocket = await secondClient.connect('127.0.0.1', addr.port);
+  t.after(() => { secondSocket.destroy(); secondClient.close(); });
+  secondClient.send(secondSocket, { type: 'PING', nonce: 'second-session' });
+  await waitFor(() => received.includes('second-session'));
+  assert.equal(secondSocket.destroyed, false);
+});
