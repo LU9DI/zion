@@ -198,15 +198,18 @@ export class PeerTransport {
     const checked = verifyPeerMessage(message, { now: this.now(), maxBytes: this.maxFrameBytes });
     if (!checked.ok) { socket.destroy(); return; }
     const trustedByAllowlist = !this.trustedPeerIds || this.trustedPeerIds.has(checked.nodeId);
+    if (!trustedByAllowlist && !this.admissionController) { socket.destroy(); return; }
+    // Enforce the peer tier before any potentially remote/transactional admission lookup.
+    // Otherwise a validly signed pre-handshake flood can still force one backend read per frame.
+    const tierLimiter = socket.__zionSession?.authenticated ? this.rateLimiter : this.unauthenticatedRateLimiter;
+    if (!(await this.#admitWithinRate(socket, tierLimiter, checked.nodeId))) { socket.destroy(); return; }
     // Admission backends may be transactional and remote, so their fresh reads can be async.
     const controllerAdmitted = this.admissionController
       ? await this.admissionController.isAdmitted(checked.nodeId)
       : false;
     const previouslyAdmitted = this.admittedPeerIds.has(checked.nodeId) || controllerAdmitted === true;
-    if (!trustedByAllowlist && !previouslyAdmitted && !this.admissionController) { socket.destroy(); return; }
-    // Admission control applies to handshake frames as well as application traffic.
-    const tierLimiter = socket.__zionSession?.authenticated ? this.rateLimiter : this.unauthenticatedRateLimiter;
-    if (!(await this.#admitWithinRate(socket, tierLimiter, checked.nodeId)) || !this.replayGuard.accept(message, this.now())) { socket.destroy(); return; }
+    if (!trustedByAllowlist && !previouslyAdmitted) { socket.destroy(); return; }
+    if (!this.replayGuard.accept(message, this.now())) { socket.destroy(); return; }
     let payloadBytes;
     try { payloadBytes = Buffer.byteLength(JSON.stringify(checked.payload), 'utf8'); }
     catch { socket.destroy(); return; }
