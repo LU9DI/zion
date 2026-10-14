@@ -71,7 +71,7 @@ export class PeerTransport {
     this.maxFrameBytes = maxFrameBytes; this.maxMessageBytes = this.genesis?.limits.maxMessageBytes ?? maxFrameBytes; this.allowedTypes = new Set(allowedTypes); this.trustedPeerIds = trustedPeerIds === null ? null : new Set(trustedPeerIds); this.onMessage = onMessage;
     this.replayGuard = replayGuard; this.rateLimiter = rateLimiter; this.unauthenticatedRateLimiter = unauthenticatedRateLimiter; this.socketRateLimiter = socketRateLimiter; this.transferScheduler = transferScheduler; this.now = now;
     this.networkId = this.genesis ? calculateNetworkId(this.genesis) : null;
-    this.connections = new Set(); this.pendingConnections = 0; this.pendingOutboundSockets = new Set(); this.pendingOutboundSettlements = new Set(); this.serverSockets = new Set(); this.server = null; this.started = false; this.closing = false; this.closeOperations = 0; this.closeCompletion = null;
+    this.connections = new Set(); this.pendingConnections = 0; this.pendingOutboundSockets = new Set(); this.pendingOutboundSettlements = new Set(); this.serverSockets = new Set(); this.pendingInboundTlsSockets = new Set(); this.server = null; this.started = false; this.closing = false; this.closeOperations = 0; this.closeCompletion = null;
     this.removeQuarantineListener = this.networkMode === 'official' && typeof integrityGuard.addQuarantineListener === 'function'
       ? integrityGuard.addQuarantineListener(report => this.#isolateForIntegrityFailure(report?.reason ?? 'integrity-quarantine'))
       : null;
@@ -110,9 +110,27 @@ export class PeerTransport {
       // raw inbound sockets as well so close() can abort stalled inbound handshakes.
       server.on('connection', socket => {
         this.serverSockets.add(socket);
-        socket.once('close', () => this.serverSockets.delete(socket));
-        if (this.closing) socket.destroy();
+        socket.once('close', () => {
+          this.serverSockets.delete(socket);
+          this.pendingInboundTlsSockets.delete(socket);
+        });
+        if (this.closing) { socket.destroy(); return; }
+        // TLS emits 'connection' before negotiation. Count those raw sockets against
+        // outbound reservations too, or maxConnections outbound handshakes plus
+        // maxConnections stalled inbound TLS handshakes can coexist.
+        if (this.tlsOptions) {
+          if (this.connections.size + this.pendingConnections + this.pendingInboundTlsSockets.size >= this.maxConnections) {
+            socket.destroy();
+            return;
+          }
+          this.pendingInboundTlsSockets.add(socket);
+        }
       });
+      if (this.tlsOptions) {
+        // The secure callback above attaches the established socket before this
+        // listener removes it from the pending-handshake budget.
+        server.on('secureConnection', socket => this.pendingInboundTlsSockets.delete(socket));
+      }
       await new Promise((resolve, reject) => {
         const onError = error => { server.off('listening', onListening); reject(error); };
         const onListening = () => {
