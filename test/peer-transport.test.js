@@ -348,6 +348,25 @@ test('localhost bind requires TLS because resolver aliases are not trusted as lo
 });
 
 
+test('closing transport aborts pending outbound TLS handshakes immediately', { skip: !opensslAvailable }, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'zion-mtls-close-pending-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const material = createTlsTestMaterial(directory);
+  const stalledServer = createTcpServer(() => { /* accept TCP but never perform TLS handshake */ });
+  stalledServer.listen(0, '127.0.0.1');
+  await once(stalledServer, 'listening');
+  t.after(() => stalledServer.close());
+  const address = stalledServer.address();
+  const client = new PeerTransport({ identity: createNodeIdentity(), tlsOptions: material.client, tlsHandshakeTimeoutMs: 5000 });
+  const pending = client.connect('127.0.0.1', address.port);
+  await waitFor(() => client.pendingConnections === 1);
+  assert.equal(client.pendingOutboundSockets.size, 1);
+  await client.close();
+  await assert.rejects(pending, /closed before peer connection completed|TLS handshake timed out|socket hang up|closed/i);
+  assert.equal(client.pendingConnections, 0);
+  assert.equal(client.pendingOutboundSockets.size, 0);
+});
+
 test('outbound TLS handshake timeout closes an unresponsive peer', { skip: !opensslAvailable }, async t => {
   const directory = mkdtempSync(join(tmpdir(), 'zion-mtls-timeout-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
