@@ -378,7 +378,22 @@ export class PeerTransport {
       if (!Number.isFinite(waitMs) || waitMs > MAX_THROTTLE_MS || socket.destroyed) return false;
       session.throttled = (session.throttled ?? 0) + 1;
       socket.pause();
-      await new Promise(resolve => setTimeout(resolve, Math.max(1, waitMs)));
+      // A closed socket must cancel the refill sleep immediately. Otherwise a
+      // throttled frame can keep a timer alive for seconds after close()/quarantine.
+      await new Promise(resolve => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          socket.off('close', onClose);
+          resolve();
+        };
+        const timer = setTimeout(finish, Math.max(1, waitMs));
+        const onClose = () => finish();
+        socket.once('close', onClose);
+        if (socket.destroyed) finish();
+      });
       session.throttled -= 1;
       if (session.throttled === 0 && !socket.destroyed) socket.resume();
       if (socket.destroyed) return false;
