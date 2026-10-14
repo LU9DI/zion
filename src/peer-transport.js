@@ -84,6 +84,13 @@ export class PeerTransport {
     if (this.started || this.starting) throw new Error('Transport already started or starting');
     this.starting = true;
     this.closing = false;
+    // close() unsubscribes from quarantine notifications; restore the listener if
+    // this transport instance is explicitly started again.
+    if (this.networkMode === 'official' && !this.removeQuarantineListener &&
+        typeof this.integrityGuard.addQuarantineListener === 'function') {
+      this.removeQuarantineListener = this.integrityGuard.addQuarantineListener(report =>
+        this.#isolateForIntegrityFailure(report?.reason ?? 'integrity-quarantine'));
+    }
     let settleListen;
     this.listenCompletion = new Promise(resolve => { settleListen = resolve; });
     try {
