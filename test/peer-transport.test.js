@@ -466,7 +466,7 @@ test('inbound TLS handshakes share the global connection budget with pending out
   await waitFor(() => server.pendingConnections === 1);
   const rawSocket = connect(address.port, '127.0.0.1');
   t.after(() => rawSocket.destroy());
-  const closed = once(rawSocket, 'close');
+  const closed = new Promise(resolve => rawSocket.once('close', resolve));
   await once(rawSocket, 'connect');
   await closed;
   assert.equal(server.pendingConnections, 1, 'the outbound handshake still holds the only connection reservation');
