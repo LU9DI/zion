@@ -475,6 +475,24 @@ test('inbound TLS handshakes share the global connection budget with pending out
 
   await server.close();
   await assert.rejects(pendingDial, /closed before peer connection completed|TLS|socket|closed|connect/i);
+
+  // The reverse ordering must reserve capacity too: an inbound TLS handshake
+  // already in progress prevents a new outbound dial from taking the same slot.
+  const server2 = new PeerTransport({
+    identity: createNodeIdentity(), tlsOptions: material.server,
+    maxConnections: 1, tlsHandshakeTimeoutMs: 5000,
+  });
+  const address2 = await server2.listen();
+  t.after(() => server2.close());
+  const rawSocket2 = connect(address2.port, '127.0.0.1');
+  t.after(() => rawSocket2.destroy());
+  await once(rawSocket2, 'connect');
+  await waitFor(() => server2.pendingInboundTlsSockets.size === 1);
+  await assert.rejects(
+    server2.connect('127.0.0.1', stalledServer.address().port),
+    /Connection capacity reached/,
+  );
+  await server2.close();
 });
 
 test('outbound TLS handshake timeout closes an unresponsive peer', { skip: !opensslAvailable }, async t => {
