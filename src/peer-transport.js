@@ -218,19 +218,28 @@ export class PeerTransport {
         if (settled) return;
         settled = true;
         socket.off('error', onError);
+        socket.off('close', onClose);
         socket.off(readyEvent, onReady);
         socket.destroy();
         reject(new Error(useTls ? 'TLS handshake timed out' : 'Peer connection timed out'));
       }, this.tlsHandshakeTimeoutMs);
       const onError = error => {
         if (settled) return;
-        settled = true; clearTimeout(timer); socket.off(readyEvent, onReady); reject(error);
+        settled = true; clearTimeout(timer);
+        socket.off('close', onClose); socket.off(readyEvent, onReady); reject(error);
+      };
+      const onClose = () => {
+        if (settled) return;
+        settled = true; clearTimeout(timer);
+        socket.off('error', onError); socket.off(readyEvent, onReady);
+        reject(new Error('Peer socket closed before connection completed'));
       };
       const onReady = () => {
         if (settled) return;
-        settled = true; clearTimeout(timer); socket.off('error', onError); resolve();
+        settled = true; clearTimeout(timer);
+        socket.off('error', onError); socket.off('close', onClose); resolve();
       };
-      socket.once('error', onError); socket.once(readyEvent, onReady);
+      socket.once('error', onError); socket.once('close', onClose); socket.once(readyEvent, onReady);
       });
       if (this.closing || socket.destroyed) throw new Error('Transport closed before peer connection completed');
       if (this.connections.size >= this.maxConnections) { socket.destroy(); throw new Error('Connection capacity reached'); }
