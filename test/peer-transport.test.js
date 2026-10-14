@@ -721,6 +721,53 @@ test('socket budget runs before the official integrity guard and JSON/signature 
 });
 
 
+test('destroyed socket stops frame processing after an asynchronous integrity check', async t => {
+  const genesis = testGenesis();
+  const serverIdentity = createNodeIdentity();
+  const clientIdentity = createNodeIdentity();
+  let blockChecks = false;
+  let enteredBlockedCheck;
+  let releaseBlockedCheck;
+  const blockedCheck = new Promise(resolve => { releaseBlockedCheck = resolve; });
+  const entered = new Promise(resolve => { enteredBlockedCheck = resolve; });
+  let handled = 0;
+  const integrityGuard = {
+    async checkHealthy() {
+      if (blockChecks) {
+        enteredBlockedCheck();
+        await blockedCheck;
+      }
+    },
+    assertHealthy() {},
+  };
+  const server = new PeerTransport({
+    identity: serverIdentity,
+    networkMode: 'official',
+    protocolGenesis: genesis,
+    integrityGuard,
+    trustedPeerIds: [serverIdentity.nodeId, clientIdentity.nodeId],
+    onMessage: async () => { handled++; },
+  });
+  const address = await server.listen();
+  t.after(async () => { releaseBlockedCheck(); await server.close(); });
+  const client = new PeerTransport({ identity: clientIdentity, protocolGenesis: genesis });
+  t.after(() => client.close());
+  const clientSocket = await client.connect('127.0.0.1', address.port);
+  await waitFor(() => clientSocket.__zionSession?.authenticated &&
+    [...server.connections][0]?.__zionSession?.authenticated);
+
+  blockChecks = true;
+  client.send(clientSocket, { type: 'PING', nonce: 'close-during-health-check' });
+  await entered;
+  const serverSocket = [...server.connections][0];
+  assert.ok(serverSocket);
+  serverSocket.destroy();
+  releaseBlockedCheck();
+  await waitFor(() => serverSocket.destroyed);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(handled, 0, 'a frame must not be processed after its socket is destroyed during an awaited health check');
+});
+
 test('authenticated application frames do not query the admission backend again', async t => {
   const genesis = testGenesis();
   const serverIdentity = createNodeIdentity(); const clientIdentity = createNodeIdentity();
