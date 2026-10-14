@@ -201,6 +201,11 @@ export class PeerTransport {
       // Socket IDs are unique per connection; release their bucket immediately instead of
       // retaining churned connections until the limiter's idle TTL expires.
       this.socketRateLimiter.forget?.(session.id);
+      // Admission cache entries exist only while at least one session for that peer is active.
+      // Otherwise repeated peer churn could grow this Set without bound over the process lifetime.
+      if (session.peerNodeId && ![...this.connections].some(peer => peer.__zionSession?.peerNodeId === session.peerNodeId)) {
+        this.admittedPeerIds.delete(session.peerNodeId);
+      }
     });
     if (this.genesis) this.#sendHandshake(socket, { type: 'ZION_HANDSHAKE', networkId: this.networkId, protocolMajor: this.genesis.protocolMajor, nonce: session.localNonce });
   }
@@ -297,6 +302,7 @@ export class PeerTransport {
     catch { socket.destroy(); return; }
     const checked = verifyPeerMessage(message, { now: this.now(), maxBytes: this.maxFrameBytes });
     if (!checked.ok) { socket.destroy(); return; }
+    if (socket.__zionSession) socket.__zionSession.peerNodeId = checked.nodeId;
     const trustedByAllowlist = !this.trustedPeerIds || this.trustedPeerIds.has(checked.nodeId);
     if (!trustedByAllowlist && !this.admissionController) { socket.destroy(); return; }
     // Enforce the peer tier before any potentially remote/transactional admission lookup.
@@ -317,11 +323,14 @@ export class PeerTransport {
         // store read for every authenticated application frame from an already connected peer.
         const previouslyAdmitted = this.admittedPeerIds.has(checked.nodeId) ||
           (this.admissionController ? await this.admissionController.isAdmitted(checked.nodeId) === true : false);
+        if (socket.destroyed) return;
         if (!trustedByAllowlist && !previouslyAdmitted) {
           let admission;
           try { admission = await this.admissionController.admit({ subjectNodeId: checked.nodeId, vouchers: payload.vouchers }); }
           catch { socket.destroy(); return; }
+          if (socket.destroyed) return;
           const admittedAfterAttempt = await this.admissionController.isAdmitted(checked.nodeId);
+          if (socket.destroyed) return;
           if (!admission?.ok && !admittedAfterAttempt) { socket.destroy(); return; }
           this.admittedPeerIds.add(checked.nodeId);
         }
