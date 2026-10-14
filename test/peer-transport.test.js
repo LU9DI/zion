@@ -987,7 +987,7 @@ test('socket destroyed during peer-tier admission never reaches replay or the me
   let handled = 0;
   const rateLimiter = {
     allow() {
-      if (destroyDuringAdmission) serverSocket.destroy();
+      if (destroyDuringAdmission) queueMicrotask(() => serverSocket.destroy());
       return true;
     },
   };
