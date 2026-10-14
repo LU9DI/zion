@@ -111,7 +111,9 @@ export class PeerRateLimiter {
     const bucket = this.buckets.get(peerId);
     if (!bucket) return 0;
     if (this.refillPerMs <= 0) return Infinity;
-    const tokens = Math.min(this.capacity, bucket.tokens + Math.max(0, this.now() - bucket.at) * this.refillPerMs);
+    const time = this.now();
+    if (!Number.isFinite(time)) return Infinity;
+    const tokens = Math.min(this.capacity, bucket.tokens + Math.max(0, time - bucket.at) * this.refillPerMs);
     return tokens >= cost ? 0 : Math.ceil((cost - tokens) / this.refillPerMs);
   }
   /** Remove per-peer state when its identity is no longer active (e.g. a closed socket). */
@@ -122,6 +124,8 @@ export class PeerRateLimiter {
   allow(peerId, cost = 1) {
     if (typeof peerId !== 'string' || !peerId || peerId.length > 256 || !Number.isFinite(cost) || cost <= 0 || cost > this.capacity) return false;
     const time = this.now();
+    // A broken injected clock must fail closed without corrupting token state.
+    if (!Number.isFinite(time)) return false;
     // Sweep a bounded rotating batch: an untrusted peer can grow this map up to
     // maxPeers, so a full scan on every frame is O(maxPeers) CPU under churn.
     // Rotate live buckets to the end so repeated calls eventually inspect all entries,
