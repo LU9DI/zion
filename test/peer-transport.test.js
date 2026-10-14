@@ -575,3 +575,22 @@ test('pre-handshake rate limiting happens before the admission backend is querie
   await waitFor(() => socket.destroyed);
   assert.equal(admissionReads, 0, 'a rate-limited handshake must not trigger an admission-store read');
 });
+
+
+test('socket budget runs before the official integrity guard and JSON/signature processing', async t => {
+  const genesis = testGenesis();
+  const identity = createNodeIdentity();
+  let guardChecks = 0;
+  const integrityGuard = { async checkHealthy() { guardChecks += 1; }, assertHealthy() {} };
+  const server = new PeerTransport({
+    identity, networkMode: 'official', protocolGenesis: genesis, integrityGuard,
+    trustedPeerIds: [identity.nodeId],
+    socketRateLimiter: { allow: () => false },
+  });
+  const addr = await server.listen(); t.after(() => server.close());
+  const client = new PeerTransport({ identity: createNodeIdentity(), protocolGenesis: genesis });
+  const socket = await client.connect('127.0.0.1', addr.port);
+  t.after(() => { socket.destroy(); client.close(); });
+  await waitFor(() => socket.destroyed);
+  assert.equal(guardChecks, 0, 'a denied socket must not trigger integrity checks or later frame processing');
+});
