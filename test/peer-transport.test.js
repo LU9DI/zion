@@ -765,6 +765,7 @@ test('outbound connection capacity includes sockets still completing their hands
 
 test('concurrent close calls share one shutdown operation and remain idempotent', async t => {
   const transport = new PeerTransport({ identity: createNodeIdentity() });
+  t.after(() => transport.close());
   await transport.listen();
   const server = transport.server;
 
@@ -781,5 +782,4 @@ test('concurrent close calls share one shutdown operation and remain idempotent'
   await transport.listen();
   assert.equal(transport.started, true);
   await transport.close();
-  t.after(() => transport.close());
 });
