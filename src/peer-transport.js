@@ -361,6 +361,8 @@ export class PeerTransport {
     // the next send/receive operation to notice quarantine.
     for (const socket of this.connections) socket.destroy();
     for (const socket of this.pendingOutboundSockets) socket.destroy();
+    // Quarantine must also terminate raw inbound sockets that have not completed TLS.
+    for (const socket of this.serverSockets) socket.destroy();
     this.connections.clear();
     if (this.server?.listening) {
       try { this.server.close(() => {}); } catch { /* quarantine remains fail-closed */ }
