@@ -35,6 +35,11 @@ export function signPeerMessage(identity, payload, { now = Date.now(), nonce = r
 export function verifyPeerMessage(message, { now = Date.now(), maxClockSkewMs = 120_000, maxBytes = MAX_MESSAGE_BYTES } = {}) {
   try {
     if (!Number.isFinite(now)) return { ok: false, reason: 'invalid-clock' };
+    // Invalid verification policy must not silently disable freshness or size checks.
+    if (!Number.isFinite(maxClockSkewMs) || maxClockSkewMs < 0 ||
+        !Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+      return { ok: false, reason: 'invalid-verification-options' };
+    }
     if (!message || message.version !== 1 || typeof message.nodeId !== 'string' || !/^[a-f0-9]{64}$/.test(message.nodeId)) return { ok: false, reason: 'invalid-envelope' };
     if (typeof message.timestamp !== 'number' || !Number.isSafeInteger(message.timestamp) || Math.abs(now - message.timestamp) > maxClockSkewMs) return { ok: false, reason: 'stale-timestamp' };
     if (typeof message.nonce !== 'string' || !/^[a-f0-9]{32,128}$/.test(message.nonce)) return { ok: false, reason: 'invalid-nonce' };
