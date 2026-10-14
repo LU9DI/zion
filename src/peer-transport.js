@@ -245,7 +245,7 @@ export class PeerTransport {
     // seconds, and checking only established connections allows concurrent callers to
     // create an unbounded number of outbound sockets while each waits for authentication.
     if (this.closing) throw new Error('Transport is closing');
-    if (this.connections.size + this.pendingConnections >= this.maxConnections) throw new Error('Connection capacity reached');
+    if (this.connections.size + this.pendingConnections + this.pendingInboundTlsSockets.size >= this.maxConnections) throw new Error('Connection capacity reached');
     this.pendingConnections++;
     const useTls = Boolean(this.tlsOptions);
     let socket;
@@ -296,7 +296,7 @@ export class PeerTransport {
       socket.once('error', onError); socket.once('close', onClose); socket.once(readyEvent, onReady);
       });
       if (this.closing || socket.destroyed) throw new Error('Transport closed before peer connection completed');
-      if (this.connections.size >= this.maxConnections) { socket.destroy(); throw new Error('Connection capacity reached'); }
+      if (this.connections.size + this.pendingInboundTlsSockets.size >= this.maxConnections) { socket.destroy(); throw new Error('Connection capacity reached'); }
       this.#attach(socket);
       return socket;
     } catch (error) {
