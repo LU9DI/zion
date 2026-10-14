@@ -520,6 +520,10 @@ test('official transport admits an unknown peer only when its signed handshake c
   client.send(socket, { type: 'PING', nonce: 'invite-admitted' });
   await waitFor(() => received);
   assert.equal(admissionController.isAdmitted(newcomer.nodeId), true);
+
+  // The admission cache is an active-session optimization, not an unbounded history.
+  socket.destroy();
+  await waitFor(() => !server.admittedPeerIds.has(newcomer.nodeId));
 });
 
 test('official transport rejects an unknown peer with no valid invite vouchers', async t => {
