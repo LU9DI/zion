@@ -588,6 +588,8 @@ test('socket budget runs before the official integrity guard and JSON/signature 
     socketRateLimiter: { allow: () => false },
   });
   const addr = await server.listen(); t.after(() => server.close());
+  // listen() performs its own startup health check; isolate checks caused by inbound frames.
+  guardChecks = 0;
   const client = new PeerTransport({ identity: createNodeIdentity(), protocolGenesis: genesis });
   const socket = await client.connect('127.0.0.1', addr.port);
   t.after(() => { socket.destroy(); client.close(); });
