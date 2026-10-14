@@ -59,6 +59,22 @@ test('rate limiter expires only oldest idle buckets while preserving recently to
   assert.equal(limiter.buckets.has('third'), true);
 });
 
+test('rate limiter rotates bounded cleanup across maps larger than one sweep batch', () => {
+  let now = 0;
+  const limiter = new PeerRateLimiter({ capacity: 1, refillPerSecond: 1, maxPeers: 200, idleTtlMs: 100, now: () => now });
+  for (let i = 0; i < 130; i++) assert.equal(limiter.allow(`peer-${i}`), true);
+  assert.equal(limiter.buckets.size, 130);
+
+  now = 101;
+  // One allow() must inspect no more than one 64-entry batch; cleanup continues
+  // on subsequent calls rather than making a single frame scan the full map.
+  assert.equal(limiter.allow('fresh'), true);
+  assert.equal(limiter.buckets.size, 67);
+  assert.equal(limiter.allow('fresh'), true);
+  assert.equal(limiter.buckets.size, 1);
+  assert.deepEqual([...limiter.buckets.keys()], ['fresh']);
+});
+
 test('replay guard expires entries through an ordered heap and rejects invalid clocks', () => {
   const guard = new ReplayGuard({ ttlMs: 10, maxEntries: 3 });
   assert.equal(guard.accept({ nodeId: 'a', nonce: '1' }, 100), true);
