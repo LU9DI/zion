@@ -408,9 +408,10 @@ test('close aborts inbound TLS sockets that have not completed their handshake',
   const pendingServerSocket = [...server.serverSockets][0];
   assert.ok(pendingServerSocket && !pendingServerSocket.destroyed);
 
+  const rawClosed = once(rawSocket, 'close');
   await server.close();
   assert.equal(pendingServerSocket.destroyed, true, 'close() must destroy the server-side socket during TLS negotiation');
-  await once(rawSocket, 'close');
+  await rawClosed;
   assert.equal(server.serverSockets.size, 0);
 });
 
