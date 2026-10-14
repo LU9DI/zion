@@ -296,6 +296,9 @@ export class PeerTransport {
     // Apply the cheap socket budget before parsing attacker-controlled JSON, checking integrity state,
     // deriving public keys, or verifying signatures. Frame length was already bounded by the parser.
     if (!(await this.#admitWithinRate(socket, this.socketRateLimiter, socket.__zionSession?.id ?? 'socket'))) { socket.destroy(); return; }
+    // The awaited limiter can yield even when it admits immediately. Recheck before
+    // touching integrity state or parsing attacker-controlled bytes.
+    if (socket.destroyed) return;
     if (this.networkMode === 'official') await this.integrityGuard.checkHealthy();
     // Integrity checks may yield while close() or quarantine destroys the socket.
     // Do not spend CPU parsing/verifying a frame whose connection is no longer live.
