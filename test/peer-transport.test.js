@@ -748,12 +748,13 @@ test('socket destroyed during immediate budget admission skips official integrit
   const genesis = testGenesis();
   const identity = createNodeIdentity();
   let serverSocket;
+  let destroyOnAdmission = false;
   let guardChecks = 0;
   const integrityGuard = { async checkHealthy() { guardChecks += 1; }, assertHealthy() {} };
   const server = new PeerTransport({
     identity, networkMode: 'official', protocolGenesis: genesis, integrityGuard,
     trustedPeerIds: [identity.nodeId],
-    socketRateLimiter: { allow: () => { serverSocket?.destroy(); return true; } },
+    socketRateLimiter: { allow: () => { if (destroyOnAdmission) serverSocket?.destroy(); return true; } },
   });
   const address = await server.listen();
   t.after(() => server.close());
@@ -763,6 +764,7 @@ test('socket destroyed during immediate budget admission skips official integrit
   t.after(() => { socket.destroy(); client.close(); });
   await waitFor(() => server.connections.size === 1);
   serverSocket = [...server.connections][0];
+  destroyOnAdmission = true;
   client.send(socket, { type: 'PING', nonce: 'destroy-during-budget-admission' });
   await waitFor(() => serverSocket.destroyed);
   await new Promise(resolve => setImmediate(resolve));
