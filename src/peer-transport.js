@@ -81,48 +81,56 @@ export class PeerTransport {
   }
 
   async listen() {
-    if (this.started) throw new Error('Transport already started');
+    if (this.started || this.starting) throw new Error('Transport already started or starting');
+    this.starting = true;
     this.closing = false;
-    if (this.networkMode === 'official') await this.integrityGuard.checkHealthy();
-    // Health checks may be asynchronous. If close() ran while one was pending,
-    // do not create a server after shutdown has already been requested.
-    if (this.closing) throw new Error('Transport closed before listen completed');
-    this.server = this.tlsOptions
-      ? createTlsServer({ ...this.tlsOptions, requestCert: true, rejectUnauthorized: true, minVersion: 'TLSv1.2', handshakeTimeout: this.tlsHandshakeTimeoutMs }, socket => this.#accept(socket))
-      : createTcpServer(socket => this.#accept(socket));
-    this.server.maxConnections = this.maxConnections;
-    const server = this.server;
-    // Node's TLS server emits 'connection' before the TLS handshake completes,
-    // while the secure callback used by #accept runs only after negotiation. Track
-    // raw inbound sockets as well so close() can abort stalled inbound handshakes.
-    server.on('connection', socket => {
-      this.serverSockets.add(socket);
-      socket.once('close', () => this.serverSockets.delete(socket));
-      if (this.closing) socket.destroy();
-    });
-    await new Promise((resolve, reject) => {
-      const onError = error => { server.off('listening', onListening); reject(error); };
-      const onListening = () => {
-        server.off('error', onError);
-        if (this.closing) {
-          // close() can race with server.listen() before Node reports listening.
-          // Finish closing here so a late listening event cannot resurrect the transport.
-          server.close(() => {});
-          reject(new Error('Transport closed before listen completed'));
-          return;
-        }
-        resolve();
-      };
-      server.once('error', onError); server.once('listening', onListening);
-      server.listen({ host: this.host, port: this.port, backlog: this.maxConnections });
-    });
-    if (this.closing) {
-      if (server.listening) await new Promise(resolve => server.close(() => resolve()));
-      throw new Error('Transport closed before listen completed');
+    try {
+      if (this.networkMode === 'official') await this.integrityGuard.checkHealthy();
+      // Health checks may be asynchronous. If close() ran while one was pending,
+      // do not create a server after shutdown has already been requested.
+      if (this.closing) throw new Error('Transport closed before listen completed');
+      this.server = this.tlsOptions
+        ? createTlsServer({ ...this.tlsOptions, requestCert: true, rejectUnauthorized: true, minVersion: 'TLSv1.2', handshakeTimeout: this.tlsHandshakeTimeoutMs }, socket => this.#accept(socket))
+        : createTcpServer(socket => this.#accept(socket));
+      this.server.maxConnections = this.maxConnections;
+      const server = this.server;
+      // Node's TLS server emits 'connection' before the TLS handshake completes,
+      // while the secure callback used by #accept runs only after negotiation. Track
+      // raw inbound sockets as well so close() can abort stalled inbound handshakes.
+      server.on('connection', socket => {
+        this.serverSockets.add(socket);
+        socket.once('close', () => this.serverSockets.delete(socket));
+        if (this.closing) socket.destroy();
+      });
+      await new Promise((resolve, reject) => {
+        const onError = error => { server.off('listening', onListening); reject(error); };
+        const onListening = () => {
+          server.off('error', onError);
+          if (this.closing) {
+            // close() can race with server.listen() before Node reports listening.
+            // Finish closing here so a late listening event cannot resurrect the transport.
+            server.close(() => {});
+            reject(new Error('Transport closed before listen completed'));
+            return;
+          }
+          resolve();
+        };
+        server.once('error', onError); server.once('listening', onListening);
+        server.listen({ host: this.host, port: this.port, backlog: this.maxConnections });
+      });
+      if (this.closing) {
+        if (server.listening) await new Promise(resolve => server.close(() => resolve()));
+        throw new Error('Transport closed before listen completed');
+      }
+      this.started = true;
+      const address = server.address();
+      return Object.freeze({ host: address.address, port: address.port });
+    } catch (error) {
+      if (!this.started && this.server && !this.server.listening) this.server = null;
+      throw error;
+    } finally {
+      this.starting = false;
     }
-    this.started = true;
-    const address = server.address();
-    return Object.freeze({ host: address.address, port: address.port });
   }
 
   #accept(socket) {
