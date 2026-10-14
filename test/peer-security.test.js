@@ -17,6 +17,18 @@ test('peer verification fails closed when the injected clock is invalid', () => 
   assert.equal(verifyPeerMessage(message, { now: Number.POSITIVE_INFINITY }).reason, 'invalid-clock');
 });
 
+test('peer verification fails closed when freshness or size policy is invalid', () => {
+  const identity = createNodeIdentity();
+  const message = signPeerMessage(identity, { type: 'PING' }, { now: 1000, nonce: 'd'.repeat(32) });
+  for (const maxClockSkewMs of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+    assert.equal(verifyPeerMessage(message, { now: 1000, maxClockSkewMs }).reason, 'invalid-verification-options');
+  }
+  for (const maxBytes of [Number.NaN, Number.POSITIVE_INFINITY, 0, -1, 1.5]) {
+    assert.equal(verifyPeerMessage(message, { now: 1000, maxBytes }).reason, 'invalid-verification-options');
+  }
+  assert.equal(verifyPeerMessage(message, { now: 1000, maxClockSkewMs: 0, maxBytes: 1024 }).ok, true);
+});
+
 test('peer messages reject stale and malformed envelopes', () => {
   const id = createNodeIdentity();
   const msg = signPeerMessage(id, { type: 'PING' }, { now: 1000, nonce: 'b'.repeat(32) });
