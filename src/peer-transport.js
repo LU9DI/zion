@@ -71,7 +71,7 @@ export class PeerTransport {
     this.maxFrameBytes = maxFrameBytes; this.maxMessageBytes = this.genesis?.limits.maxMessageBytes ?? maxFrameBytes; this.allowedTypes = new Set(allowedTypes); this.trustedPeerIds = trustedPeerIds === null ? null : new Set(trustedPeerIds); this.onMessage = onMessage;
     this.replayGuard = replayGuard; this.rateLimiter = rateLimiter; this.unauthenticatedRateLimiter = unauthenticatedRateLimiter; this.socketRateLimiter = socketRateLimiter; this.transferScheduler = transferScheduler; this.now = now;
     this.networkId = this.genesis ? calculateNetworkId(this.genesis) : null;
-    this.connections = new Set(); this.server = null; this.started = false;
+    this.connections = new Set(); this.pendingConnections = 0; this.server = null; this.started = false;
     this.removeQuarantineListener = this.networkMode === 'official' && typeof integrityGuard.addQuarantineListener === 'function'
       ? integrityGuard.addQuarantineListener(report => this.#isolateForIntegrityFailure(report?.reason ?? 'integrity-quarantine'))
       : null;
@@ -154,12 +154,23 @@ export class PeerTransport {
   async connect(host, port) {
     if (typeof host !== 'string' || !host || !Number.isInteger(port) || port < 1 || port > 65535) throw new TypeError('Invalid peer address');
     if (!isLoopbackAddress(host) && !this.tlsOptions) throw new Error('Remote peer connections require mutual TLS; plaintext TCP is restricted to loopback IP literals');
-    if (this.connections.size >= this.maxConnections) throw new Error('Connection capacity reached');
+    // Reserve capacity before opening the socket: TLS handshakes can remain pending for
+    // seconds, and checking only established connections allows concurrent callers to
+    // create an unbounded number of outbound sockets while each waits for authentication.
+    if (this.connections.size + this.pendingConnections >= this.maxConnections) throw new Error('Connection capacity reached');
+    this.pendingConnections++;
     const useTls = Boolean(this.tlsOptions);
-    const socket = useTls
-      ? createTlsConnection({ ...this.tlsOptions, host, port, servername: netIsIpAddress(host) ? undefined : (this.tlsOptions.servername ?? host), rejectUnauthorized: true, minVersion: 'TLSv1.2' })
-      : createConnection({ host, port });
-    await new Promise((resolve, reject) => {
+    let socket;
+    try {
+      socket = useTls
+        ? createTlsConnection({ ...this.tlsOptions, host, port, servername: netIsIpAddress(host) ? undefined : (this.tlsOptions.servername ?? host), rejectUnauthorized: true, minVersion: 'TLSv1.2' })
+        : createConnection({ host, port });
+    } catch (error) {
+      this.pendingConnections--;
+      throw error;
+    }
+    try {
+      await new Promise((resolve, reject) => {
       // A TCP 'connect' event does not mean the TLS peer has been authenticated.
       // Bound the outbound connection/handshake too: server-side TLS timeouts do
       // not protect clients connecting to an unresponsive or malicious endpoint.
@@ -182,10 +193,16 @@ export class PeerTransport {
         settled = true; clearTimeout(timer); socket.off('error', onError); resolve();
       };
       socket.once('error', onError); socket.once(readyEvent, onReady);
-    });
-    if (this.connections.size >= this.maxConnections) { socket.destroy(); throw new Error('Connection capacity reached'); }
-    this.#attach(socket);
-    return socket;
+      });
+      if (this.connections.size >= this.maxConnections) { socket.destroy(); throw new Error('Connection capacity reached'); }
+      this.#attach(socket);
+      return socket;
+    } catch (error) {
+      socket.destroy();
+      throw error;
+    } finally {
+      this.pendingConnections--;
+    }
   }
 
   #sendHandshake(socket, payload) {
