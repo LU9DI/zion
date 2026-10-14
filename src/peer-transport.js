@@ -100,6 +100,9 @@ export class PeerTransport {
   }
 
   #accept(socket) {
+    // A connection event can race with shutdown; never register a new inbound
+    // socket once close() has begun, even if the server accepted it just before close.
+    if (this.closing) { socket.destroy(); return; }
     // Outbound dials reserve slots while TCP/TLS handshakes are pending. Inbound
     // accepts must honor those reservations too, or mixed inbound/outbound traffic
     // can temporarily exceed the configured total connection budget.
@@ -344,6 +347,9 @@ export class PeerTransport {
     this.removeQuarantineListener?.();
     this.removeQuarantineListener = null;
     for (const socket of this.connections) socket.destroy();
+    // Pending outbound sockets are not yet in connections: destroy them explicitly
+    // so close() cancels TLS negotiation rather than leaving it alive until timeout.
+    for (const socket of this.pendingOutboundSockets) socket.destroy();
     this.connections.clear();
     if (this.server?.listening) await new Promise((resolve, reject) => this.server.close(error => error ? reject(error) : resolve()));
     this.started = false;
