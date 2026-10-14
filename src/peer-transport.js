@@ -71,7 +71,7 @@ export class PeerTransport {
     this.maxFrameBytes = maxFrameBytes; this.maxMessageBytes = this.genesis?.limits.maxMessageBytes ?? maxFrameBytes; this.allowedTypes = new Set(allowedTypes); this.trustedPeerIds = trustedPeerIds === null ? null : new Set(trustedPeerIds); this.onMessage = onMessage;
     this.replayGuard = replayGuard; this.rateLimiter = rateLimiter; this.unauthenticatedRateLimiter = unauthenticatedRateLimiter; this.socketRateLimiter = socketRateLimiter; this.transferScheduler = transferScheduler; this.now = now;
     this.networkId = this.genesis ? calculateNetworkId(this.genesis) : null;
-    this.connections = new Set(); this.pendingConnections = 0; this.pendingOutboundSockets = new Set(); this.server = null; this.started = false; this.closing = false;
+    this.connections = new Set(); this.pendingConnections = 0; this.pendingOutboundSockets = new Set(); this.serverSockets = new Set(); this.server = null; this.started = false; this.closing = false;
     this.removeQuarantineListener = this.networkMode === 'official' && typeof integrityGuard.addQuarantineListener === 'function'
       ? integrityGuard.addQuarantineListener(report => this.#isolateForIntegrityFailure(report?.reason ?? 'integrity-quarantine'))
       : null;
@@ -92,6 +92,14 @@ export class PeerTransport {
       : createTcpServer(socket => this.#accept(socket));
     this.server.maxConnections = this.maxConnections;
     const server = this.server;
+    // Node's TLS server emits 'connection' before the TLS handshake completes,
+    // while the secure callback used by #accept runs only after negotiation. Track
+    // raw inbound sockets as well so close() can abort stalled inbound handshakes.
+    server.on('connection', socket => {
+      this.serverSockets.add(socket);
+      socket.once('close', () => this.serverSockets.delete(socket));
+      if (this.closing) socket.destroy();
+    });
     await new Promise((resolve, reject) => {
       const onError = error => { server.off('listening', onListening); reject(error); };
       const onListening = () => {
@@ -368,6 +376,9 @@ export class PeerTransport {
     // Pending outbound sockets are not yet in connections: destroy them explicitly
     // so close() cancels TLS negotiation rather than leaving it alive until timeout.
     for (const socket of this.pendingOutboundSockets) socket.destroy();
+    // Includes raw sockets still negotiating inbound TLS, which are not yet in
+    // connections because the TLS server invokes #accept only after secureConnect.
+    for (const socket of this.serverSockets) socket.destroy();
     this.connections.clear();
     if (this.server?.listening) await new Promise((resolve, reject) => this.server.close(error => error ? reject(error) : resolve()));
     this.started = false;
