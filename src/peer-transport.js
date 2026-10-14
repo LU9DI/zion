@@ -84,6 +84,8 @@ export class PeerTransport {
     if (this.started || this.starting) throw new Error('Transport already started or starting');
     this.starting = true;
     this.closing = false;
+    let settleListen;
+    this.listenCompletion = new Promise(resolve => { settleListen = resolve; });
     try {
       if (this.networkMode === 'official') await this.integrityGuard.checkHealthy();
       // Health checks may be asynchronous. If close() ran while one was pending,
@@ -109,8 +111,9 @@ export class PeerTransport {
           if (this.closing) {
             // close() can race with server.listen() before Node reports listening.
             // Finish closing here so a late listening event cannot resurrect the transport.
-            server.close(() => {});
-            reject(new Error('Transport closed before listen completed'));
+            server.close(error => {
+              reject(error ?? new Error('Transport closed before listen completed'));
+            });
             return;
           }
           resolve();
@@ -130,6 +133,8 @@ export class PeerTransport {
       throw error;
     } finally {
       this.starting = false;
+      this.listenCompletion = null;
+      settleListen();
     }
   }
 
@@ -407,6 +412,10 @@ export class PeerTransport {
     // connections because the TLS server invokes #accept only after secureConnect.
     for (const socket of this.serverSockets) socket.destroy();
     this.connections.clear();
+    // If listen() is still awaiting a health check or the server's listening event,
+    // wait until startup has either failed or fully closed its server before returning.
+    const pendingListen = this.listenCompletion;
+    if (pendingListen) await pendingListen;
     if (this.server?.listening) await new Promise((resolve, reject) => this.server.close(error => error ? reject(error) : resolve()));
     this.started = false;
   }
