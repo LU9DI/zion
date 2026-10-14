@@ -761,3 +761,25 @@ test('outbound connection capacity includes sockets still completing their hands
   assert.equal(client.pendingConnections, 0, 'pending capacity reservations must always be released');
   assert.equal(client.connections.size, 1);
 });
+
+
+test('concurrent close calls share one shutdown operation and remain idempotent', async t => {
+  const transport = new PeerTransport({ identity: createNodeIdentity() });
+  await transport.listen();
+  const server = transport.server;
+
+  const firstClose = transport.close();
+  const secondClose = transport.close();
+  assert.equal(firstClose, secondClose, 'concurrent callers must await the same shutdown promise');
+  await Promise.all([firstClose, secondClose]);
+  assert.equal(transport.started, false);
+  assert.equal(server.listening, false);
+  await transport.close();
+  assert.equal(server.listening, false, 'a repeated close after completion must remain safe');
+
+  // Explicit restart starts a new lifecycle and must not reuse the prior close promise.
+  await transport.listen();
+  assert.equal(transport.started, true);
+  await transport.close();
+  t.after(() => transport.close());
+});
