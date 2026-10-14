@@ -551,3 +551,27 @@ test('closed sockets release their pre-verification limiter buckets so connectio
   await waitFor(() => received.includes('second-session'));
   assert.equal(secondSocket.destroyed, false);
 });
+
+
+test('pre-handshake rate limiting happens before the admission backend is queried', async t => {
+  const genesis = testGenesis();
+  const seed = createNodeIdentity();
+  const newcomer = createNodeIdentity();
+  let admissionReads = 0;
+  const integrityGuard = { async checkHealthy() {}, assertHealthy() {} };
+  const admissionController = {
+    async isAdmitted() { admissionReads += 1; return false; },
+    async admit() { return { ok: false }; },
+  };
+  const server = new PeerTransport({
+    identity: seed, networkMode: 'official', protocolGenesis: genesis, integrityGuard,
+    trustedPeerIds: [seed.nodeId], admissionController,
+    unauthenticatedRateLimiter: { allow: () => false },
+  });
+  const addr = await server.listen(); t.after(() => server.close());
+  const client = new PeerTransport({ identity: newcomer, protocolGenesis: genesis });
+  const socket = await client.connect('127.0.0.1', addr.port);
+  t.after(() => { socket.destroy(); client.close(); });
+  await waitFor(() => socket.destroyed);
+  assert.equal(admissionReads, 0, 'a rate-limited handshake must not trigger an admission-store read');
+});
