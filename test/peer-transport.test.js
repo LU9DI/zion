@@ -577,6 +577,27 @@ test('pre-handshake rate limiting happens before the admission backend is querie
 });
 
 
+test('queued frame bytes are bounded before rate-limited processing can catch up', async t => {
+  const serverIdentity = createNodeIdentity(); const clientIdentity = createNodeIdentity();
+  let releaseHandler;
+  const handlerGate = new Promise(resolve => { releaseHandler = resolve; });
+  const server = new PeerTransport({
+    identity: serverIdentity,
+    maxFrameBytes: 4096,
+    onMessage: async () => { await handlerGate; },
+  });
+  const addr = await server.listen(); t.after(() => { releaseHandler(); server.close(); });
+  const client = new PeerTransport({ identity: clientIdentity });
+  const socket = await client.connect('127.0.0.1', addr.port);
+  t.after(() => { socket.destroy(); client.close(); });
+  const payload = 'x'.repeat(3000);
+  for (let i = 0; i < 10; i++) {
+    try { client.send(socket, { type: 'PING', nonce: `queued-${i}`, payload }); } catch { break; }
+  }
+  await waitFor(() => socket.destroyed);
+  releaseHandler();
+});
+
 test('socket budget runs before the official integrity guard and JSON/signature processing', async t => {
   const genesis = testGenesis();
   const identity = createNodeIdentity();
