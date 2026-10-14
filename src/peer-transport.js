@@ -84,18 +84,36 @@ export class PeerTransport {
     if (this.started) throw new Error('Transport already started');
     this.closing = false;
     if (this.networkMode === 'official') await this.integrityGuard.checkHealthy();
+    // Health checks may be asynchronous. If close() ran while one was pending,
+    // do not create a server after shutdown has already been requested.
+    if (this.closing) throw new Error('Transport closed before listen completed');
     this.server = this.tlsOptions
       ? createTlsServer({ ...this.tlsOptions, requestCert: true, rejectUnauthorized: true, minVersion: 'TLSv1.2', handshakeTimeout: this.tlsHandshakeTimeoutMs }, socket => this.#accept(socket))
       : createTcpServer(socket => this.#accept(socket));
     this.server.maxConnections = this.maxConnections;
+    const server = this.server;
     await new Promise((resolve, reject) => {
-      const onError = error => { this.server.off('listening', onListening); reject(error); };
-      const onListening = () => { this.server.off('error', onError); resolve(); };
-      this.server.once('error', onError); this.server.once('listening', onListening);
-      this.server.listen({ host: this.host, port: this.port, backlog: this.maxConnections });
+      const onError = error => { server.off('listening', onListening); reject(error); };
+      const onListening = () => {
+        server.off('error', onError);
+        if (this.closing) {
+          // close() can race with server.listen() before Node reports listening.
+          // Finish closing here so a late listening event cannot resurrect the transport.
+          server.close(() => {});
+          reject(new Error('Transport closed before listen completed'));
+          return;
+        }
+        resolve();
+      };
+      server.once('error', onError); server.once('listening', onListening);
+      server.listen({ host: this.host, port: this.port, backlog: this.maxConnections });
     });
+    if (this.closing) {
+      if (server.listening) await new Promise(resolve => server.close(() => resolve()));
+      throw new Error('Transport closed before listen completed');
+    }
     this.started = true;
-    const address = this.server.address();
+    const address = server.address();
     return Object.freeze({ host: address.address, port: address.port });
   }
 
