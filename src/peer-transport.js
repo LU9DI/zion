@@ -190,11 +190,13 @@ export class PeerTransport {
   }
 
   async #processFrame(socket, frame) {
+    // Apply the cheap socket budget before parsing attacker-controlled JSON, checking integrity state,
+    // deriving public keys, or verifying signatures. Frame length was already bounded by the parser.
+    if (!(await this.#admitWithinRate(socket, this.socketRateLimiter, socket.__zionSession?.id ?? 'socket'))) { socket.destroy(); return; }
     if (this.networkMode === 'official') await this.integrityGuard.checkHealthy();
     let message;
     try { message = JSON.parse(frame.toString('utf8')); }
     catch { socket.destroy(); return; }
-    if (!(await this.#admitWithinRate(socket, this.socketRateLimiter, socket.__zionSession?.id ?? 'socket'))) { socket.destroy(); return; }
     const checked = verifyPeerMessage(message, { now: this.now(), maxBytes: this.maxFrameBytes });
     if (!checked.ok) { socket.destroy(); return; }
     const trustedByAllowlist = !this.trustedPeerIds || this.trustedPeerIds.has(checked.nodeId);
