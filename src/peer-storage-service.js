@@ -543,8 +543,22 @@ export class PeerStorageService {
       (signal !== undefined && (typeof signal.aborted !== 'boolean' || typeof signal.addEventListener !== 'function' || typeof signal.removeEventListener !== 'function'))) throw new TypeError('Invalid chunk fetch request');
     // Cancellation must remain prompt even if the integrity guard is slow or unavailable.
     if (signal?.aborted) throw Object.assign(new Error('Chunk fetch aborted'), { name: 'AbortError' });
-    await this.#assertIntegrity();
-    // The signal may have been aborted while the asynchronous integrity check was running.
+    if (!signal) {
+      await this.#assertIntegrity();
+    } else {
+      let onIntegrityAbort;
+      const aborted = new Promise((_, reject) => {
+        onIntegrityAbort = () => reject(Object.assign(new Error('Chunk fetch aborted'), { name: 'AbortError' }));
+      });
+      signal.addEventListener('abort', onIntegrityAbort, { once: true });
+      try {
+        // Cover aborts that race with listener registration, and don't wait forever on a stuck guard.
+        if (signal.aborted) onIntegrityAbort();
+        await Promise.race([this.#assertIntegrity(), aborted]);
+      } finally {
+        signal.removeEventListener('abort', onIntegrityAbort);
+      }
+    }
     if (signal?.aborted) throw Object.assign(new Error('Chunk fetch aborted'), { name: 'AbortError' });
     if (!socket || socket.destroyed || !socket.writable) return Promise.reject(new Error('Peer socket is not writable'));
     const requestId = randomBytes(16).toString('hex');
