@@ -34,6 +34,7 @@ export function signPeerMessage(identity, payload, { now = Date.now(), nonce = r
 /** Stateless signature/schema validation; freshness and replay checks are separate. */
 export function verifyPeerMessage(message, { now = Date.now(), maxClockSkewMs = 120_000, maxBytes = MAX_MESSAGE_BYTES } = {}) {
   try {
+    if (!Number.isFinite(now)) return { ok: false, reason: 'invalid-clock' };
     if (!message || message.version !== 1 || typeof message.nodeId !== 'string' || !/^[a-f0-9]{64}$/.test(message.nodeId)) return { ok: false, reason: 'invalid-envelope' };
     if (typeof message.timestamp !== 'number' || !Number.isSafeInteger(message.timestamp) || Math.abs(now - message.timestamp) > maxClockSkewMs) return { ok: false, reason: 'stale-timestamp' };
     if (typeof message.nonce !== 'string' || !/^[a-f0-9]{32,128}$/.test(message.nonce)) return { ok: false, reason: 'invalid-nonce' };
