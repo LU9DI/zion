@@ -403,7 +403,10 @@ export class PeerTransport {
    * (or one that needs longer than MAX_THROTTLE_MS) keeps the previous fail-closed behaviour of disconnecting.
    */
   async #admitWithinRate(socket, limiter, nodeId) {
-    if (limiter.allow(nodeId)) return true;
+    // A limiter may synchronously trigger teardown (for example, when policy state
+    // changes). Never treat admission as successful if the socket is already gone.
+    if (socket.destroyed) return false;
+    if (limiter.allow(nodeId)) return !socket.destroyed;
     if (typeof limiter.retryAfterMs !== 'function') return false;
     const session = socket.__zionSession;
     for (let attempt = 0; attempt < MAX_THROTTLE_WAITS; attempt++) {
