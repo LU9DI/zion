@@ -617,3 +617,29 @@ test('socket budget runs before the official integrity guard and JSON/signature 
   await waitFor(() => socket.destroyed);
   assert.equal(guardChecks, 0, 'a denied socket must not trigger integrity checks or later frame processing');
 });
+
+
+test('authenticated application frames do not query the admission backend again', async t => {
+  const genesis = testGenesis();
+  const serverIdentity = createNodeIdentity(); const clientIdentity = createNodeIdentity();
+  let admissionReads = 0; let handled = 0;
+  const integrityGuard = { async checkHealthy() {}, assertHealthy() {} };
+  const admissionController = {
+    async isAdmitted() { admissionReads += 1; return true; },
+    async admit() { return { ok: true }; },
+  };
+  const server = new PeerTransport({
+    identity: serverIdentity, networkMode: 'official', protocolGenesis: genesis, integrityGuard,
+    trustedPeerIds: [serverIdentity.nodeId, clientIdentity.nodeId], admissionController,
+    onMessage: async () => { handled += 1; },
+  });
+  const addr = await server.listen(); t.after(() => server.close());
+  const client = new PeerTransport({ identity: clientIdentity, protocolGenesis: genesis });
+  const socket = await client.connect('127.0.0.1', addr.port); t.after(() => { socket.destroy(); client.close(); });
+  await waitFor(() => socket.__zionSession?.authenticated && [...server.connections][0]?.__zionSession?.authenticated);
+  const readsAfterHandshake = admissionReads;
+  client.send(socket, { type: 'PING', nonce: 'no-admission-read' });
+  await waitFor(() => handled === 1);
+  assert.ok(readsAfterHandshake >= 1, 'the handshake checks admission state');
+  assert.equal(admissionReads, readsAfterHandshake, 'application traffic must not query admission storage');
+});
