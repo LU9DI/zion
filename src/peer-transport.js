@@ -71,7 +71,7 @@ export class PeerTransport {
     this.maxFrameBytes = maxFrameBytes; this.maxMessageBytes = this.genesis?.limits.maxMessageBytes ?? maxFrameBytes; this.allowedTypes = new Set(allowedTypes); this.trustedPeerIds = trustedPeerIds === null ? null : new Set(trustedPeerIds); this.onMessage = onMessage;
     this.replayGuard = replayGuard; this.rateLimiter = rateLimiter; this.unauthenticatedRateLimiter = unauthenticatedRateLimiter; this.socketRateLimiter = socketRateLimiter; this.transferScheduler = transferScheduler; this.now = now;
     this.networkId = this.genesis ? calculateNetworkId(this.genesis) : null;
-    this.connections = new Set(); this.pendingConnections = 0; this.pendingOutboundSockets = new Set(); this.pendingOutboundSettlements = new Set(); this.serverSockets = new Set(); this.server = null; this.started = false; this.closing = false; this.closeOperations = 0;
+    this.connections = new Set(); this.pendingConnections = 0; this.pendingOutboundSockets = new Set(); this.pendingOutboundSettlements = new Set(); this.serverSockets = new Set(); this.server = null; this.started = false; this.closing = false; this.closeOperations = 0; this.closeCompletion = null;
     this.removeQuarantineListener = this.networkMode === 'official' && typeof integrityGuard.addQuarantineListener === 'function'
       ? integrityGuard.addQuarantineListener(report => this.#isolateForIntegrityFailure(report?.reason ?? 'integrity-quarantine'))
       : null;
@@ -85,6 +85,7 @@ export class PeerTransport {
     if (this.started || this.starting) throw new Error('Transport already started or starting');
     this.starting = true;
     this.closing = false;
+    this.closeCompletion = null;
     // close() unsubscribes from quarantine notifications; restore the listener if
     // this transport instance is explicitly started again.
     if (this.networkMode === 'official' && !this.removeQuarantineListener &&
@@ -405,31 +406,38 @@ export class PeerTransport {
     this.started = false;
   }
 
-  async close() {
+  close() {
+    // Concurrent callers share one shutdown operation. Calling server.close() twice
+    // can otherwise make one caller fail with ERR_SERVER_NOT_RUNNING, even though the
+    // transport was successfully closed by the other caller.
+    if (this.closeCompletion) return this.closeCompletion;
     this.closeOperations++;
-    try {
-      this.closing = true;
-      this.removeQuarantineListener?.();
-      this.removeQuarantineListener = null;
-      for (const socket of this.connections) socket.destroy();
-      // Pending outbound sockets are not yet in connections: destroy them explicitly
-      // so close() cancels TLS negotiation rather than leaving it alive until timeout.
-      for (const socket of this.pendingOutboundSockets) socket.destroy();
-      // Wait for connect() callers to run their finally blocks and release capacity
-      // reservations; otherwise close() can return with pendingConnections still nonzero.
-      await Promise.allSettled([...this.pendingOutboundSettlements]);
-      // Includes raw sockets still negotiating inbound TLS, which are not yet in
-      // connections because the TLS server invokes #accept only after secureConnect.
-      for (const socket of this.serverSockets) socket.destroy();
-      this.connections.clear();
-      // If listen() is still awaiting a health check or the server's listening event,
-      // wait until startup has either failed or fully closed its server before returning.
-      const pendingListen = this.listenCompletion;
-      if (pendingListen) await pendingListen;
-      if (this.server?.listening) await new Promise((resolve, reject) => this.server.close(error => error ? reject(error) : resolve()));
-      this.started = false;
-    } finally {
-      this.closeOperations--;
-    }
+    this.closing = true;
+    this.closeCompletion = (async () => {
+      try {
+        this.removeQuarantineListener?.();
+        this.removeQuarantineListener = null;
+        for (const socket of this.connections) socket.destroy();
+        // Pending outbound sockets are not yet in connections: destroy them explicitly
+        // so close() cancels TLS negotiation rather than leaving it alive until timeout.
+        for (const socket of this.pendingOutboundSockets) socket.destroy();
+        // Wait for connect() callers to run their finally blocks and release capacity
+        // reservations; otherwise close() can return with pendingConnections still nonzero.
+        await Promise.allSettled([...this.pendingOutboundSettlements]);
+        // Includes raw sockets still negotiating inbound TLS, which are not yet in
+        // connections because the TLS server invokes #accept only after secureConnect.
+        for (const socket of this.serverSockets) socket.destroy();
+        this.connections.clear();
+        // If listen() is still awaiting a health check or the server's listening event,
+        // wait until startup has either failed or fully closed its server before returning.
+        const pendingListen = this.listenCompletion;
+        if (pendingListen) await pendingListen;
+        if (this.server?.listening) await new Promise((resolve, reject) => this.server.close(error => error ? reject(error) : resolve()));
+        this.started = false;
+      } finally {
+        this.closeOperations--;
+      }
+    })();
+    return this.closeCompletion;
   }
 }
