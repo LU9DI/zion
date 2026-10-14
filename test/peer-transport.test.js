@@ -405,9 +405,12 @@ test('close aborts inbound TLS sockets that have not completed their handshake',
   await once(rawSocket, 'connect');
   await waitFor(() => server.serverSockets.size === 1);
   assert.equal(server.connections.size, 0, 'the TLS socket is not yet an authenticated transport connection');
+  const pendingServerSocket = [...server.serverSockets][0];
+  assert.ok(pendingServerSocket && !pendingServerSocket.destroyed);
 
   await server.close();
-  assert.equal(rawSocket.destroyed, true, 'close() must destroy inbound sockets during TLS negotiation');
+  assert.equal(pendingServerSocket.destroyed, true, 'close() must destroy the server-side socket during TLS negotiation');
+  await once(rawSocket, 'close');
   assert.equal(server.serverSockets.size, 0);
 });
 
