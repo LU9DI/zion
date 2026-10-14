@@ -503,18 +503,24 @@ test('per-socket limiter is checked first: a denied socket never reaches the per
   assert.equal(peerLimiterCalls, 0); assert.equal(handled, 0);
 });
 
-test('peers that have not completed the handshake get the strict tier, authenticated peers the generous one', async t => {
+test('pre-handshake frames use the strict tier and application frames use the generous tier after authentication', async t => {
   const serverIdentity = createNodeIdentity(); const clientIdentity = createNodeIdentity();
   const calls = { strict: 0, generous: 0 };
   const count = key => ({ allow() { calls[key] += 1; return true; }, retryAfterMs: () => 0 });
-  const server = new PeerTransport({ identity: serverIdentity, rateLimiter: count('generous'), unauthenticatedRateLimiter: count('strict'), onMessage: async () => {} });
+  const genesis = testGenesis();
+  const server = new PeerTransport({
+    identity: serverIdentity, protocolGenesis: genesis,
+    rateLimiter: count('generous'), unauthenticatedRateLimiter: count('strict'),
+    onMessage: async () => {},
+  });
   const addr = await server.listen(); t.after(() => server.close());
-  const client = new PeerTransport({ identity: clientIdentity, onMessage: async () => {} });
+  const client = new PeerTransport({ identity: clientIdentity, protocolGenesis: genesis });
   const socket = await client.connect('127.0.0.1', addr.port); t.after(() => { socket.destroy(); client.close(); });
+  await waitFor(() => socket.__zionSession?.authenticated && [...server.connections][0]?.__zionSession?.authenticated);
+  assert.ok(calls.strict >= 2, 'handshake and acknowledgement must use the strict tier');
   client.send(socket, { type: 'PING', nonce: 'tier' });
-  await waitFor(() => calls.generous + calls.strict >= 1);
-  // Without a genesis the session starts authenticated, so the generous tier applies.
-  assert.equal(calls.generous, 1); assert.equal(calls.strict, 0);
+  await waitFor(() => calls.generous >= 1);
+  assert.equal(calls.generous, 1);
 });
 
 
