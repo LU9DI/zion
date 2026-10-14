@@ -18,6 +18,7 @@ const isLoopbackAddress = host => {
 // Treat only validated IP literals as loopback. Hostnames can be redirected by local resolver configuration.
 const isLoopbackHost = host => isLoopbackAddress(host);
 const MAX_QUEUED_FRAMES_PER_SOCKET = 64;
+const MAX_QUEUED_FRAME_BYTES_PER_SOCKET = 4; // multiplier of the configured maximum frame size
 const MAX_THROTTLE_MS = 5_000;
 const MAX_THROTTLE_WAITS = 8;
 const DEFAULT_TYPES = new Set(['PING', 'PONG', 'STORE_CHUNK', 'GET_CHUNK', 'CHUNK_DATA', 'MANIFEST', 'STORE_REQUEST', 'STORE_RECEIPT', 'STORE_REJECTED']);
@@ -110,6 +111,7 @@ export class PeerTransport {
     socket.setNoDelay(true);
     let pending = Buffer.alloc(0);
     let queuedFrames = 0;
+    let queuedFrameBytes = 0;
     let processing = Promise.resolve();
     socket.on('data', chunk => {
       if (socket.destroyed) return;
@@ -120,14 +122,20 @@ export class PeerTransport {
         const frame = pending.subarray(0, newline);
         pending = pending.subarray(newline + 1);
         if (!frame.length || frame.length > this.maxFrameBytes) { socket.destroy(); return; }
-        if (queuedFrames >= MAX_QUEUED_FRAMES_PER_SOCKET) { socket.destroy(); return; }
+        // Bound both queued frame count and queued bytes. A count-only limit lets a
+        // peer retain up to 64 maximum-sized frames per socket before any rate check.
+        if (queuedFrames >= MAX_QUEUED_FRAMES_PER_SOCKET ||
+            queuedFrameBytes + frame.length > this.maxFrameBytes * MAX_QUEUED_FRAME_BYTES_PER_SOCKET) {
+          socket.destroy(); return;
+        }
         queuedFrames++;
+        queuedFrameBytes += frame.length;
         // Serialize handler execution and cap queued work per socket. Without this, a
         // fast peer can create an unbounded number of concurrent async handler calls.
         processing = processing
           .then(() => socket.destroyed ? undefined : this.#processFrame(socket, frame))
           .catch(() => socket.destroy())
-          .finally(() => { queuedFrames--; });
+          .finally(() => { queuedFrames--; queuedFrameBytes -= frame.length; });
         if (socket.destroyed) return;
       }
       if (pending.length > this.maxFrameBytes) socket.destroy();
