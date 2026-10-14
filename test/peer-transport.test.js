@@ -263,6 +263,33 @@ test('official transport immediately closes peer sessions and stops listening on
   assert.throws(() => transport.send(socket, { type: 'PING', nonce: 'after-quarantine' }), /ZION_INTEGRITY_QUARANTINED|not writable|quarantined/);
 });
 
+test('restarted official transport restores integrity quarantine notifications', async t => {
+  const listeners = new Set();
+  const integrityGuard = {
+    status: { verified: true, quarantined: false, reason: null },
+    async checkHealthy() { if (this.status.quarantined) throw new Error('quarantined'); },
+    assertHealthy() { if (this.status.quarantined) throw new Error('quarantined'); },
+    addQuarantineListener(listener) { listeners.add(listener); return () => listeners.delete(listener); }
+  };
+  const transport = new PeerTransport({
+    identity: createNodeIdentity(), protocolGenesis: testGenesis(),
+    networkMode: 'official', integrityGuard,
+  });
+  t.after(() => transport.close());
+
+  await transport.listen();
+  assert.equal(listeners.size, 1);
+  await transport.close();
+  assert.equal(listeners.size, 0);
+
+  await transport.listen();
+  assert.equal(listeners.size, 1, 'listen() must restore the quarantine subscription after close()');
+  integrityGuard.status = { verified: false, quarantined: true, reason: 'test-quarantine' };
+  for (const listener of listeners) await listener({ reason: 'test-quarantine' });
+  await waitFor(() => !transport.server.listening);
+  assert.equal(transport.started, false);
+});
+
 test('three-node isolation quarantines only the compromised node while healthy peers continue communicating', async t => {
   const makeGuard = () => {
     const listeners = new Set();
