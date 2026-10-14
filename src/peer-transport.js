@@ -71,7 +71,7 @@ export class PeerTransport {
     this.maxFrameBytes = maxFrameBytes; this.maxMessageBytes = this.genesis?.limits.maxMessageBytes ?? maxFrameBytes; this.allowedTypes = new Set(allowedTypes); this.trustedPeerIds = trustedPeerIds === null ? null : new Set(trustedPeerIds); this.onMessage = onMessage;
     this.replayGuard = replayGuard; this.rateLimiter = rateLimiter; this.unauthenticatedRateLimiter = unauthenticatedRateLimiter; this.socketRateLimiter = socketRateLimiter; this.transferScheduler = transferScheduler; this.now = now;
     this.networkId = this.genesis ? calculateNetworkId(this.genesis) : null;
-    this.connections = new Set(); this.pendingConnections = 0; this.pendingOutboundSockets = new Set(); this.serverSockets = new Set(); this.server = null; this.started = false; this.closing = false;
+    this.connections = new Set(); this.pendingConnections = 0; this.pendingOutboundSockets = new Set(); this.pendingOutboundSettlements = new Set(); this.serverSockets = new Set(); this.server = null; this.started = false; this.closing = false;
     this.removeQuarantineListener = this.networkMode === 'official' && typeof integrityGuard.addQuarantineListener === 'function'
       ? integrityGuard.addQuarantineListener(report => this.#isolateForIntegrityFailure(report?.reason ?? 'integrity-quarantine'))
       : null;
@@ -204,6 +204,9 @@ export class PeerTransport {
       throw error;
     }
     this.pendingOutboundSockets.add(socket);
+    let settlePending;
+    const pendingSettlement = new Promise(resolve => { settlePending = resolve; });
+    this.pendingOutboundSettlements.add(pendingSettlement);
     try {
       await new Promise((resolve, reject) => {
       // A TCP 'connect' event does not mean the TLS peer has been authenticated.
@@ -239,6 +242,8 @@ export class PeerTransport {
     } finally {
       this.pendingOutboundSockets.delete(socket);
       this.pendingConnections--;
+      this.pendingOutboundSettlements.delete(pendingSettlement);
+      settlePending();
     }
   }
 
@@ -378,6 +383,9 @@ export class PeerTransport {
     // Pending outbound sockets are not yet in connections: destroy them explicitly
     // so close() cancels TLS negotiation rather than leaving it alive until timeout.
     for (const socket of this.pendingOutboundSockets) socket.destroy();
+    // Wait for connect() callers to run their finally blocks and release capacity
+    // reservations; otherwise close() can return with pendingConnections still nonzero.
+    await Promise.allSettled([...this.pendingOutboundSettlements]);
     // Includes raw sockets still negotiating inbound TLS, which are not yet in
     // connections because the TLS server invokes #accept only after secureConnect.
     for (const socket of this.serverSockets) socket.destroy();
