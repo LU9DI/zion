@@ -744,6 +744,31 @@ test('closing a throttled peer cancels its pending refill wait', async t => {
   assert.ok(Date.now() - started < 500, 'closing the peer should not wait for the 5-second refill timeout');
 });
 
+test('socket destroyed during immediate budget admission skips official integrity work', async t => {
+  const genesis = testGenesis();
+  const identity = createNodeIdentity();
+  let serverSocket;
+  let guardChecks = 0;
+  const integrityGuard = { async checkHealthy() { guardChecks += 1; }, assertHealthy() {} };
+  const server = new PeerTransport({
+    identity, networkMode: 'official', protocolGenesis: genesis, integrityGuard,
+    trustedPeerIds: [identity.nodeId],
+    socketRateLimiter: { allow: () => { serverSocket?.destroy(); return true; } },
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  guardChecks = 0;
+  const client = new PeerTransport({ identity: createNodeIdentity(), protocolGenesis: genesis });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(() => { socket.destroy(); client.close(); });
+  await waitFor(() => server.connections.size === 1);
+  serverSocket = [...server.connections][0];
+  client.send(socket, { type: 'PING', nonce: 'destroy-during-budget-admission' });
+  await waitFor(() => serverSocket.destroyed);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(guardChecks, 0, 'a destroyed socket must not trigger official integrity checks');
+});
+
 test('destroyed socket stops frame processing after an asynchronous integrity check', async t => {
   const genesis = testGenesis();
   const serverIdentity = createNodeIdentity();
