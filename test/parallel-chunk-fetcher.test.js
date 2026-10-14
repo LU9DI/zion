@@ -146,6 +146,23 @@ test('direct chunk fetch rejects a pre-aborted signal before a blocked integrity
   );
 });
 
+test('direct chunk fetch cancellation interrupts a pending integrity check', async () => {
+  const controller = new AbortController();
+  const identity = createNodeIdentity();
+  const service = new PeerStorageService({
+    identity, store: {},
+    integrityGuard: {
+      assertHealthy() {},
+      checkHealthy() { return new Promise(() => {}); }
+    }
+  });
+  const pending = service.fetchChunk({ send() { throw new Error('must not send'); } },
+    { destroyed: false, writable: true }, 'a'.repeat(64), 'b'.repeat(64),
+    { signal: controller.signal });
+  controller.abort();
+  await assert.rejects(pending, error => error.name === 'AbortError');
+});
+
 test('parallel fetch honors a signal already aborted before scheduling', async () => {
   const controller = new AbortController(); controller.abort();
   await assert.rejects(fetchChunksParallel({
