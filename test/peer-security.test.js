@@ -44,6 +44,21 @@ test('rate limiter bounds peer cardinality and fails closed when full', () => {
 });
 
 
+test('rate limiter expires only oldest idle buckets while preserving recently touched peers', () => {
+  let now = 0;
+  const limiter = new PeerRateLimiter({ capacity: 10, refillPerSecond: 1, maxPeers: 3, idleTtlMs: 100, now: () => now });
+  assert.equal(limiter.allow('older'), true);
+  now = 50;
+  assert.equal(limiter.allow('newer'), true);
+  now = 75;
+  assert.equal(limiter.allow('older'), true, 'touching a peer moves its bucket to the newest position');
+  now = 151;
+  assert.equal(limiter.allow('third'), true);
+  assert.equal(limiter.buckets.has('newer'), false, 'the expired oldest bucket is removed');
+  assert.equal(limiter.buckets.has('older'), true, 'a recently touched bucket is preserved');
+  assert.equal(limiter.buckets.has('third'), true);
+});
+
 test('replay guard expires entries through an ordered heap and rejects invalid clocks', () => {
   const guard = new ReplayGuard({ ttlMs: 10, maxEntries: 3 });
   assert.equal(guard.accept({ nodeId: 'a', nonce: '1' }, 100), true);
