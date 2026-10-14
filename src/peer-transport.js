@@ -71,7 +71,7 @@ export class PeerTransport {
     this.maxFrameBytes = maxFrameBytes; this.maxMessageBytes = this.genesis?.limits.maxMessageBytes ?? maxFrameBytes; this.allowedTypes = new Set(allowedTypes); this.trustedPeerIds = trustedPeerIds === null ? null : new Set(trustedPeerIds); this.onMessage = onMessage;
     this.replayGuard = replayGuard; this.rateLimiter = rateLimiter; this.unauthenticatedRateLimiter = unauthenticatedRateLimiter; this.socketRateLimiter = socketRateLimiter; this.transferScheduler = transferScheduler; this.now = now;
     this.networkId = this.genesis ? calculateNetworkId(this.genesis) : null;
-    this.connections = new Set(); this.pendingConnections = 0; this.pendingOutboundSockets = new Set(); this.pendingOutboundSettlements = new Set(); this.serverSockets = new Set(); this.pendingInboundTlsSockets = new Set(); this.server = null; this.started = false; this.closing = false; this.closeOperations = 0; this.closeCompletion = null;
+    this.connections = new Set(); this.pendingConnections = 0; this.pendingOutboundSockets = new Set(); this.pendingOutboundSettlements = new Set(); this.serverSockets = new Set(); this.pendingInboundTlsSockets = new Set(); this.server = null; this.started = false; this.starting = false; this.closing = false; this.quarantined = false; this.closeOperations = 0; this.closeCompletion = null;
     this.removeQuarantineListener = this.networkMode === 'official' && typeof integrityGuard.addQuarantineListener === 'function'
       ? integrityGuard.addQuarantineListener(report => this.#isolateForIntegrityFailure(report?.reason ?? 'integrity-quarantine'))
       : null;
@@ -81,6 +81,7 @@ export class PeerTransport {
   }
 
   async listen() {
+    if (this.quarantined) throw new Error('Transport is quarantined');
     if (this.closeOperations > 0) throw new Error('Transport is closing');
     if (this.started || this.starting) throw new Error('Transport already started or starting');
     this.starting = true;
@@ -99,7 +100,7 @@ export class PeerTransport {
       if (this.networkMode === 'official') await this.integrityGuard.checkHealthy();
       // Health checks may be asynchronous. If close() ran while one was pending,
       // do not create a server after shutdown has already been requested.
-      if (this.closing) throw new Error('Transport closed before listen completed');
+      if (this.closing || this.quarantined) throw new Error(this.quarantined ? 'Transport quarantined before listen completed' : 'Transport closed before listen completed');
       this.server = this.tlsOptions
         ? createTlsServer({ ...this.tlsOptions, requestCert: true, rejectUnauthorized: true, minVersion: 'TLSv1.2', handshakeTimeout: this.tlsHandshakeTimeoutMs }, socket => this.#accept(socket))
         : createTcpServer(socket => this.#accept(socket));
@@ -144,11 +145,11 @@ export class PeerTransport {
         const onError = error => { server.off('listening', onListening); reject(error); };
         const onListening = () => {
           server.off('error', onError);
-          if (this.closing) {
-            // close() can race with server.listen() before Node reports listening.
+          if (this.closing || this.quarantined) {
+            // Shutdown or integrity quarantine can race with server.listen() before Node reports listening.
             // Finish closing here so a late listening event cannot resurrect the transport.
             server.close(error => {
-              reject(error ?? new Error('Transport closed before listen completed'));
+              reject(error ?? new Error(this.quarantined ? 'Transport quarantined before listen completed' : 'Transport closed before listen completed'));
             });
             return;
           }
@@ -157,9 +158,9 @@ export class PeerTransport {
         server.once('error', onError); server.once('listening', onListening);
         server.listen({ host: this.host, port: this.port, backlog: this.maxConnections });
       });
-      if (this.closing) {
+      if (this.closing || this.quarantined) {
         if (server.listening) await new Promise(resolve => server.close(() => resolve()));
-        throw new Error('Transport closed before listen completed');
+        throw new Error(this.quarantined ? 'Transport quarantined before listen completed' : 'Transport closed before listen completed');
       }
       this.started = true;
       const address = server.address();
@@ -450,6 +451,9 @@ export class PeerTransport {
   }
 
   #isolateForIntegrityFailure(_reason) {
+    // Quarantine is terminal for this transport instance. Persist the state so a
+    // concurrent listen() cannot start a server after an awaited health check returns.
+    this.quarantined = true;
     // Stop accepting peers first, then terminate established sessions. Do not rely on
     // the next send/receive operation to notice quarantine.
     for (const socket of this.connections) socket.destroy();
