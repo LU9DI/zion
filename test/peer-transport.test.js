@@ -747,24 +747,25 @@ test('closing a throttled peer cancels its pending refill wait', async t => {
 test('socket destroyed during immediate budget admission skips official integrity work', async t => {
   const genesis = testGenesis();
   const identity = createNodeIdentity();
+  const clientIdentity = createNodeIdentity();
   let serverSocket;
   let destroyOnAdmission = false;
   let guardChecks = 0;
   const integrityGuard = { async checkHealthy() { guardChecks += 1; }, assertHealthy() {} };
   const server = new PeerTransport({
     identity, networkMode: 'official', protocolGenesis: genesis, integrityGuard,
-    trustedPeerIds: [identity.nodeId],
+    trustedPeerIds: [clientIdentity.nodeId],
     socketRateLimiter: { allow: () => { if (destroyOnAdmission) serverSocket?.destroy(); return true; } },
   });
   const address = await server.listen();
   t.after(() => server.close());
-  guardChecks = 0;
-  const client = new PeerTransport({ identity: createNodeIdentity(), protocolGenesis: genesis });
+  const client = new PeerTransport({ identity: clientIdentity, protocolGenesis: genesis });
   const socket = await client.connect('127.0.0.1', address.port);
   t.after(() => { socket.destroy(); client.close(); });
   await waitFor(() => server.connections.size === 1 &&
     socket.__zionSession?.authenticated && [...server.connections][0]?.__zionSession?.authenticated);
   serverSocket = [...server.connections][0];
+  guardChecks = 0;
   destroyOnAdmission = true;
   client.send(socket, { type: 'PING', nonce: 'destroy-during-budget-admission' });
   await waitFor(() => serverSocket.destroyed);
