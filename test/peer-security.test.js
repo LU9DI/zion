@@ -10,6 +10,13 @@ test('Ed25519 peer messages verify and bind the node ID to its public key', () =
   assert.equal(verifyPeerMessage({ ...msg, nodeId: 'b'.repeat(64) }, { now: 1000 }).reason, 'identity-mismatch');
 });
 
+test('peer verification fails closed when the injected clock is invalid', () => {
+  const identity = createNodeIdentity();
+  const message = signPeerMessage(identity, { type: 'PING' }, { now: 1000, nonce: 'c'.repeat(32) });
+  assert.equal(verifyPeerMessage(message, { now: Number.NaN }).reason, 'invalid-clock');
+  assert.equal(verifyPeerMessage(message, { now: Number.POSITIVE_INFINITY }).reason, 'invalid-clock');
+});
+
 test('peer messages reject stale and malformed envelopes', () => {
   const id = createNodeIdentity();
   const msg = signPeerMessage(id, { type: 'PING' }, { now: 1000, nonce: 'b'.repeat(32) });
