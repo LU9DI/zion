@@ -394,6 +394,23 @@ test('closing transport aborts pending outbound TLS handshakes immediately', { s
   assert.equal(client.pendingOutboundSockets.size, 0);
 });
 
+test('close aborts inbound TLS sockets that have not completed their handshake', { skip: !opensslAvailable }, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'zion-mtls-inbound-close-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const material = createTlsTestMaterial(directory);
+  const server = new PeerTransport({ identity: createNodeIdentity(), tlsOptions: material.server });
+  const address = await server.listen();
+  const rawSocket = connect(address.port, '127.0.0.1');
+  t.after(() => rawSocket.destroy());
+  await once(rawSocket, 'connect');
+  await waitFor(() => server.serverSockets.size === 1);
+  assert.equal(server.connections.size, 0, 'the TLS socket is not yet an authenticated transport connection');
+
+  await server.close();
+  assert.equal(rawSocket.destroyed, true, 'close() must destroy inbound sockets during TLS negotiation');
+  assert.equal(server.serverSockets.size, 0);
+});
+
 test('outbound TLS handshake timeout closes an unresponsive peer', { skip: !opensslAvailable }, async t => {
   const directory = mkdtempSync(join(tmpdir(), 'zion-mtls-timeout-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
