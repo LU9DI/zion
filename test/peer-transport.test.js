@@ -389,6 +389,8 @@ test('closing transport aborts pending outbound TLS handshakes immediately', { s
   assert.ok(pendingSocket && !pendingSocket.destroyed, 'TLS socket should still be negotiating before close');
   await client.close();
   assert.equal(pendingSocket.destroyed, true, 'close() must destroy the pending TLS socket immediately');
+  assert.equal(client.pendingConnections, 0, 'close() must await release of outbound capacity reservations');
+  assert.equal(client.pendingOutboundSockets.size, 0);
   await assert.rejects(pending, /closed before peer connection completed|TLS|socket|closed|connect/i);
   assert.equal(client.pendingConnections, 0);
   assert.equal(client.pendingOutboundSockets.size, 0);
