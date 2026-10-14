@@ -721,6 +721,29 @@ test('socket budget runs before the official integrity guard and JSON/signature 
 });
 
 
+test('closing a throttled peer cancels its pending refill wait', async t => {
+  const server = new PeerTransport({
+    identity: createNodeIdentity(),
+    socketRateLimiter: {
+      allow: () => false,
+      retryAfterMs: () => 5000,
+    },
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({ identity: createNodeIdentity() });
+  t.after(() => client.close());
+  const clientSocket = await client.connect('127.0.0.1', address.port);
+  const serverSocket = [...server.connections][0];
+  assert.ok(serverSocket);
+  client.send(clientSocket, { type: 'PING', nonce: 'cancel-refill-wait' });
+  await waitFor(() => serverSocket.__zionSession?.throttled === 1);
+  const started = Date.now();
+  clientSocket.destroy();
+  await waitFor(() => serverSocket.__zionSession?.throttled === 0);
+  assert.ok(Date.now() - started < 500, 'closing the peer should not wait for the 5-second refill timeout');
+});
+
 test('destroyed socket stops frame processing after an asynchronous integrity check', async t => {
   const genesis = testGenesis();
   const serverIdentity = createNodeIdentity();
