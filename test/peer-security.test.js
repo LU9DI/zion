@@ -120,5 +120,7 @@ test('replay guard expires entries through an ordered heap and rejects invalid c
     'unsafe finite clocks must not create entries with infinite expiry');
   assert.equal(guard.accept({ nodeId: 'e', nonce: '5' }, Number.MAX_SAFE_INTEGER + 1), false,
     'unsafe integer clocks must fail closed');
+  assert.equal(guard.accept({ nodeId: 'e', nonce: '5' }, Number.MAX_SAFE_INTEGER - 5), false,
+    'expiry arithmetic must remain within the safe integer range');
   assert.equal(guard.seen.size, 3);
 });
