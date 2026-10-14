@@ -485,3 +485,34 @@ test('a limiter that never refills still disconnects an over-budget peer', async
   await waitFor(() => socket.destroyed);
   assert.ok(received.length <= 2);
 });
+
+test('per-socket limiter is checked first: a denied socket never reaches the per-peer limiters or the handler', async t => {
+  const serverIdentity = createNodeIdentity(); const clientIdentity = createNodeIdentity();
+  let peerLimiterCalls = 0; let handled = 0;
+  const server = new PeerTransport({
+    identity: serverIdentity,
+    socketRateLimiter: { allow: () => false },
+    rateLimiter: { allow() { peerLimiterCalls += 1; return true; } },
+    onMessage: async () => { handled += 1; },
+  });
+  const addr = await server.listen(); t.after(() => server.close());
+  const client = new PeerTransport({ identity: clientIdentity, onMessage: async () => {} });
+  const socket = await client.connect('127.0.0.1', addr.port); t.after(() => { socket.destroy(); client.close(); });
+  client.send(socket, { type: 'PING', nonce: 'denied' });
+  await waitFor(() => socket.destroyed);
+  assert.equal(peerLimiterCalls, 0); assert.equal(handled, 0);
+});
+
+test('peers that have not completed the handshake get the strict tier, authenticated peers the generous one', async t => {
+  const serverIdentity = createNodeIdentity(); const clientIdentity = createNodeIdentity();
+  const calls = { strict: 0, generous: 0 };
+  const count = key => ({ allow() { calls[key] += 1; return true; }, retryAfterMs: () => 0 });
+  const server = new PeerTransport({ identity: serverIdentity, rateLimiter: count('generous'), unauthenticatedRateLimiter: count('strict'), onMessage: async () => {} });
+  const addr = await server.listen(); t.after(() => server.close());
+  const client = new PeerTransport({ identity: clientIdentity, onMessage: async () => {} });
+  const socket = await client.connect('127.0.0.1', addr.port); t.after(() => { socket.destroy(); client.close(); });
+  client.send(socket, { type: 'PING', nonce: 'tier' });
+  await waitFor(() => calls.generous + calls.strict >= 1);
+  // Without a genesis the session starts authenticated, so the generous tier applies.
+  assert.equal(calls.generous, 1); assert.equal(calls.strict, 0);
+});

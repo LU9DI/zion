@@ -31,7 +31,11 @@ export class PeerTransport {
   constructor({ identity, host = '127.0.0.1', port = 0, maxConnections = 64,
     maxFrameBytes = MAX_FRAME_BYTES, allowedTypes = DEFAULT_TYPES, trustedPeerIds = null,
     onMessage = async () => {}, replayGuard = new ReplayGuard(),
-    rateLimiter = new PeerRateLimiter({ capacity: 128, refillPerSecond: 100 }), transferScheduler = null,
+    rateLimiter = new PeerRateLimiter({ capacity: 128, refillPerSecond: 100 }),
+    // Tier 1: strict budget for peers that have not completed the handshake (keyed by nodeId).
+    unauthenticatedRateLimiter = new PeerRateLimiter({ capacity: 16, refillPerSecond: 5 }),
+    // Tier 0: cheap per-socket budget checked BEFORE signature verification, so unsigned/forged floods cannot burn CPU.
+    socketRateLimiter = new PeerRateLimiter({ capacity: 256, refillPerSecond: 200 }), transferScheduler = null,
     protocolGenesis = null, networkMode = 'legacy', integrityGuard = null, admissionController = null, admissionVouchers = [], tlsOptions = null, tlsHandshakeTimeoutMs = 10_000, now = () => Date.now() } = {}) {
     if (!identity?.privateKey || typeof identity.nodeId !== 'string') throw new TypeError('A node identity is required');
     if (typeof host !== 'string' || !host || !Number.isInteger(port) || port < 0 || port > 65535) throw new RangeError('Invalid bind address');
@@ -64,7 +68,7 @@ export class PeerTransport {
     this.admissionVouchers = Object.freeze([...admissionVouchers]);
     this.admittedPeerIds = new Set();
     this.maxFrameBytes = maxFrameBytes; this.maxMessageBytes = this.genesis?.limits.maxMessageBytes ?? maxFrameBytes; this.allowedTypes = new Set(allowedTypes); this.trustedPeerIds = trustedPeerIds === null ? null : new Set(trustedPeerIds); this.onMessage = onMessage;
-    this.replayGuard = replayGuard; this.rateLimiter = rateLimiter; this.transferScheduler = transferScheduler; this.now = now;
+    this.replayGuard = replayGuard; this.rateLimiter = rateLimiter; this.unauthenticatedRateLimiter = unauthenticatedRateLimiter; this.socketRateLimiter = socketRateLimiter; this.transferScheduler = transferScheduler; this.now = now;
     this.networkId = this.genesis ? calculateNetworkId(this.genesis) : null;
     this.connections = new Set(); this.server = null; this.started = false;
     this.removeQuarantineListener = this.networkMode === 'official' && typeof integrityGuard.addQuarantineListener === 'function'
@@ -100,7 +104,7 @@ export class PeerTransport {
 
   #attach(socket) {
     this.connections.add(socket);
-    const session = { localNonce: randomBytes(32).toString('hex'), remoteNonce: null, authenticated: !this.genesis };
+    const session = { id: randomBytes(16).toString('hex'), localNonce: randomBytes(32).toString('hex'), remoteNonce: null, authenticated: !this.genesis };
     socket.__zionSession = session;
     socket.setTimeout(15_000, () => socket.destroy());
     socket.setNoDelay(true);
@@ -185,6 +189,7 @@ export class PeerTransport {
     let message;
     try { message = JSON.parse(frame.toString('utf8')); }
     catch { socket.destroy(); return; }
+    if (!(await this.#admitWithinRate(socket, this.socketRateLimiter, socket.__zionSession?.id ?? 'socket'))) { socket.destroy(); return; }
     const checked = verifyPeerMessage(message, { now: this.now(), maxBytes: this.maxFrameBytes });
     if (!checked.ok) { socket.destroy(); return; }
     const trustedByAllowlist = !this.trustedPeerIds || this.trustedPeerIds.has(checked.nodeId);
@@ -195,7 +200,8 @@ export class PeerTransport {
     const previouslyAdmitted = this.admittedPeerIds.has(checked.nodeId) || controllerAdmitted === true;
     if (!trustedByAllowlist && !previouslyAdmitted && !this.admissionController) { socket.destroy(); return; }
     // Admission control applies to handshake frames as well as application traffic.
-    if (!(await this.#admitWithinRate(socket, checked.nodeId)) || !this.replayGuard.accept(message, this.now())) { socket.destroy(); return; }
+    const tierLimiter = socket.__zionSession?.authenticated ? this.rateLimiter : this.unauthenticatedRateLimiter;
+    if (!(await this.#admitWithinRate(socket, tierLimiter, checked.nodeId)) || !this.replayGuard.accept(message, this.now())) { socket.destroy(); return; }
     let payloadBytes;
     try { payloadBytes = Buffer.byteLength(JSON.stringify(checked.payload), 'utf8'); }
     catch { socket.destroy(); return; }
@@ -245,12 +251,12 @@ export class PeerTransport {
    * The wait is bounded and the socket idle timeout still applies; a limiter that cannot predict a refill time
    * (or one that needs longer than MAX_THROTTLE_MS) keeps the previous fail-closed behaviour of disconnecting.
    */
-  async #admitWithinRate(socket, nodeId) {
-    if (this.rateLimiter.allow(nodeId)) return true;
-    if (typeof this.rateLimiter.retryAfterMs !== 'function') return false;
+  async #admitWithinRate(socket, limiter, nodeId) {
+    if (limiter.allow(nodeId)) return true;
+    if (typeof limiter.retryAfterMs !== 'function') return false;
     const session = socket.__zionSession;
     for (let attempt = 0; attempt < MAX_THROTTLE_WAITS; attempt++) {
-      const waitMs = this.rateLimiter.retryAfterMs(nodeId);
+      const waitMs = limiter.retryAfterMs(nodeId);
       if (!Number.isFinite(waitMs) || waitMs > MAX_THROTTLE_MS || socket.destroyed) return false;
       session.throttled = (session.throttled ?? 0) + 1;
       socket.pause();
@@ -258,7 +264,7 @@ export class PeerTransport {
       session.throttled -= 1;
       if (session.throttled === 0 && !socket.destroyed) socket.resume();
       if (socket.destroyed) return false;
-      if (this.rateLimiter.allow(nodeId)) return true;
+      if (limiter.allow(nodeId)) return true;
     }
     return false;
   }
