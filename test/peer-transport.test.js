@@ -361,7 +361,10 @@ test('closing transport aborts pending outbound TLS handshakes immediately', { s
   const pending = client.connect('127.0.0.1', address.port);
   await waitFor(() => client.pendingConnections === 1);
   assert.equal(client.pendingOutboundSockets.size, 1);
+  const pendingSocket = [...client.pendingOutboundSockets][0];
+  assert.ok(pendingSocket && !pendingSocket.destroyed, 'TLS socket should still be negotiating before close');
   await client.close();
+  assert.equal(pendingSocket.destroyed, true, 'close() must destroy the pending TLS socket immediately');
   await assert.rejects(pending, /closed before peer connection completed|TLS|socket|closed|connect/i);
   assert.equal(client.pendingConnections, 0);
   assert.equal(client.pendingOutboundSockets.size, 0);
