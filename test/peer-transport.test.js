@@ -977,3 +977,35 @@ test('integrity quarantine during startup prevents the transport from listening 
   await assert.rejects(transport.listen(), /quarantined/i, 'a quarantined transport instance must not restart');
   await assert.rejects(transport.connect('127.0.0.1', 1), /quarantined/i, 'a quarantined transport must not create outbound connections');
 });
+
+
+test('socket destroyed during peer-tier admission never reaches replay or the message handler', async t => {
+  const serverIdentity = createNodeIdentity();
+  const clientIdentity = createNodeIdentity();
+  let serverSocket;
+  let destroyDuringAdmission = false;
+  let handled = 0;
+  const rateLimiter = {
+    allow() {
+      if (destroyDuringAdmission) serverSocket.destroy();
+      return true;
+    },
+  };
+  const server = new PeerTransport({
+    identity: serverIdentity,
+    rateLimiter,
+    onMessage: async () => { handled += 1; },
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({ identity: clientIdentity });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(() => { socket.destroy(); client.close(); });
+  await waitFor(() => server.connections.size === 1);
+  serverSocket = [...server.connections][0];
+  destroyDuringAdmission = true;
+  client.send(socket, { type: 'PING', nonce: 'destroy-during-peer-tier-admission' });
+  await waitFor(() => serverSocket.destroyed);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(handled, 0, 'a destroyed socket must not reach application processing after tier admission');
+});
