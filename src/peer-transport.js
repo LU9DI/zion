@@ -297,6 +297,9 @@ export class PeerTransport {
     // deriving public keys, or verifying signatures. Frame length was already bounded by the parser.
     if (!(await this.#admitWithinRate(socket, this.socketRateLimiter, socket.__zionSession?.id ?? 'socket'))) { socket.destroy(); return; }
     if (this.networkMode === 'official') await this.integrityGuard.checkHealthy();
+    // Integrity checks may yield while close() or quarantine destroys the socket.
+    // Do not spend CPU parsing/verifying a frame whose connection is no longer live.
+    if (socket.destroyed) return;
     let message;
     try { message = JSON.parse(frame.toString('utf8')); }
     catch { socket.destroy(); return; }
