@@ -643,3 +643,23 @@ test('authenticated application frames do not query the admission backend again'
   assert.ok(readsAfterHandshake >= 1, 'the handshake checks admission state');
   assert.equal(admissionReads, readsAfterHandshake, 'application traffic must not query admission storage');
 });
+
+
+test('outbound connection capacity includes sockets still completing their handshake', async t => {
+  const server = new PeerTransport({ identity: createNodeIdentity(), maxConnections: 4 });
+  const addr = await server.listen(); t.after(() => server.close());
+  const client = new PeerTransport({ identity: createNodeIdentity(), maxConnections: 1 });
+  t.after(() => client.close());
+
+  const attempts = await Promise.allSettled([
+    client.connect('127.0.0.1', addr.port),
+    client.connect('127.0.0.1', addr.port),
+  ]);
+  const connected = attempts.filter(result => result.status === 'fulfilled');
+  const rejected = attempts.filter(result => result.status === 'rejected');
+  for (const result of connected) result.value.destroy();
+  assert.equal(connected.length, 1, 'only one outbound connection may reserve the final slot');
+  assert.equal(rejected.length, 1, 'concurrent connection attempts must fail once capacity is reserved');
+  assert.equal(client.pendingConnections, 0, 'pending capacity reservations must always be released');
+  assert.equal(client.connections.size, 1);
+});
