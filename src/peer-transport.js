@@ -71,7 +71,7 @@ export class PeerTransport {
     this.maxFrameBytes = maxFrameBytes; this.maxMessageBytes = this.genesis?.limits.maxMessageBytes ?? maxFrameBytes; this.allowedTypes = new Set(allowedTypes); this.trustedPeerIds = trustedPeerIds === null ? null : new Set(trustedPeerIds); this.onMessage = onMessage;
     this.replayGuard = replayGuard; this.rateLimiter = rateLimiter; this.unauthenticatedRateLimiter = unauthenticatedRateLimiter; this.socketRateLimiter = socketRateLimiter; this.transferScheduler = transferScheduler; this.now = now;
     this.networkId = this.genesis ? calculateNetworkId(this.genesis) : null;
-    this.connections = new Set(); this.pendingConnections = 0; this.server = null; this.started = false;
+    this.connections = new Set(); this.pendingConnections = 0; this.pendingOutboundSockets = new Set(); this.server = null; this.started = false; this.closing = false;
     this.removeQuarantineListener = this.networkMode === 'official' && typeof integrityGuard.addQuarantineListener === 'function'
       ? integrityGuard.addQuarantineListener(report => this.#isolateForIntegrityFailure(report?.reason ?? 'integrity-quarantine'))
       : null;
@@ -82,6 +82,7 @@ export class PeerTransport {
 
   async listen() {
     if (this.started) throw new Error('Transport already started');
+    this.closing = false;
     if (this.networkMode === 'official') await this.integrityGuard.checkHealthy();
     this.server = this.tlsOptions
       ? createTlsServer({ ...this.tlsOptions, requestCert: true, rejectUnauthorized: true, minVersion: 'TLSv1.2', handshakeTimeout: this.tlsHandshakeTimeoutMs }, socket => this.#accept(socket))
@@ -160,6 +161,7 @@ export class PeerTransport {
     // Reserve capacity before opening the socket: TLS handshakes can remain pending for
     // seconds, and checking only established connections allows concurrent callers to
     // create an unbounded number of outbound sockets while each waits for authentication.
+    if (this.closing) throw new Error('Transport is closing');
     if (this.connections.size + this.pendingConnections >= this.maxConnections) throw new Error('Connection capacity reached');
     this.pendingConnections++;
     const useTls = Boolean(this.tlsOptions);
@@ -172,6 +174,7 @@ export class PeerTransport {
       this.pendingConnections--;
       throw error;
     }
+    this.pendingOutboundSockets.add(socket);
     try {
       await new Promise((resolve, reject) => {
       // A TCP 'connect' event does not mean the TLS peer has been authenticated.
@@ -197,6 +200,7 @@ export class PeerTransport {
       };
       socket.once('error', onError); socket.once(readyEvent, onReady);
       });
+      if (this.closing || socket.destroyed) throw new Error('Transport closed before peer connection completed');
       if (this.connections.size >= this.maxConnections) { socket.destroy(); throw new Error('Connection capacity reached'); }
       this.#attach(socket);
       return socket;
@@ -204,6 +208,7 @@ export class PeerTransport {
       socket.destroy();
       throw error;
     } finally {
+      this.pendingOutboundSockets.delete(socket);
       this.pendingConnections--;
     }
   }
@@ -326,6 +331,7 @@ export class PeerTransport {
     // Stop accepting peers first, then terminate established sessions. Do not rely on
     // the next send/receive operation to notice quarantine.
     for (const socket of this.connections) socket.destroy();
+    for (const socket of this.pendingOutboundSockets) socket.destroy();
     this.connections.clear();
     if (this.server?.listening) {
       try { this.server.close(() => {}); } catch { /* quarantine remains fail-closed */ }
@@ -334,6 +340,7 @@ export class PeerTransport {
   }
 
   async close() {
+    this.closing = true;
     this.removeQuarantineListener?.();
     this.removeQuarantineListener = null;
     for (const socket of this.connections) socket.destroy();
