@@ -122,12 +122,21 @@ export class PeerRateLimiter {
   allow(peerId, cost = 1) {
     if (typeof peerId !== 'string' || !peerId || peerId.length > 256 || !Number.isFinite(cost) || cost <= 0 || cost > this.capacity) return false;
     const time = this.now();
-    // Map insertion order tracks last access because each touched bucket is moved to
-    // the end below. Expire only the oldest consecutive idle buckets instead of
-    // scanning every peer on every frame (which becomes O(maxPeers) under churn).
-    for (const [id, bucket] of this.buckets) {
-      if (time - bucket.lastSeen < this.idleTtlMs) break;
-      this.buckets.delete(id);
+    // Sweep a bounded rotating batch: an untrusted peer can grow this map up to
+    // maxPeers, so a full scan on every frame is O(maxPeers) CPU under churn.
+    // Rotate live buckets to the end so repeated calls eventually inspect all entries,
+    // without relying on wall-clock timestamps being monotonic.
+    const sweep = [];
+    for (const entry of this.buckets) {
+      sweep.push(entry);
+      if (sweep.length >= 64) break;
+    }
+    for (const [id, bucket] of sweep) {
+      if (time - bucket.lastSeen >= this.idleTtlMs) this.buckets.delete(id);
+      else {
+        this.buckets.delete(id);
+        this.buckets.set(id, bucket);
+      }
     }
     let old = this.buckets.get(peerId);
     if (!old) {
