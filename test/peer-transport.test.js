@@ -975,4 +975,5 @@ test('integrity quarantine during startup prevents the transport from listening 
   assert.equal(transport.started, false);
   assert.equal(transport.server, null, 'startup must not leave a server behind after quarantine');
   await assert.rejects(transport.listen(), /quarantined/i, 'a quarantined transport instance must not restart');
+  await assert.rejects(transport.connect('127.0.0.1', 1), /quarantined/i, 'a quarantined transport must not create outbound connections');
 });
