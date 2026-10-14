@@ -120,8 +120,8 @@ export class PeerRateLimiter {
     if (!bucket) return 0;
     if (this.refillPerMs <= 0) return Infinity;
     const time = this.now();
-    if (!Number.isFinite(time)) return Infinity;
-    const tokens = Math.min(this.capacity, bucket.tokens + Math.max(0, time - bucket.at) * this.refillPerMs);
+    if (!Number.isFinite(time) || time < bucket.at) return Infinity;
+    const tokens = Math.min(this.capacity, bucket.tokens + (time - bucket.at) * this.refillPerMs);
     return tokens >= cost ? 0 : Math.ceil((cost - tokens) / this.refillPerMs);
   }
   /** Remove per-peer state when its identity is no longer active (e.g. a closed socket). */
@@ -154,8 +154,13 @@ export class PeerRateLimiter {
     if (!old) {
       if (this.buckets.size >= this.maxPeers) return false; // Fail closed instead of evicting active peers under attack.
       old = { tokens: this.capacity, at: time, lastSeen: time };
+    } else if (time < old.at) {
+      // A wall-clock rollback must not move the bucket's refill baseline backwards.
+      // Otherwise, when time catches up, the same interval can refill tokens twice.
+      // Reject without mutation; retryAfterMs() also fails closed until time catches up.
+      return false;
     }
-    const tokens = Math.min(this.capacity, old.tokens + Math.max(0, time - old.at) * this.refillPerMs);
+    const tokens = Math.min(this.capacity, old.tokens + (time - old.at) * this.refillPerMs);
     this.buckets.delete(peerId);
     this.buckets.set(peerId, { tokens: tokens >= cost ? tokens - cost : tokens, at: time, lastSeen: time });
     return tokens >= cost;
