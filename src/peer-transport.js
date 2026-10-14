@@ -213,11 +213,6 @@ export class PeerTransport {
     // Otherwise a validly signed pre-handshake flood can still force one backend read per frame.
     const tierLimiter = socket.__zionSession?.authenticated ? this.rateLimiter : this.unauthenticatedRateLimiter;
     if (!(await this.#admitWithinRate(socket, tierLimiter, checked.nodeId))) { socket.destroy(); return; }
-    // Admission backends may be transactional and remote, so their fresh reads can be async.
-    const controllerAdmitted = this.admissionController
-      ? await this.admissionController.isAdmitted(checked.nodeId)
-      : false;
-    const previouslyAdmitted = this.admittedPeerIds.has(checked.nodeId) || controllerAdmitted === true;
     if (!this.replayGuard.accept(message, this.now())) { socket.destroy(); return; }
     let payloadBytes;
     try { payloadBytes = Buffer.byteLength(JSON.stringify(checked.payload), 'utf8'); }
@@ -228,6 +223,10 @@ export class PeerTransport {
       if (payload?.type === 'ZION_HANDSHAKE' && payload.networkId === this.networkId &&
           payload.protocolMajor === this.genesis.protocolMajor && typeof payload.nonce === 'string' && /^[a-f0-9]{64}$/.test(payload.nonce) &&
           payload.nonce !== session.localNonce && (!session.remoteNonce || session.remoteNonce === payload.nonce)) {
+        // Admission state is only needed for a new handshake. Avoid a remote/transactional
+        // store read for every authenticated application frame from an already connected peer.
+        const previouslyAdmitted = this.admittedPeerIds.has(checked.nodeId) ||
+          (this.admissionController ? await this.admissionController.isAdmitted(checked.nodeId) === true : false);
         if (!trustedByAllowlist && !previouslyAdmitted) {
           let admission;
           try { admission = await this.admissionController.admit({ subjectNodeId: checked.nodeId, vouchers: payload.vouchers }); }
