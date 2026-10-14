@@ -99,7 +99,10 @@ export class PeerTransport {
   }
 
   #accept(socket) {
-    if (this.connections.size >= this.maxConnections) { socket.destroy(); return; }
+    // Outbound dials reserve slots while TCP/TLS handshakes are pending. Inbound
+    // accepts must honor those reservations too, or mixed inbound/outbound traffic
+    // can temporarily exceed the configured total connection budget.
+    if (this.connections.size + this.pendingConnections >= this.maxConnections) { socket.destroy(); return; }
     this.#attach(socket);
   }
 
