@@ -124,3 +124,22 @@ test('replay guard expires entries through an ordered heap and rejects invalid c
     'expiry arithmetic must remain within the safe integer range');
   assert.equal(guard.seen.size, 3);
 });
+
+test('rate limiter fails closed on clock rollback without granting duplicate refill', () => {
+  let now = 1000;
+  const limiter = new PeerRateLimiter({ capacity: 2, refillPerSecond: 1, now: () => now });
+  assert.equal(limiter.allow('peer'), true);
+  assert.equal(limiter.allow('peer'), true);
+  assert.equal(limiter.allow('peer'), false);
+  const exhausted = { ...limiter.buckets.get('peer') };
+
+  now = 0;
+  assert.equal(limiter.allow('peer'), false, 'a backwards clock must not move the refill baseline');
+  assert.equal(limiter.retryAfterMs('peer'), Infinity, 'do not predict refill while the clock is behind');
+  assert.deepEqual(limiter.buckets.get('peer'), exhausted, 'rollback must not mutate token state');
+
+  now = 1000;
+  assert.equal(limiter.allow('peer'), false, 'catching up to the prior timestamp must not create tokens');
+  now = 2000;
+  assert.equal(limiter.allow('peer'), true, 'tokens refill after genuinely advancing beyond the prior timestamp');
+});
