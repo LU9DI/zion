@@ -133,7 +133,12 @@ export class PeerTransport {
       if (pending.length > this.maxFrameBytes) socket.destroy();
     });
     socket.on('error', () => {});
-    socket.on('close', () => this.connections.delete(socket));
+    socket.on('close', () => {
+      this.connections.delete(socket);
+      // Socket IDs are unique per connection; release their bucket immediately instead of
+      // retaining churned connections until the limiter's idle TTL expires.
+      this.socketRateLimiter.forget?.(session.id);
+    });
     if (this.genesis) this.#sendHandshake(socket, { type: 'ZION_HANDSHAKE', networkId: this.networkId, protocolMajor: this.genesis.protocolMajor, nonce: session.localNonce });
   }
 
