@@ -97,7 +97,7 @@ export class ReplayGuard {
   accept(message, now = Date.now()) {
     // Replay expiry arithmetic must remain representable. Huge but finite injected
     // clocks can overflow `now + ttlMs` to Infinity, pinning entries forever.
-    if (!Number.isSafeInteger(now)) return false;
+    if (!Number.isSafeInteger(now) || !Number.isSafeInteger(now + this.ttlMs)) return false;
     this.#prune(now);
     if (!message || typeof message.nodeId !== 'string' || typeof message.nonce !== 'string') return false;
     const key = `${message.nodeId}:${message.nonce}`;
