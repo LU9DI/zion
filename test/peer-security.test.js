@@ -59,6 +59,18 @@ test('rate limiter expires only oldest idle buckets while preserving recently to
   assert.equal(limiter.buckets.has('third'), true);
 });
 
+test('rate limiter fails closed on an invalid clock without corrupting buckets', () => {
+  let now = 100;
+  const limiter = new PeerRateLimiter({ capacity: 2, refillPerSecond: 1, now: () => now });
+  assert.equal(limiter.allow('peer'), true);
+  const before = { ...limiter.buckets.get('peer') };
+  now = Number.NaN;
+  assert.equal(limiter.allow('peer'), false);
+  assert.equal(limiter.retryAfterMs('peer'), Infinity);
+  assert.deepEqual(limiter.buckets.get('peer'), before);
+  assert.equal(limiter.buckets.has('other'), false);
+});
+
 test('rate limiter rotates bounded cleanup across maps larger than one sweep batch', () => {
   let now = 0;
   const limiter = new PeerRateLimiter({ capacity: 200, refillPerSecond: 1, maxPeers: 200, idleTtlMs: 100, now: () => now });
