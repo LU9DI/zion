@@ -935,3 +935,44 @@ test('concurrent close calls share one shutdown operation and remain idempotent'
   assert.equal(transport.started, true);
   await transport.close();
 });
+
+
+test('integrity quarantine during startup prevents the transport from listening or restarting', async t => {
+  const genesis = testGenesis();
+  const identity = createNodeIdentity();
+  let releaseHealth;
+  let signalHealthEntered;
+  let notifyQuarantine;
+  const healthGate = new Promise(resolve => { releaseHealth = resolve; });
+  const healthEntered = new Promise(resolve => { signalHealthEntered = resolve; });
+  const integrityGuard = {
+    async checkHealthy() {
+      signalHealthEntered();
+      await healthGate;
+    },
+    assertHealthy() {},
+    addQuarantineListener(listener) {
+      notifyQuarantine = listener;
+      return () => { notifyQuarantine = null; };
+    },
+  };
+  const transport = new PeerTransport({
+    identity,
+    networkMode: 'official',
+    protocolGenesis: genesis,
+    integrityGuard,
+    trustedPeerIds: [identity.nodeId],
+  });
+  t.after(async () => { releaseHealth(); await transport.close(); });
+
+  const starting = transport.listen();
+  await healthEntered;
+  assert.equal(typeof notifyQuarantine, 'function');
+  notifyQuarantine({ reason: 'test-quarantine' });
+  releaseHealth();
+
+  await assert.rejects(starting, /quarantined/i);
+  assert.equal(transport.started, false);
+  assert.equal(transport.server, null, 'startup must not leave a server behind after quarantine');
+  await assert.rejects(transport.listen(), /quarantined/i, 'a quarantined transport instance must not restart');
+});
