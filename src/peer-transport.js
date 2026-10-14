@@ -115,7 +115,7 @@ export class PeerTransport {
           this.serverSockets.delete(socket);
           this.pendingInboundTlsSockets.delete(socket);
         });
-        if (this.closing) { socket.destroy(); return; }
+        if (this.closing || this.quarantined) { socket.destroy(); return; }
         // TLS emits 'connection' before negotiation. Count those raw sockets against
         // outbound reservations too, or maxConnections outbound handshakes plus
         // maxConnections stalled inbound TLS handshakes can coexist.
@@ -178,7 +178,7 @@ export class PeerTransport {
   #accept(socket) {
     // A connection event can race with shutdown; never register a new inbound
     // socket once close() has begun, even if the server accepted it just before close.
-    if (this.closing) { socket.destroy(); return; }
+    if (this.closing || this.quarantined) { socket.destroy(); return; }
     // Outbound dials reserve slots while TCP/TLS handshakes are pending. Inbound
     // accepts must honor those reservations too, or mixed inbound/outbound traffic
     // can temporarily exceed the configured total connection budget.
@@ -245,6 +245,7 @@ export class PeerTransport {
     // Reserve capacity before opening the socket: TLS handshakes can remain pending for
     // seconds, and checking only established connections allows concurrent callers to
     // create an unbounded number of outbound sockets while each waits for authentication.
+    if (this.quarantined) throw new Error('Transport is quarantined');
     if (this.closing) throw new Error('Transport is closing');
     if (this.connections.size + this.pendingConnections + this.pendingInboundTlsSockets.size >= this.maxConnections) throw new Error('Connection capacity reached');
     this.pendingConnections++;
@@ -296,6 +297,7 @@ export class PeerTransport {
       };
       socket.once('error', onError); socket.once('close', onClose); socket.once(readyEvent, onReady);
       });
+      if (this.quarantined) throw new Error('Transport quarantined before peer connection completed');
       if (this.closing || socket.destroyed) throw new Error('Transport closed before peer connection completed');
       if (this.connections.size + this.pendingInboundTlsSockets.size >= this.maxConnections) { socket.destroy(); throw new Error('Connection capacity reached'); }
       this.#attach(socket);
