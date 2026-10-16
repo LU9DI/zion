@@ -357,18 +357,20 @@ export class PeerTransport {
     if (socket.__zionSession) socket.__zionSession.peerNodeId = checked.nodeId;
     const trustedByAllowlist = !this.trustedPeerIds || this.trustedPeerIds.has(checked.nodeId);
     if (!trustedByAllowlist && !this.admissionController) { socket.destroy(); return; }
-    // Reject an already-seen envelope before the identity tier is charged. Replayed frames
-    // are signed by a third party, so charging them would let an attacker replay one captured
-    // frame from fresh sockets and drain the victim's tier budget to lock out its real traffic.
-    if (this.replayGuard.has?.(message) === true) { socket.destroy(); return; }
-    // Enforce the peer tier before any potentially remote/transactional admission lookup.
-    // Otherwise a validly signed pre-handshake flood can still force one backend read per frame.
-    const tierLimiter = socket.__zionSession?.authenticated ? this.rateLimiter : this.unauthenticatedRateLimiter;
-    if (!(await this.#admitWithinRate(socket, tierLimiter, checked.nodeId))) { socket.destroy(); return; }
-    // The async admission helper yields even for an immediate allow. A close can
-    // run before this continuation, so recheck before mutating replay state or dispatching.
-    if (socket.destroyed) return;
+    // Atomically reserve replay state before the first asynchronous tier admission.
+    // Otherwise two sockets can both pass has(), both charge the victim's bucket, and
+    // only then race at accept(). Roll the reservation back if admission fails so an
+    // honest sender can retry a throttled frame with the same envelope.
     if (!this.replayGuard.accept(message, this.now())) { socket.destroy(); return; }
+    const tierLimiter = socket.__zionSession?.authenticated ? this.rateLimiter : this.unauthenticatedRateLimiter;
+    if (!(await this.#admitWithinRate(socket, tierLimiter, checked.nodeId))) {
+      this.replayGuard.release?.(message);
+      socket.destroy();
+      return;
+    }
+    // The async admission helper yields even for an immediate allow. A close can
+    // run before this continuation; release the reservation because no dispatch occurs.
+    if (socket.destroyed) { this.replayGuard.release?.(message); return; }
     let payloadBytes;
     try { payloadBytes = Buffer.byteLength(JSON.stringify(checked.payload), 'utf8'); }
     catch { socket.destroy(); return; }
