@@ -59,7 +59,7 @@ export function verifyPeerMessage(message, { now = Date.now(), maxClockSkewMs = 
 export class ReplayGuard {
   constructor({ ttlMs = 120_000, maxEntries = 100_000 } = {}) {
     if (!Number.isSafeInteger(ttlMs) || ttlMs < 1 || !Number.isSafeInteger(maxEntries) || maxEntries < 1) throw new RangeError('Invalid replay guard limits');
-    this.ttlMs = ttlMs; this.maxEntries = maxEntries; this.seen = new Map(); this.expiryHeap = [];
+    this.ttlMs = ttlMs; this.maxEntries = maxEntries; this.seen = new Map(); this.expiryHeap = []; this.inFlight = new Set();
   }
   #pushExpiry(entry) {
     const heap = this.expiryHeap; heap.push(entry);
@@ -106,6 +106,23 @@ export class ReplayGuard {
   has(message) {
     if (!message || typeof message.nodeId !== 'string' || typeof message.nonce !== 'string') return false;
     return this.seen.has(`${message.nodeId}:${message.nonce}`);
+  }
+  /**
+   * Atomically claim a message while its async transport admission is in progress.
+   * This transient set is separate from the bounded accepted-message cache: a claim
+   * prevents concurrent copies from charging the same identity tier, but does not
+   * consume replay-cache capacity and is always released by the transport.
+   */
+  claim(message) {
+    if (!message || typeof message.nodeId !== 'string' || typeof message.nonce !== 'string') return false;
+    const key = `${message.nodeId}:${message.nonce}`;
+    if (this.seen.has(key) || this.inFlight.has(key)) return false;
+    this.inFlight.add(key);
+    return true;
+  }
+  release(message) {
+    if (!message || typeof message.nodeId !== 'string' || typeof message.nonce !== 'string') return false;
+    return this.inFlight.delete(`${message.nodeId}:${message.nonce}`);
   }
   accept(message, now = Date.now()) {
     // Replay expiry arithmetic must remain representable. Huge but finite injected
