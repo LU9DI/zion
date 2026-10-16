@@ -106,9 +106,15 @@ test('transport serializes async handlers and bounds queued frames per socket', 
   const socket = connect(address.port, '127.0.0.1');
   t.after(() => socket.destroy());
   await once(socket, 'connect');
-  for (let i = 0; i < 70; i++) client.send(socket, { type: 'PING', nonce: String(i) });
-  await waitFor(() => socket.destroyed || entered > 0);
-  assert.equal(maxConcurrent, 1);
+  // Queue the burst in two waves. A single burst can overflow the queue before the first
+  // handler microtask runs, which would make the serialization assertion untestable.
+  for (let i = 0; i < 32; i++) client.send(socket, { type: 'PING', nonce: String(i) });
+  await waitFor(() => entered > 0);
+  for (let i = 32; i < 96; i++) {
+    try { client.send(socket, { type: 'PING', nonce: String(i) }); } catch { break; }
+  }
+  await waitFor(() => socket.destroyed);
+  assert.equal(maxConcurrent, 1, 'handlers must not run concurrently for one socket');
   assert.equal(socket.destroyed, true, 'socket is closed when its per-connection work queue overflows');
 });
 
@@ -210,8 +216,12 @@ test('genesis-enabled peers reject different network IDs before application mess
   const client = new PeerTransport({ identity: createNodeIdentity(), protocolGenesis: testGenesis('Zion B') });
   const socket = await client.connect('127.0.0.1', address.port);
   t.after(() => socket.destroy());
-  await waitFor(() => socket.destroyed || [...server.connections].every(peer => peer.destroyed));
+  // `every()` on an empty connection set is vacuously true, so wait for the actual
+  // rejection instead of accepting a not-yet-accepted connection.
+  await waitFor(() => socket.destroyed);
   assert.equal(socket.destroyed, true);
+  assert.equal([...server.connections].filter(peer => !peer.destroyed).length, 0,
+    'a mismatched network ID must not leave a live session on the server');
 });
 
 test('genesis-enabled peers cannot send application messages before handshake', async () => {
@@ -783,6 +793,9 @@ test('closing a throttled peer cancels its pending refill wait', async t => {
   const client = new PeerTransport({ identity: createNodeIdentity() });
   t.after(() => client.close());
   const clientSocket = await client.connect('127.0.0.1', address.port);
+  // The dialer resolves on its own TCP connect; wait until the server has attached the
+  // socket before inspecting its session state.
+  await waitFor(() => server.connections.size === 1);
   const serverSocket = [...server.connections][0];
   assert.ok(serverSocket);
   client.send(clientSocket, { type: 'PING', nonce: 'cancel-refill-wait' });
