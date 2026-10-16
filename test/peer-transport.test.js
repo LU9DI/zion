@@ -1157,6 +1157,8 @@ test('concurrent copies of one envelope charge the pre-handshake identity tier o
   // Hold both frames at the same asynchronous integrity check so each reaches the
   // replay membership check before either can finish rate admission.
   blockChecks = true;
+  const firstClosed = once(first, 'close');
+  const secondClosed = once(second, 'close');
   const captured = Buffer.from(`${JSON.stringify(signPeerMessage(victim, {
     type: 'PING', nonce: 'a'.repeat(64),
   }))}\n`);
@@ -1170,9 +1172,7 @@ test('concurrent copies of one envelope charge the pre-handshake identity tier o
   await waitFor(() => tierLimiter.buckets.has(victim.nodeId)).catch(() => {
     throw new Error(`Tier was not charged; checks=${checksEntered}; connections=${server.connections.size}; firstDestroyed=${first.destroyed}; secondDestroyed=${second.destroyed}; replayEntries=${server.replayGuard.seen.size}`);
   });
-  await waitFor(() => first.destroyed || second.destroyed).catch(() => {
-    throw new Error(`Sockets remained open after processing; checks=${checksEntered}; firstDestroyed=${first.destroyed}; secondDestroyed=${second.destroyed}; replayEntries=${server.replayGuard.seen.size}`);
-  });
+  await Promise.all([firstClosed, secondClosed]);
   assert.equal(tierLimiter.buckets.get(victim.nodeId).tokens, 2,
     'two concurrent copies of one signed envelope must consume one identity token');
   assert.equal(server.replayGuard.seen.size, 1,
