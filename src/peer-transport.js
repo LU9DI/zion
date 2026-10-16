@@ -376,7 +376,12 @@ export class PeerTransport {
       if (!(await this.#admitWithinRate(socket, tierLimiter, checked.nodeId))) { socket.destroy(); return; }
       // The async admission helper yields even for an immediate allow. A close can
       // run before this continuation, so recheck before mutating replay state or dispatching.
-      if (socket.destroyed) return;
+      if (socket.destroyed) {
+        // The limiter charged synchronously, but its awaited result can resume after
+        // close/quarantine. No replay entry or dispatch follows, so restore the token.
+        tierLimiter.refund?.(checked.nodeId);
+        return;
+      }
       if (!this.replayGuard.accept(message, this.now())) { socket.destroy(); return; }
     } finally {
       this.inFlightMessages.delete(inFlightKey);
@@ -441,7 +446,7 @@ export class PeerTransport {
     // A limiter may synchronously trigger teardown (for example, when policy state
     // changes). Never treat admission as successful if the socket is already gone.
     if (socket.destroyed) return false;
-    if (limiter.allow(nodeId)) return !socket.destroyed;
+    if (limiter.allow(nodeId)) return true;
     if (typeof limiter.retryAfterMs !== 'function') return false;
     const session = socket.__zionSession;
     for (let attempt = 0; attempt < MAX_THROTTLE_WAITS; attempt++) {
