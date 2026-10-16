@@ -18,6 +18,7 @@ const isLoopbackAddress = host => {
 // Treat only validated IP literals as loopback. Hostnames can be redirected by local resolver configuration.
 const isLoopbackHost = host => isLoopbackAddress(host);
 const MAX_QUEUED_FRAMES_PER_SOCKET = 64;
+const MAX_QUEUED_FRAME_BYTES_PER_SOCKET = 4; // multiplier of the configured maximum frame size
 const MAX_THROTTLE_MS = 5_000;
 const MAX_THROTTLE_WAITS = 8;
 const DEFAULT_TYPES = new Set(['PING', 'PONG', 'STORE_CHUNK', 'GET_CHUNK', 'CHUNK_DATA', 'MANIFEST', 'STORE_REQUEST', 'STORE_RECEIPT', 'STORE_REJECTED']);
@@ -31,7 +32,13 @@ export class PeerTransport {
   constructor({ identity, host = '127.0.0.1', port = 0, maxConnections = 64,
     maxFrameBytes = MAX_FRAME_BYTES, allowedTypes = DEFAULT_TYPES, trustedPeerIds = null,
     onMessage = async () => {}, replayGuard = new ReplayGuard(),
-    rateLimiter = new PeerRateLimiter({ capacity: 128, refillPerSecond: 100 }), transferScheduler = null,
+    rateLimiter = new PeerRateLimiter({ capacity: 128, refillPerSecond: 100 }),
+    // Tier 1: strict budget for peers that have not completed the handshake (keyed by nodeId).
+    unauthenticatedRateLimiter = new PeerRateLimiter({ capacity: 16, refillPerSecond: 5 }),
+    // Tier 0: cheap per-socket budget checked BEFORE signature verification, so unsigned/forged floods cannot burn CPU.
+    socketRateLimiter = new PeerRateLimiter({ capacity: 256, refillPerSecond: 200 }),
+    // Global pre-verification budget caps CPU across rapid reconnects that obtain fresh socket IDs.
+    globalRateLimiter = new PeerRateLimiter({ capacity: 4096, refillPerSecond: 2000, maxPeers: 1 }), transferScheduler = null,
     protocolGenesis = null, networkMode = 'legacy', integrityGuard = null, admissionController = null, admissionVouchers = [], tlsOptions = null, tlsHandshakeTimeoutMs = 10_000, now = () => Date.now() } = {}) {
     if (!identity?.privateKey || typeof identity.nodeId !== 'string') throw new TypeError('A node identity is required');
     if (typeof host !== 'string' || !host || !Number.isInteger(port) || port < 0 || port > 65535) throw new RangeError('Invalid bind address');
@@ -64,9 +71,9 @@ export class PeerTransport {
     this.admissionVouchers = Object.freeze([...admissionVouchers]);
     this.admittedPeerIds = new Set();
     this.maxFrameBytes = maxFrameBytes; this.maxMessageBytes = this.genesis?.limits.maxMessageBytes ?? maxFrameBytes; this.allowedTypes = new Set(allowedTypes); this.trustedPeerIds = trustedPeerIds === null ? null : new Set(trustedPeerIds); this.onMessage = onMessage;
-    this.replayGuard = replayGuard; this.rateLimiter = rateLimiter; this.transferScheduler = transferScheduler; this.now = now;
+    this.replayGuard = replayGuard; this.rateLimiter = rateLimiter; this.unauthenticatedRateLimiter = unauthenticatedRateLimiter; this.socketRateLimiter = socketRateLimiter; this.globalRateLimiter = globalRateLimiter; this.transferScheduler = transferScheduler; this.now = now;
     this.networkId = this.genesis ? calculateNetworkId(this.genesis) : null;
-    this.connections = new Set(); this.server = null; this.started = false;
+    this.connections = new Set(); this.inFlightMessages = new Set(); this.pendingConnections = 0; this.pendingOutboundSockets = new Set(); this.pendingOutboundSettlements = new Set(); this.serverSockets = new Set(); this.pendingInboundTlsSockets = new Set(); this.server = null; this.started = false; this.starting = false; this.closing = false; this.quarantined = false; this.closeOperations = 0; this.closeCompletion = null;
     this.removeQuarantineListener = this.networkMode === 'official' && typeof integrityGuard.addQuarantineListener === 'function'
       ? integrityGuard.addQuarantineListener(report => this.#isolateForIntegrityFailure(report?.reason ?? 'integrity-quarantine'))
       : null;
@@ -76,60 +83,176 @@ export class PeerTransport {
   }
 
   async listen() {
-    if (this.started) throw new Error('Transport already started');
-    if (this.networkMode === 'official') await this.integrityGuard.checkHealthy();
-    this.server = this.tlsOptions
-      ? createTlsServer({ ...this.tlsOptions, requestCert: true, rejectUnauthorized: true, minVersion: 'TLSv1.2', handshakeTimeout: this.tlsHandshakeTimeoutMs }, socket => this.#accept(socket))
-      : createTcpServer(socket => this.#accept(socket));
-    this.server.maxConnections = this.maxConnections;
-    await new Promise((resolve, reject) => {
-      const onError = error => { this.server.off('listening', onListening); reject(error); };
-      const onListening = () => { this.server.off('error', onError); resolve(); };
-      this.server.once('error', onError); this.server.once('listening', onListening);
-      this.server.listen({ host: this.host, port: this.port, backlog: this.maxConnections });
-    });
-    this.started = true;
-    const address = this.server.address();
-    return Object.freeze({ host: address.address, port: address.port });
+    if (this.quarantined) throw new Error('Transport is quarantined');
+    if (this.closeOperations > 0) throw new Error('Transport is closing');
+    if (this.started || this.starting) throw new Error('Transport already started or starting');
+    this.starting = true;
+    this.closing = false;
+    this.closeCompletion = null;
+    // close() unsubscribes from quarantine notifications; restore the listener if
+    // this transport instance is explicitly started again.
+    if (this.networkMode === 'official' && !this.removeQuarantineListener &&
+        typeof this.integrityGuard.addQuarantineListener === 'function') {
+      this.removeQuarantineListener = this.integrityGuard.addQuarantineListener(report =>
+        this.#isolateForIntegrityFailure(report?.reason ?? 'integrity-quarantine'));
+    }
+    let settleListen;
+    this.listenCompletion = new Promise(resolve => { settleListen = resolve; });
+    try {
+      if (this.networkMode === 'official') await this.integrityGuard.checkHealthy();
+      // Health checks may be asynchronous. If close() ran while one was pending,
+      // do not create a server after shutdown has already been requested.
+      if (this.closing || this.quarantined) throw new Error(this.quarantined ? 'Transport quarantined before listen completed' : 'Transport closed before listen completed');
+      this.server = this.tlsOptions
+        ? createTlsServer({ ...this.tlsOptions, requestCert: true, rejectUnauthorized: true, minVersion: 'TLSv1.2', handshakeTimeout: this.tlsHandshakeTimeoutMs }, socket => this.#accept(socket))
+        : createTcpServer(socket => this.#accept(socket));
+      this.server.maxConnections = this.maxConnections;
+      const server = this.server;
+      // Node's TLS server emits 'connection' before the TLS handshake completes,
+      // while the secure callback used by #accept runs only after negotiation. Track
+      // raw inbound sockets as well so close() can abort stalled inbound handshakes.
+      server.on('connection', socket => {
+        this.serverSockets.add(socket);
+        socket.once('close', () => {
+          this.serverSockets.delete(socket);
+          this.pendingInboundTlsSockets.delete(socket);
+        });
+        if (this.closing || this.quarantined) { socket.destroy(); return; }
+        // TLS emits 'connection' before negotiation. Count those raw sockets against
+        // outbound reservations too, or maxConnections outbound handshakes plus
+        // maxConnections stalled inbound TLS handshakes can coexist.
+        if (this.tlsOptions) {
+          if (this.connections.size + this.pendingConnections + this.pendingInboundTlsSockets.size >= this.maxConnections) {
+            socket.destroy();
+            return;
+          }
+          this.pendingInboundTlsSockets.add(socket);
+        }
+      });
+      if (this.tlsOptions) {
+        // The raw 'connection' socket and the TLSSocket emitted by
+        // 'secureConnection' are not guaranteed to be the same object. Match the
+        // established TLS socket to its raw TCP socket by the connection endpoint.
+        server.on('secureConnection', socket => {
+          for (const pendingSocket of this.pendingInboundTlsSockets) {
+            if (pendingSocket.remoteAddress === socket.remoteAddress &&
+                pendingSocket.remotePort === socket.remotePort) {
+              this.pendingInboundTlsSockets.delete(pendingSocket);
+              break;
+            }
+          }
+        });
+      }
+      await new Promise((resolve, reject) => {
+        const onError = error => { server.off('listening', onListening); reject(error); };
+        const onListening = () => {
+          server.off('error', onError);
+          if (this.closing || this.quarantined) {
+            // Shutdown or integrity quarantine can race with server.listen() before Node reports listening.
+            // Finish closing here so a late listening event cannot resurrect the transport.
+            server.close(error => {
+              reject(error ?? new Error(this.quarantined ? 'Transport quarantined before listen completed' : 'Transport closed before listen completed'));
+            });
+            return;
+          }
+          resolve();
+        };
+        server.once('error', onError); server.once('listening', onListening);
+        server.listen({ host: this.host, port: this.port, backlog: this.maxConnections });
+      });
+      if (this.closing || this.quarantined) {
+        if (server.listening) await new Promise(resolve => server.close(() => resolve()));
+        throw new Error(this.quarantined ? 'Transport quarantined before listen completed' : 'Transport closed before listen completed');
+      }
+      this.started = true;
+      const address = server.address();
+      return Object.freeze({ host: address.address, port: address.port });
+    } catch (error) {
+      if (!this.started && this.server && !this.server.listening) this.server = null;
+      throw error;
+    } finally {
+      this.starting = false;
+      this.listenCompletion = null;
+      settleListen();
+    }
   }
 
   #accept(socket) {
-    if (this.connections.size >= this.maxConnections) { socket.destroy(); return; }
+    // A connection event can race with shutdown; never register a new inbound
+    // socket once close() has begun, even if the server accepted it just before close.
+    if (this.closing || this.quarantined) { socket.destroy(); return; }
+    // Outbound dials reserve slots while TCP/TLS handshakes are pending. Inbound
+    // accepts must honor those reservations too, or mixed inbound/outbound traffic
+    // can temporarily exceed the configured total connection budget.
+    if (this.connections.size + this.pendingConnections >= this.maxConnections) { socket.destroy(); return; }
     this.#attach(socket);
   }
 
   #attach(socket) {
     this.connections.add(socket);
-    const session = { localNonce: randomBytes(32).toString('hex'), remoteNonce: null, authenticated: !this.genesis };
+    const session = { id: randomBytes(16).toString('hex'), localNonce: randomBytes(32).toString('hex'), remoteNonce: null, authenticated: !this.genesis };
     socket.__zionSession = session;
     socket.setTimeout(15_000, () => socket.destroy());
     socket.setNoDelay(true);
-    let pending = Buffer.alloc(0);
+    let pendingSegments = [];
+    let pendingBytes = 0;
     let queuedFrames = 0;
+    let queuedFrameBytes = 0;
     let processing = Promise.resolve();
     socket.on('data', chunk => {
       if (socket.destroyed) return;
-      pending = Buffer.concat([pending, chunk]);
-      if (pending.length > this.maxFrameBytes && !pending.includes(0x0a)) { socket.destroy(); return; }
-      let newline;
-      while ((newline = pending.indexOf(0x0a)) !== -1) {
-        const frame = pending.subarray(0, newline);
-        pending = pending.subarray(newline + 1);
-        if (!frame.length || frame.length > this.maxFrameBytes) { socket.destroy(); return; }
-        if (queuedFrames >= MAX_QUEUED_FRAMES_PER_SOCKET) { socket.destroy(); return; }
+      // Assemble frames from a segment list instead of one growing buffer. Rewriting the
+      // accumulated buffer on every chunk made a trickled frame cost O(pending) per event,
+      // so an attacker could spend a few kilobytes of traffic to force gigabytes of copying.
+      let remaining = chunk;
+      while (remaining.length) {
+        const newline = remaining.indexOf(0x0a);
+        if (newline === -1) {
+          pendingSegments.push(remaining);
+          pendingBytes += remaining.length;
+          if (pendingBytes > this.maxFrameBytes) socket.destroy();
+          return;
+        }
+        const frameLength = pendingBytes + newline;
+        let frame;
+        if (pendingSegments.length === 0) frame = remaining.subarray(0, newline);
+        else {
+          pendingSegments.push(remaining.subarray(0, newline));
+          frame = Buffer.concat(pendingSegments, frameLength);
+          pendingSegments = [];
+        }
+        pendingBytes = 0;
+        remaining = remaining.subarray(newline + 1);
+        if (!frame.length || frameLength > this.maxFrameBytes) { socket.destroy(); return; }
+        // Bound both queued frame count and queued bytes. A count-only limit lets a
+        // peer retain up to 64 maximum-sized frames per socket before any rate check.
+        if (queuedFrames >= MAX_QUEUED_FRAMES_PER_SOCKET ||
+            queuedFrameBytes + frame.length > this.maxFrameBytes * MAX_QUEUED_FRAME_BYTES_PER_SOCKET) {
+          socket.destroy(); return;
+        }
         queuedFrames++;
+        queuedFrameBytes += frame.length;
         // Serialize handler execution and cap queued work per socket. Without this, a
         // fast peer can create an unbounded number of concurrent async handler calls.
         processing = processing
           .then(() => socket.destroyed ? undefined : this.#processFrame(socket, frame))
           .catch(() => socket.destroy())
-          .finally(() => { queuedFrames--; });
+          .finally(() => { queuedFrames--; queuedFrameBytes -= frame.length; });
         if (socket.destroyed) return;
       }
-      if (pending.length > this.maxFrameBytes) socket.destroy();
     });
     socket.on('error', () => {});
-    socket.on('close', () => this.connections.delete(socket));
+    socket.on('close', () => {
+      this.connections.delete(socket);
+      // Socket IDs are unique per connection; release their bucket immediately instead of
+      // retaining churned connections until the limiter's idle TTL expires.
+      this.socketRateLimiter.forget?.(session.id);
+      // Admission cache entries exist only while at least one session for that peer is active.
+      // Otherwise repeated peer churn could grow this Set without bound over the process lifetime.
+      if (session.peerNodeId && ![...this.connections].some(peer => peer.__zionSession?.peerNodeId === session.peerNodeId)) {
+        this.admittedPeerIds.delete(session.peerNodeId);
+      }
+    });
     if (this.genesis) this.#sendHandshake(socket, { type: 'ZION_HANDSHAKE', networkId: this.networkId, protocolMajor: this.genesis.protocolMajor, nonce: session.localNonce });
   }
 
@@ -137,12 +260,29 @@ export class PeerTransport {
   async connect(host, port) {
     if (typeof host !== 'string' || !host || !Number.isInteger(port) || port < 1 || port > 65535) throw new TypeError('Invalid peer address');
     if (!isLoopbackAddress(host) && !this.tlsOptions) throw new Error('Remote peer connections require mutual TLS; plaintext TCP is restricted to loopback IP literals');
-    if (this.connections.size >= this.maxConnections) throw new Error('Connection capacity reached');
+    // Reserve capacity before opening the socket: TLS handshakes can remain pending for
+    // seconds, and checking only established connections allows concurrent callers to
+    // create an unbounded number of outbound sockets while each waits for authentication.
+    if (this.quarantined) throw new Error('Transport is quarantined');
+    if (this.closing) throw new Error('Transport is closing');
+    if (this.connections.size + this.pendingConnections + this.pendingInboundTlsSockets.size >= this.maxConnections) throw new Error('Connection capacity reached');
+    this.pendingConnections++;
     const useTls = Boolean(this.tlsOptions);
-    const socket = useTls
-      ? createTlsConnection({ ...this.tlsOptions, host, port, servername: netIsIpAddress(host) ? undefined : (this.tlsOptions.servername ?? host), rejectUnauthorized: true, minVersion: 'TLSv1.2' })
-      : createConnection({ host, port });
-    await new Promise((resolve, reject) => {
+    let socket;
+    try {
+      socket = useTls
+        ? createTlsConnection({ ...this.tlsOptions, host, port, servername: netIsIpAddress(host) ? undefined : (this.tlsOptions.servername ?? host), rejectUnauthorized: true, minVersion: 'TLSv1.2' })
+        : createConnection({ host, port });
+    } catch (error) {
+      this.pendingConnections--;
+      throw error;
+    }
+    this.pendingOutboundSockets.add(socket);
+    let settlePending;
+    const pendingSettlement = new Promise(resolve => { settlePending = resolve; });
+    this.pendingOutboundSettlements.add(pendingSettlement);
+    try {
+      await new Promise((resolve, reject) => {
       // A TCP 'connect' event does not mean the TLS peer has been authenticated.
       // Bound the outbound connection/handshake too: server-side TLS timeouts do
       // not protect clients connecting to an unresponsive or malicious endpoint.
@@ -152,28 +292,60 @@ export class PeerTransport {
         if (settled) return;
         settled = true;
         socket.off('error', onError);
+        socket.off('close', onClose);
         socket.off(readyEvent, onReady);
         socket.destroy();
         reject(new Error(useTls ? 'TLS handshake timed out' : 'Peer connection timed out'));
       }, this.tlsHandshakeTimeoutMs);
       const onError = error => {
         if (settled) return;
-        settled = true; clearTimeout(timer); socket.off(readyEvent, onReady); reject(error);
+        settled = true; clearTimeout(timer);
+        socket.off('close', onClose); socket.off(readyEvent, onReady); reject(error);
+      };
+      const onClose = () => {
+        if (settled) return;
+        settled = true; clearTimeout(timer);
+        socket.off('error', onError); socket.off(readyEvent, onReady);
+        reject(new Error('Peer socket closed before connection completed'));
       };
       const onReady = () => {
         if (settled) return;
-        settled = true; clearTimeout(timer); socket.off('error', onError); resolve();
+        settled = true; clearTimeout(timer);
+        socket.off('error', onError); socket.off('close', onClose); resolve();
       };
-      socket.once('error', onError); socket.once(readyEvent, onReady);
-    });
-    if (this.connections.size >= this.maxConnections) { socket.destroy(); throw new Error('Connection capacity reached'); }
-    this.#attach(socket);
-    return socket;
+      socket.once('error', onError); socket.once('close', onClose); socket.once(readyEvent, onReady);
+      });
+      if (this.quarantined) throw new Error('Transport quarantined before peer connection completed');
+      if (this.closing || socket.destroyed) throw new Error('Transport closed before peer connection completed');
+      if (this.connections.size + this.pendingInboundTlsSockets.size >= this.maxConnections) { socket.destroy(); throw new Error('Connection capacity reached'); }
+      this.#attach(socket);
+      return socket;
+    } catch (error) {
+      socket.destroy();
+      throw error;
+    } finally {
+      this.pendingOutboundSockets.delete(socket);
+      this.pendingConnections--;
+      this.pendingOutboundSettlements.delete(pendingSettlement);
+      settlePending();
+    }
+  }
+
+  #channelBinding(socket) {
+    // TLS exporter material is unique to this TLS session and matches at both endpoints.
+    // Binding it into the signed challenge-response prevents replaying a valid handshake
+    // through a different TLS connection, even when both certificates are CA-valid.
+    if (typeof socket?.exportKeyingMaterial !== 'function') return null;
+    try {
+      return socket.exportKeyingMaterial(32, 'EXPORTER-Zion-Peer-Channel-Binding', Buffer.from(this.networkId, 'utf8')).toString('hex');
+    } catch { throw new Error('Unable to derive TLS channel binding'); }
   }
 
   #sendHandshake(socket, payload) {
-    const handshakePayload = payload?.type === 'ZION_HANDSHAKE' && this.admissionVouchers.length
-      ? { ...payload, vouchers: this.admissionVouchers } : payload;
+    const boundPayload = payload?.type === 'ZION_HANDSHAKE' || payload?.type === 'ZION_HANDSHAKE_ACK'
+      ? { ...payload, channelBinding: this.#channelBinding(socket) } : payload;
+    const handshakePayload = boundPayload?.type === 'ZION_HANDSHAKE' && this.admissionVouchers.length
+      ? { ...boundPayload, vouchers: this.admissionVouchers } : boundPayload;
     const signed = signPeerMessage(this.identity, handshakePayload, { now: this.now() });
     const frame = Buffer.from(`${JSON.stringify(signed)}\n`);
     if (frame.length > this.maxFrameBytes) { socket.destroy(); return; }
@@ -181,21 +353,55 @@ export class PeerTransport {
   }
 
   async #processFrame(socket, frame) {
+    // Apply the cheap socket budget before parsing attacker-controlled JSON, checking integrity state,
+    // deriving public keys, or verifying signatures. Frame length was already bounded by the parser.
+    if (!(await this.#admitWithinRate(socket, this.socketRateLimiter, socket.__zionSession?.id ?? 'socket'))) { socket.destroy(); return; }
+    // Per-socket budgets reset on reconnect; a shared global budget bounds aggregate signature work across churn.
+    if (!(await this.#admitWithinRate(socket, this.globalRateLimiter, 'global'))) { socket.destroy(); return; }
+    // The async admission continuation may lose a race with close/quarantine. Refund the
+    // global token too: cancelled frames never reached parsing or cryptographic work.
+    if (socket.destroyed) { this.globalRateLimiter.refund?.('global'); return; }
     if (this.networkMode === 'official') await this.integrityGuard.checkHealthy();
+    // Integrity checks may yield while close() or quarantine destroys the socket.
+    // Do not spend CPU parsing/verifying a frame whose connection is no longer live.
+    if (socket.destroyed) return;
     let message;
     try { message = JSON.parse(frame.toString('utf8')); }
     catch { socket.destroy(); return; }
     const checked = verifyPeerMessage(message, { now: this.now(), maxBytes: this.maxFrameBytes });
     if (!checked.ok) { socket.destroy(); return; }
+    if (socket.__zionSession) socket.__zionSession.peerNodeId = checked.nodeId;
     const trustedByAllowlist = !this.trustedPeerIds || this.trustedPeerIds.has(checked.nodeId);
-    // Admission backends may be transactional and remote, so their fresh reads can be async.
-    const controllerAdmitted = this.admissionController
-      ? await this.admissionController.isAdmitted(checked.nodeId)
-      : false;
-    const previouslyAdmitted = this.admittedPeerIds.has(checked.nodeId) || controllerAdmitted === true;
-    if (!trustedByAllowlist && !previouslyAdmitted && !this.admissionController) { socket.destroy(); return; }
-    // Admission control applies to handshake frames as well as application traffic.
-    if (!(await this.#admitWithinRate(socket, checked.nodeId)) || !this.replayGuard.accept(message, this.now())) { socket.destroy(); return; }
+    if (!trustedByAllowlist && !this.admissionController) { socket.destroy(); return; }
+    // Reject an already-seen envelope before the identity tier is charged. Replayed frames
+    // are signed by a third party, so charging them would let an attacker replay one captured
+    // frame from fresh sockets and drain the victim's tier budget to lock out its real traffic.
+    if (this.replayGuard.has?.(message) === true) { socket.destroy(); return; }
+    // Reserve only transient processing ownership, not replay-cache admission. This
+    // synchronous claim closes the gap between has() and the awaited limiter: two
+    // sockets carrying the same captured envelope must not both spend identity tokens.
+    // Processing is serialized per socket and connections are capped, so this set is
+    // bounded by the number of concurrently processing sockets.
+    const inFlightKey = checked.nodeId + ':' + message.nonce;
+    if (this.inFlightMessages.has(inFlightKey)) { socket.destroy(); return; }
+    this.inFlightMessages.add(inFlightKey);
+    try {
+      // Enforce the peer tier before any potentially remote/transactional admission lookup.
+      // Otherwise a validly signed pre-handshake flood can still force one backend read per frame.
+      const tierLimiter = socket.__zionSession?.authenticated ? this.rateLimiter : this.unauthenticatedRateLimiter;
+      if (!(await this.#admitWithinRate(socket, tierLimiter, checked.nodeId))) { socket.destroy(); return; }
+      // The async admission helper yields even for an immediate allow. A close can
+      // run before this continuation, so recheck before mutating replay state or dispatching.
+      if (socket.destroyed) {
+        // The limiter charged synchronously, but its awaited result can resume after
+        // close/quarantine. No replay entry or dispatch follows, so restore the token.
+        tierLimiter.refund?.(checked.nodeId);
+        return;
+      }
+      if (!this.replayGuard.accept(message, this.now())) { socket.destroy(); return; }
+    } finally {
+      this.inFlightMessages.delete(inFlightKey);
+    }
     let payloadBytes;
     try { payloadBytes = Buffer.byteLength(JSON.stringify(checked.payload), 'utf8'); }
     catch { socket.destroy(); return; }
@@ -203,13 +409,20 @@ export class PeerTransport {
     if (this.genesis && !socket.__zionSession?.authenticated) {
       const session = socket.__zionSession; const payload = checked.payload;
       if (payload?.type === 'ZION_HANDSHAKE' && payload.networkId === this.networkId &&
-          payload.protocolMajor === this.genesis.protocolMajor && typeof payload.nonce === 'string' && /^[a-f0-9]{64}$/.test(payload.nonce) &&
+          payload.channelBinding === this.#channelBinding(socket) && payload.protocolMajor === this.genesis.protocolMajor && typeof payload.nonce === 'string' && /^[a-f0-9]{64}$/.test(payload.nonce) &&
           payload.nonce !== session.localNonce && (!session.remoteNonce || session.remoteNonce === payload.nonce)) {
+        // Admission state is only needed for a new handshake. Avoid a remote/transactional
+        // store read for every authenticated application frame from an already connected peer.
+        const previouslyAdmitted = this.admittedPeerIds.has(checked.nodeId) ||
+          (this.admissionController ? await this.admissionController.isAdmitted(checked.nodeId) === true : false);
+        if (socket.destroyed) return;
         if (!trustedByAllowlist && !previouslyAdmitted) {
           let admission;
           try { admission = await this.admissionController.admit({ subjectNodeId: checked.nodeId, vouchers: payload.vouchers }); }
           catch { socket.destroy(); return; }
+          if (socket.destroyed) return;
           const admittedAfterAttempt = await this.admissionController.isAdmitted(checked.nodeId);
+          if (socket.destroyed) return;
           if (!admission?.ok && !admittedAfterAttempt) { socket.destroy(); return; }
           this.admittedPeerIds.add(checked.nodeId);
         }
@@ -218,7 +431,7 @@ export class PeerTransport {
         return;
       }
       if (payload?.type === 'ZION_HANDSHAKE_ACK' && payload.networkId === this.networkId &&
-          payload.protocolMajor === this.genesis.protocolMajor && payload.echo === session.localNonce &&
+          payload.channelBinding === this.#channelBinding(socket) && payload.protocolMajor === this.genesis.protocolMajor && payload.echo === session.localNonce &&
           typeof payload.nonce === 'string' && payload.nonce === session.remoteNonce) {
         session.authenticated = true;
         return;
@@ -245,20 +458,38 @@ export class PeerTransport {
    * The wait is bounded and the socket idle timeout still applies; a limiter that cannot predict a refill time
    * (or one that needs longer than MAX_THROTTLE_MS) keeps the previous fail-closed behaviour of disconnecting.
    */
-  async #admitWithinRate(socket, nodeId) {
-    if (this.rateLimiter.allow(nodeId)) return true;
-    if (typeof this.rateLimiter.retryAfterMs !== 'function') return false;
+  async #admitWithinRate(socket, limiter, nodeId) {
+    // A limiter may synchronously trigger teardown (for example, when policy state
+    // changes). Never treat admission as successful if the socket is already gone.
+    if (socket.destroyed) return false;
+    if (limiter.allow(nodeId)) return true;
+    if (typeof limiter.retryAfterMs !== 'function') return false;
     const session = socket.__zionSession;
     for (let attempt = 0; attempt < MAX_THROTTLE_WAITS; attempt++) {
-      const waitMs = this.rateLimiter.retryAfterMs(nodeId);
+      const waitMs = limiter.retryAfterMs(nodeId);
       if (!Number.isFinite(waitMs) || waitMs > MAX_THROTTLE_MS || socket.destroyed) return false;
       session.throttled = (session.throttled ?? 0) + 1;
       socket.pause();
-      await new Promise(resolve => setTimeout(resolve, Math.max(1, waitMs)));
+      // A closed socket must cancel the refill sleep immediately. Otherwise a
+      // throttled frame can keep a timer alive for seconds after close()/quarantine.
+      await new Promise(resolve => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          socket.off('close', onClose);
+          resolve();
+        };
+        const timer = setTimeout(finish, Math.max(1, waitMs));
+        const onClose = () => finish();
+        socket.once('close', onClose);
+        if (socket.destroyed) finish();
+      });
       session.throttled -= 1;
       if (session.throttled === 0 && !socket.destroyed) socket.resume();
       if (socket.destroyed) return false;
-      if (this.rateLimiter.allow(nodeId)) return true;
+      if (limiter.allow(nodeId)) return true;
     }
     return false;
   }
@@ -281,9 +512,15 @@ export class PeerTransport {
   }
 
   #isolateForIntegrityFailure(_reason) {
+    // Quarantine is terminal for this transport instance. Persist the state so a
+    // concurrent listen() cannot start a server after an awaited health check returns.
+    this.quarantined = true;
     // Stop accepting peers first, then terminate established sessions. Do not rely on
     // the next send/receive operation to notice quarantine.
     for (const socket of this.connections) socket.destroy();
+    for (const socket of this.pendingOutboundSockets) socket.destroy();
+    // Quarantine must also terminate raw inbound sockets that have not completed TLS.
+    for (const socket of this.serverSockets) socket.destroy();
     this.connections.clear();
     if (this.server?.listening) {
       try { this.server.close(() => {}); } catch { /* quarantine remains fail-closed */ }
@@ -291,12 +528,38 @@ export class PeerTransport {
     this.started = false;
   }
 
-  async close() {
-    this.removeQuarantineListener?.();
-    this.removeQuarantineListener = null;
-    for (const socket of this.connections) socket.destroy();
-    this.connections.clear();
-    if (this.server?.listening) await new Promise((resolve, reject) => this.server.close(error => error ? reject(error) : resolve()));
-    this.started = false;
+  close() {
+    // Concurrent callers share one shutdown operation. Calling server.close() twice
+    // can otherwise make one caller fail with ERR_SERVER_NOT_RUNNING, even though the
+    // transport was successfully closed by the other caller.
+    if (this.closeCompletion) return this.closeCompletion;
+    this.closeOperations++;
+    this.closing = true;
+    this.closeCompletion = (async () => {
+      try {
+        this.removeQuarantineListener?.();
+        this.removeQuarantineListener = null;
+        for (const socket of this.connections) socket.destroy();
+        // Pending outbound sockets are not yet in connections: destroy them explicitly
+        // so close() cancels TLS negotiation rather than leaving it alive until timeout.
+        for (const socket of this.pendingOutboundSockets) socket.destroy();
+        // Wait for connect() callers to run their finally blocks and release capacity
+        // reservations; otherwise close() can return with pendingConnections still nonzero.
+        await Promise.allSettled([...this.pendingOutboundSettlements]);
+        // Includes raw sockets still negotiating inbound TLS, which are not yet in
+        // connections because the TLS server invokes #accept only after secureConnect.
+        for (const socket of this.serverSockets) socket.destroy();
+        this.connections.clear();
+        // If listen() is still awaiting a health check or the server's listening event,
+        // wait until startup has either failed or fully closed its server before returning.
+        const pendingListen = this.listenCompletion;
+        if (pendingListen) await pendingListen;
+        if (this.server?.listening) await new Promise((resolve, reject) => this.server.close(error => error ? reject(error) : resolve()));
+        this.started = false;
+      } finally {
+        this.closeOperations--;
+      }
+    })();
+    return this.closeCompletion;
   }
 }
