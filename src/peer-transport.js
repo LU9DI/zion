@@ -360,15 +360,11 @@ export class PeerTransport {
     // Reject an already-seen envelope before the identity tier is charged. Replayed frames
     // are signed by a third party, so charging them would let an attacker replay one captured
     // frame from fresh sockets and drain the victim's tier budget to lock out its real traffic.
-    // Atomically mark this envelope as in-flight before the async tier admission. A
-    // non-mutating has() alone is racy: simultaneous replays on fresh sockets can all
-    // observe "not seen" and each charge the victim's identity bucket before one accept wins.
-    if (this.replayGuard.claim?.(message) === false) { socket.destroy(); return; }
-    try {
-      // Enforce the peer tier before any potentially remote/transactional admission lookup.
-      // Otherwise a validly signed pre-handshake flood can still force one backend read per frame.
-      const tierLimiter = socket.__zionSession?.authenticated ? this.rateLimiter : this.unauthenticatedRateLimiter;
-      if (!(await this.#admitWithinRate(socket, tierLimiter, checked.nodeId))) { socket.destroy(); return; }
+    if (this.replayGuard.has?.(message) === true) { socket.destroy(); return; }
+    // Enforce the peer tier before any potentially remote/transactional admission lookup.
+    // Otherwise a validly signed pre-handshake flood can still force one backend read per frame.
+    const tierLimiter = socket.__zionSession?.authenticated ? this.rateLimiter : this.unauthenticatedRateLimiter;
+    if (!(await this.#admitWithinRate(socket, tierLimiter, checked.nodeId))) { socket.destroy(); return; }
     // The async admission helper yields even for an immediate allow. A close can
     // run before this continuation, so recheck before mutating replay state or dispatching.
     if (socket.destroyed) return;
@@ -415,14 +411,11 @@ export class PeerTransport {
       const operation = validateProtocolOperation(checked.payload, { genesis: this.genesis, now: this.now() });
       if (!operation.ok) { socket.destroy(); return; }
     }
-      try {
-        await this.onMessage(Object.freeze({ nodeId: checked.nodeId, payload: checked.payload, envelope: message }), socket);
-      } catch {
-        // Fail closed on handler errors; do not leak internal error details to peers.
-        socket.destroy();
-      }
-    } finally {
-      this.replayGuard.release?.(message);
+    try {
+      await this.onMessage(Object.freeze({ nodeId: checked.nodeId, payload: checked.payload, envelope: message }), socket);
+    } catch {
+      // Fail closed on handler errors; do not leak internal error details to peers.
+      socket.destroy();
     }
   }
 
