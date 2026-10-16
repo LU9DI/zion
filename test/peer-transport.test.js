@@ -1055,3 +1055,54 @@ test('replaying a captured frame never drains the victim identity tier budget', 
   assert.equal(rateLimiter.buckets.get(victim.nodeId)?.tokens, tokensAfterFirstFrame - 1,
     'the fresh frame consumes the remaining budget instead of the replays');
 });
+
+test('frames split across small writes are assembled without quadratic copying', async t => {
+  const realConcat = Buffer.concat;
+  let copiedBytes = 0;
+  Buffer.concat = function countingConcat(list, totalLength) {
+    copiedBytes += totalLength ?? list.reduce((sum, buffer) => sum + buffer.length, 0);
+    return realConcat.call(Buffer, list, totalLength);
+  };
+  t.after(() => { Buffer.concat = realConcat; });
+
+  const maxFrameBytes = 4096;
+  const received = [];
+  const server = new PeerTransport({
+    identity: createNodeIdentity(), maxFrameBytes,
+    onMessage: async message => { received.push(message.payload.nonce); },
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+
+  // A legitimate frame delivered one byte at a time must be assembled correctly.
+  const signed = Buffer.from(`${JSON.stringify(signPeerMessage(createNodeIdentity(), { type: 'PING', nonce: 'split-frame' }))}\n`);
+  assert.ok(signed.length > 256 && signed.length < maxFrameBytes);
+  copiedBytes = 0;
+  const splitSocket = connect(address.port, '127.0.0.1');
+  splitSocket.setNoDelay(true);
+  t.after(() => splitSocket.destroy());
+  await once(splitSocket, 'connect');
+  for (const byte of signed) {
+    splitSocket.write(Buffer.from([byte]));
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  await waitFor(() => received.length === 1);
+  assert.deepEqual(received, ['split-frame']);
+  assert.ok(copiedBytes <= signed.length * 2,
+    `assembling one frame must copy a linear amount of data (copied ${copiedBytes} bytes for ${signed.length} bytes)`);
+
+  // An incomplete frame that never terminates must still be bounded by the frame limit
+  // and must not make the parser copy the accumulated bytes on every chunk.
+  copiedBytes = 0;
+  const stalledSocket = connect(address.port, '127.0.0.1');
+  stalledSocket.setNoDelay(true);
+  t.after(() => stalledSocket.destroy());
+  await once(stalledSocket, 'connect');
+  for (let sent = 0; sent <= maxFrameBytes && !stalledSocket.destroyed; sent++) {
+    stalledSocket.write(Buffer.from([0x41]));
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  await once(stalledSocket, 'close');
+  assert.ok(copiedBytes <= maxFrameBytes * 4,
+    `an unterminated frame must not cost quadratic copying (copied ${copiedBytes} bytes for a ${maxFrameBytes} byte limit)`);
+});

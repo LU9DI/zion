@@ -192,19 +192,36 @@ export class PeerTransport {
     socket.__zionSession = session;
     socket.setTimeout(15_000, () => socket.destroy());
     socket.setNoDelay(true);
-    let pending = Buffer.alloc(0);
+    let pendingSegments = [];
+    let pendingBytes = 0;
     let queuedFrames = 0;
     let queuedFrameBytes = 0;
     let processing = Promise.resolve();
     socket.on('data', chunk => {
       if (socket.destroyed) return;
-      pending = Buffer.concat([pending, chunk]);
-      if (pending.length > this.maxFrameBytes && !pending.includes(0x0a)) { socket.destroy(); return; }
-      let newline;
-      while ((newline = pending.indexOf(0x0a)) !== -1) {
-        const frame = pending.subarray(0, newline);
-        pending = pending.subarray(newline + 1);
-        if (!frame.length || frame.length > this.maxFrameBytes) { socket.destroy(); return; }
+      // Assemble frames from a segment list instead of one growing buffer. Rewriting the
+      // accumulated buffer on every chunk made a trickled frame cost O(pending) per event,
+      // so an attacker could spend a few kilobytes of traffic to force gigabytes of copying.
+      let remaining = chunk;
+      while (remaining.length) {
+        const newline = remaining.indexOf(0x0a);
+        if (newline === -1) {
+          pendingSegments.push(remaining);
+          pendingBytes += remaining.length;
+          if (pendingBytes > this.maxFrameBytes) socket.destroy();
+          return;
+        }
+        const frameLength = pendingBytes + newline;
+        let frame;
+        if (pendingSegments.length === 0) frame = remaining.subarray(0, newline);
+        else {
+          pendingSegments.push(remaining.subarray(0, newline));
+          frame = Buffer.concat(pendingSegments, frameLength);
+          pendingSegments = [];
+        }
+        pendingBytes = 0;
+        remaining = remaining.subarray(newline + 1);
+        if (!frame.length || frameLength > this.maxFrameBytes) { socket.destroy(); return; }
         // Bound both queued frame count and queued bytes. A count-only limit lets a
         // peer retain up to 64 maximum-sized frames per socket before any rate check.
         if (queuedFrames >= MAX_QUEUED_FRAMES_PER_SOCKET ||
@@ -221,7 +238,6 @@ export class PeerTransport {
           .finally(() => { queuedFrames--; queuedFrameBytes -= frame.length; });
         if (socket.destroyed) return;
       }
-      if (pending.length > this.maxFrameBytes) socket.destroy();
     });
     socket.on('error', () => {});
     socket.on('close', () => {
