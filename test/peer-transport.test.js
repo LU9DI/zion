@@ -647,6 +647,38 @@ test('a limiter that never refills still disconnects an over-budget peer', async
   assert.ok(received.length <= 2);
 });
 
+test('shared pre-verification budget limits valid frames across fresh sockets', async t => {
+  const serverIdentity = createNodeIdentity();
+  const clientIdentity = createNodeIdentity();
+  let globalAttempts = 0;
+  let handled = 0;
+  const server = new PeerTransport({
+    identity: serverIdentity,
+    globalRateLimiter: {
+      allow: () => ++globalAttempts === 1,
+      retryAfterMs: () => Infinity,
+    },
+    onMessage: async () => { handled += 1; },
+  });
+  const addr = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({ identity: clientIdentity });
+  t.after(() => client.close());
+
+  const first = await client.connect('127.0.0.1', addr.port);
+  t.after(() => first.destroy());
+  client.send(first, { type: 'PING', nonce: 'global-budget-first' });
+  await waitFor(() => handled === 1);
+
+  // A fresh connection receives a fresh socket bucket, but not a fresh global budget.
+  const second = await client.connect('127.0.0.1', addr.port);
+  t.after(() => second.destroy());
+  client.send(second, { type: 'PING', nonce: 'global-budget-second' });
+  await waitFor(() => second.destroyed);
+  assert.equal(globalAttempts, 2, 'the shared budget is consulted for each socket independently');
+  assert.equal(handled, 1, 'a frame denied by the shared budget must not reach the handler');
+});
+
 test('per-socket limiter is checked first: a denied socket never reaches the per-peer limiters or the handler', async t => {
   const serverIdentity = createNodeIdentity(); const clientIdentity = createNodeIdentity();
   let peerLimiterCalls = 0; let handled = 0;
