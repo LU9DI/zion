@@ -1119,3 +1119,59 @@ test('frames split across small writes are assembled without quadratic copying',
   assert.ok(copiedBytes <= maxFrameBytes * 4,
     `an unterminated frame must not cost quadratic copying (copied ${copiedBytes} bytes for a ${maxFrameBytes} byte limit)`);
 });
+
+
+test('concurrent copies of one envelope charge the pre-handshake identity tier only once', async t => {
+  const victim = createNodeIdentity();
+  const genesis = testGenesis();
+  let blockChecks = false;
+  let checksEntered = 0;
+  let releaseChecks;
+  const checksGate = new Promise(resolve => { releaseChecks = resolve; });
+  const integrityGuard = {
+    async checkHealthy() {
+      if (blockChecks) {
+        checksEntered++;
+        if (checksEntered === 2) signalBothChecks();
+        await checksGate;
+      }
+    },
+    assertHealthy() {},
+  };
+  let signalBothChecks;
+  const bothChecksEntered = new Promise(resolve => { signalBothChecks = resolve; });
+  const tierLimiter = new PeerRateLimiter({ capacity: 3, refillPerSecond: 0 });
+  const server = new PeerTransport({
+    identity: createNodeIdentity(),
+    networkMode: 'official',
+    protocolGenesis: genesis,
+    integrityGuard,
+    unauthenticatedRateLimiter: tierLimiter,
+  });
+  const address = await server.listen();
+  t.after(async () => { releaseChecks(); await server.close(); });
+
+  const first = connect(address.port, '127.0.0.1');
+  const second = connect(address.port, '127.0.0.1');
+  t.after(() => { first.destroy(); second.destroy(); });
+  await Promise.all([once(first, 'connect'), once(second, 'connect')]);
+  await waitFor(() => server.connections.size === 2);
+
+  // Hold both frames at the same asynchronous integrity check so each reaches the
+  // replay membership check before either can finish rate admission.
+  blockChecks = true;
+  const captured = Buffer.from(`${JSON.stringify(signPeerMessage(victim, {
+    type: 'PING', nonce: 'a'.repeat(64),
+  }))}\\n`);
+  first.write(captured);
+  second.write(captured);
+  await bothChecksEntered;
+  releaseChecks();
+
+  await waitFor(() => tierLimiter.buckets.has(victim.nodeId));
+  await waitFor(() => first.destroyed || second.destroyed);
+  assert.equal(tierLimiter.buckets.get(victim.nodeId).tokens, 2,
+    'two concurrent copies of one signed envelope must consume one identity token');
+  assert.equal(server.replayGuard.seen.size, 1,
+    'only one copy may be admitted into the replay cache');
+});
