@@ -338,7 +338,7 @@ export class PeerTransport {
     if (typeof socket?.exportKeyingMaterial !== 'function') return null;
     try {
       return socket.exportKeyingMaterial(32, 'EXPORTER-Zion-Peer-Channel-Binding', Buffer.from(this.networkId, 'utf8')).toString('hex');
-    } catch { return null; }
+    } catch { throw new Error('Unable to derive TLS channel binding'); }
   }
 
   #sendHandshake(socket, payload) {
