@@ -346,9 +346,9 @@ export class PeerTransport {
     if (!(await this.#admitWithinRate(socket, this.socketRateLimiter, socket.__zionSession?.id ?? 'socket'))) { socket.destroy(); return; }
     // Per-socket budgets reset on reconnect; a shared global budget bounds aggregate signature work across churn.
     if (!(await this.#admitWithinRate(socket, this.globalRateLimiter, 'global'))) { socket.destroy(); return; }
-    // The awaited limiter can yield even when it admits immediately. Recheck before
-    // touching integrity state or parsing attacker-controlled bytes.
-    if (socket.destroyed) return;
+    // The async admission continuation may lose a race with close/quarantine. Refund the
+    // global token too: cancelled frames never reached parsing or cryptographic work.
+    if (socket.destroyed) { this.globalRateLimiter.refund?.('global'); return; }
     if (this.networkMode === 'official') await this.integrityGuard.checkHealthy();
     // Integrity checks may yield while close() or quarantine destroys the socket.
     // Do not spend CPU parsing/verifying a frame whose connection is no longer live.
