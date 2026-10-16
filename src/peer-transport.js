@@ -331,9 +331,21 @@ export class PeerTransport {
     }
   }
 
+  #channelBinding(socket) {
+    // TLS exporter material is unique to this TLS session and matches at both endpoints.
+    // Binding it into the signed challenge-response prevents replaying a valid handshake
+    // through a different TLS connection, even when both certificates are CA-valid.
+    if (typeof socket?.exportKeyingMaterial !== 'function') return null;
+    try {
+      return socket.exportKeyingMaterial(32, 'EXPORTER-Zion-Peer-Channel-Binding', Buffer.from(this.networkId, 'utf8')).toString('hex');
+    } catch { return null; }
+  }
+
   #sendHandshake(socket, payload) {
-    const handshakePayload = payload?.type === 'ZION_HANDSHAKE' && this.admissionVouchers.length
-      ? { ...payload, vouchers: this.admissionVouchers } : payload;
+    const boundPayload = payload?.type === 'ZION_HANDSHAKE' || payload?.type === 'ZION_HANDSHAKE_ACK'
+      ? { ...payload, channelBinding: this.#channelBinding(socket) } : payload;
+    const handshakePayload = boundPayload?.type === 'ZION_HANDSHAKE' && this.admissionVouchers.length
+      ? { ...boundPayload, vouchers: this.admissionVouchers } : boundPayload;
     const signed = signPeerMessage(this.identity, handshakePayload, { now: this.now() });
     const frame = Buffer.from(`${JSON.stringify(signed)}\n`);
     if (frame.length > this.maxFrameBytes) { socket.destroy(); return; }
@@ -397,7 +409,7 @@ export class PeerTransport {
     if (this.genesis && !socket.__zionSession?.authenticated) {
       const session = socket.__zionSession; const payload = checked.payload;
       if (payload?.type === 'ZION_HANDSHAKE' && payload.networkId === this.networkId &&
-          payload.protocolMajor === this.genesis.protocolMajor && typeof payload.nonce === 'string' && /^[a-f0-9]{64}$/.test(payload.nonce) &&
+          payload.channelBinding === this.#channelBinding(socket) && payload.protocolMajor === this.genesis.protocolMajor && typeof payload.nonce === 'string' && /^[a-f0-9]{64}$/.test(payload.nonce) &&
           payload.nonce !== session.localNonce && (!session.remoteNonce || session.remoteNonce === payload.nonce)) {
         // Admission state is only needed for a new handshake. Avoid a remote/transactional
         // store read for every authenticated application frame from an already connected peer.
@@ -419,7 +431,7 @@ export class PeerTransport {
         return;
       }
       if (payload?.type === 'ZION_HANDSHAKE_ACK' && payload.networkId === this.networkId &&
-          payload.protocolMajor === this.genesis.protocolMajor && payload.echo === session.localNonce &&
+          payload.channelBinding === this.#channelBinding(socket) && payload.protocolMajor === this.genesis.protocolMajor && payload.echo === session.localNonce &&
           typeof payload.nonce === 'string' && payload.nonce === session.remoteNonce) {
         session.authenticated = true;
         return;
