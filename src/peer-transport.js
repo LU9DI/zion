@@ -71,7 +71,7 @@ export class PeerTransport {
     this.maxFrameBytes = maxFrameBytes; this.maxMessageBytes = this.genesis?.limits.maxMessageBytes ?? maxFrameBytes; this.allowedTypes = new Set(allowedTypes); this.trustedPeerIds = trustedPeerIds === null ? null : new Set(trustedPeerIds); this.onMessage = onMessage;
     this.replayGuard = replayGuard; this.rateLimiter = rateLimiter; this.unauthenticatedRateLimiter = unauthenticatedRateLimiter; this.socketRateLimiter = socketRateLimiter; this.transferScheduler = transferScheduler; this.now = now;
     this.networkId = this.genesis ? calculateNetworkId(this.genesis) : null;
-    this.connections = new Set(); this.pendingConnections = 0; this.pendingOutboundSockets = new Set(); this.pendingOutboundSettlements = new Set(); this.serverSockets = new Set(); this.pendingInboundTlsSockets = new Set(); this.server = null; this.started = false; this.starting = false; this.closing = false; this.quarantined = false; this.closeOperations = 0; this.closeCompletion = null;
+    this.connections = new Set(); this.inFlightMessages = new Set(); this.pendingConnections = 0; this.pendingOutboundSockets = new Set(); this.pendingOutboundSettlements = new Set(); this.serverSockets = new Set(); this.pendingInboundTlsSockets = new Set(); this.server = null; this.started = false; this.starting = false; this.closing = false; this.quarantined = false; this.closeOperations = 0; this.closeCompletion = null;
     this.removeQuarantineListener = this.networkMode === 'official' && typeof integrityGuard.addQuarantineListener === 'function'
       ? integrityGuard.addQuarantineListener(report => this.#isolateForIntegrityFailure(report?.reason ?? 'integrity-quarantine'))
       : null;
@@ -361,14 +361,26 @@ export class PeerTransport {
     // are signed by a third party, so charging them would let an attacker replay one captured
     // frame from fresh sockets and drain the victim's tier budget to lock out its real traffic.
     if (this.replayGuard.has?.(message) === true) { socket.destroy(); return; }
-    // Enforce the peer tier before any potentially remote/transactional admission lookup.
-    // Otherwise a validly signed pre-handshake flood can still force one backend read per frame.
-    const tierLimiter = socket.__zionSession?.authenticated ? this.rateLimiter : this.unauthenticatedRateLimiter;
-    if (!(await this.#admitWithinRate(socket, tierLimiter, checked.nodeId))) { socket.destroy(); return; }
-    // The async admission helper yields even for an immediate allow. A close can
-    // run before this continuation, so recheck before mutating replay state or dispatching.
-    if (socket.destroyed) return;
-    if (!this.replayGuard.accept(message, this.now())) { socket.destroy(); return; }
+    // Reserve only transient processing ownership, not replay-cache admission. This
+    // synchronous claim closes the gap between has() and the awaited limiter: two
+    // sockets carrying the same captured envelope must not both spend identity tokens.
+    // Processing is serialized per socket and connections are capped, so this set is
+    // bounded by the number of concurrently processing sockets.
+    const inFlightKey = checked.nodeId + ':' + message.nonce;
+    if (this.inFlightMessages.has(inFlightKey)) { socket.destroy(); return; }
+    this.inFlightMessages.add(inFlightKey);
+    try {
+      // Enforce the peer tier before any potentially remote/transactional admission lookup.
+      // Otherwise a validly signed pre-handshake flood can still force one backend read per frame.
+      const tierLimiter = socket.__zionSession?.authenticated ? this.rateLimiter : this.unauthenticatedRateLimiter;
+      if (!(await this.#admitWithinRate(socket, tierLimiter, checked.nodeId))) { socket.destroy(); return; }
+      // The async admission helper yields even for an immediate allow. A close can
+      // run before this continuation, so recheck before mutating replay state or dispatching.
+      if (socket.destroyed) return;
+      if (!this.replayGuard.accept(message, this.now())) { socket.destroy(); return; }
+    } finally {
+      this.inFlightMessages.delete(inFlightKey);
+    }
     let payloadBytes;
     try { payloadBytes = Buffer.byteLength(JSON.stringify(checked.payload), 'utf8'); }
     catch { socket.destroy(); return; }
