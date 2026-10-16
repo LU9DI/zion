@@ -90,8 +90,8 @@ export class ReplayGuard {
   }
   #prune(now) {
     while (this.expiryHeap.length && this.expiryHeap[0].expires <= now) {
-      const { key, expires } = this.#popExpiry();
-      if (this.seen.get(key) === expires) this.seen.delete(key);
+      const entry = this.#popExpiry();
+      if (this.seen.get(entry.key) === entry) this.seen.delete(entry.key);
     }
   }
   /**
@@ -119,7 +119,7 @@ export class ReplayGuard {
     if (!this.seen.has(key)) return false;
     this.seen.delete(key);
     if (this.expiryHeap.length > this.maxEntries * 2) {
-      const entries = [...this.seen].map(([activeKey, expires]) => ({ key: activeKey, expires }));
+      const entries = [...this.seen.values()];
       this.expiryHeap = [];
       for (const entry of entries) this.#pushExpiry(entry);
     }
@@ -133,8 +133,8 @@ export class ReplayGuard {
     if (!message || typeof message.nodeId !== 'string' || typeof message.nonce !== 'string') return false;
     const key = `${message.nodeId}:${message.nonce}`;
     if (this.seen.has(key) || this.seen.size >= this.maxEntries) return false;
-    const expires = now + this.ttlMs;
-    this.seen.set(key, expires); this.#pushExpiry({ key, expires }); return true;
+    const entry = { key, expires: now + this.ttlMs };
+    this.seen.set(key, entry); this.#pushExpiry(entry); return true;
   }
 }
 
