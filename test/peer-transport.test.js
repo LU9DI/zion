@@ -1132,14 +1132,11 @@ test('concurrent copies of one envelope charge the pre-handshake identity tier o
     async checkHealthy() {
       if (blockChecks) {
         checksEntered++;
-        if (checksEntered === 2) signalBothChecks();
         await checksGate;
       }
     },
     assertHealthy() {},
   };
-  let signalBothChecks;
-  const bothChecksEntered = new Promise(resolve => { signalBothChecks = resolve; });
   const tierLimiter = new PeerRateLimiter({ capacity: 3, refillPerSecond: 0 });
   const server = new PeerTransport({
     identity: createNodeIdentity(),
@@ -1162,10 +1159,10 @@ test('concurrent copies of one envelope charge the pre-handshake identity tier o
   blockChecks = true;
   const captured = Buffer.from(`${JSON.stringify(signPeerMessage(victim, {
     type: 'PING', nonce: 'a'.repeat(64),
-  }))}\\n`);
+  }))}\n`);
   first.write(captured);
   second.write(captured);
-  await bothChecksEntered;
+  await waitFor(() => checksEntered === 2);
   releaseChecks();
 
   await waitFor(() => tierLimiter.buckets.has(victim.nodeId));
