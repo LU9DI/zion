@@ -377,17 +377,20 @@ test('mutual TLS peer transport completes a real verified handshake and exchange
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const material = createTlsTestMaterial(directory);
   let received;
+  const genesis = testGenesis();
   const server = new PeerTransport({
     identity: createNodeIdentity(),
     host: '127.0.0.1',
     tlsOptions: material.server,
+    protocolGenesis: genesis,
     onMessage: async message => { received = message; }
   });
   const address = await server.listen();
   t.after(() => server.close());
-  const client = new PeerTransport({ identity: createNodeIdentity(), tlsOptions: material.client });
+  const client = new PeerTransport({ identity: createNodeIdentity(), tlsOptions: material.client, protocolGenesis: genesis });
   const socket = await client.connect('127.0.0.1', address.port);
   t.after(async () => { socket.destroy(); await client.close(); });
+  await waitFor(() => socket.__zionSession?.authenticated && [...server.connections][0]?.__zionSession?.authenticated);
   client.send(socket, { type: 'PING', nonce: 'verified-mtls' });
   await waitFor(() => Boolean(received));
   assert.equal(received.payload.nonce, 'verified-mtls');
