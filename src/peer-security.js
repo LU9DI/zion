@@ -90,8 +90,8 @@ export class ReplayGuard {
   }
   #prune(now) {
     while (this.expiryHeap.length && this.expiryHeap[0].expires <= now) {
-      const entry = this.#popExpiry();
-      if (this.seen.get(entry.key) === entry) this.seen.delete(entry.key);
+      const { key, expires } = this.#popExpiry();
+      if (this.seen.get(key) === expires) this.seen.delete(key);
     }
   }
   /**
@@ -107,24 +107,6 @@ export class ReplayGuard {
     if (!message || typeof message.nodeId !== 'string' || typeof message.nonce !== 'string') return false;
     return this.seen.has(`${message.nodeId}:${message.nonce}`);
   }
-  /**
-   * Roll back a just-accepted envelope when downstream admission fails. This is
-   * intentionally exact-key and only removes the current entry, never a newer one.
-   * Stale heap nodes are ignored by #prune; compact periodically to keep rollback
-   * churn bounded even when callers repeatedly reserve and release unique frames.
-   */
-  release(message) {
-    if (!message || typeof message.nodeId !== 'string' || typeof message.nonce !== 'string') return false;
-    const key = `${message.nodeId}:${message.nonce}`;
-    if (!this.seen.has(key)) return false;
-    this.seen.delete(key);
-    if (this.expiryHeap.length > this.maxEntries * 2) {
-      const entries = [...this.seen.values()];
-      this.expiryHeap = [];
-      for (const entry of entries) this.#pushExpiry(entry);
-    }
-    return true;
-  }
   accept(message, now = Date.now()) {
     // Replay expiry arithmetic must remain representable. Huge but finite injected
     // clocks can overflow `now + ttlMs` to Infinity, pinning entries forever.
@@ -133,8 +115,8 @@ export class ReplayGuard {
     if (!message || typeof message.nodeId !== 'string' || typeof message.nonce !== 'string') return false;
     const key = `${message.nodeId}:${message.nonce}`;
     if (this.seen.has(key) || this.seen.size >= this.maxEntries) return false;
-    const entry = { key, expires: now + this.ttlMs };
-    this.seen.set(key, entry); this.#pushExpiry(entry); return true;
+    const expires = now + this.ttlMs;
+    this.seen.set(key, expires); this.#pushExpiry({ key, expires }); return true;
   }
 }
 
