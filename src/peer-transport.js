@@ -36,7 +36,9 @@ export class PeerTransport {
     // Tier 1: strict budget for peers that have not completed the handshake (keyed by nodeId).
     unauthenticatedRateLimiter = new PeerRateLimiter({ capacity: 16, refillPerSecond: 5 }),
     // Tier 0: cheap per-socket budget checked BEFORE signature verification, so unsigned/forged floods cannot burn CPU.
-    socketRateLimiter = new PeerRateLimiter({ capacity: 256, refillPerSecond: 200 }), transferScheduler = null,
+    socketRateLimiter = new PeerRateLimiter({ capacity: 256, refillPerSecond: 200 }),
+    // Global pre-verification budget caps CPU across rapid reconnects that obtain fresh socket IDs.
+    globalRateLimiter = new PeerRateLimiter({ capacity: 4096, refillPerSecond: 2000, maxPeers: 1 }), transferScheduler = null,
     protocolGenesis = null, networkMode = 'legacy', integrityGuard = null, admissionController = null, admissionVouchers = [], tlsOptions = null, tlsHandshakeTimeoutMs = 10_000, now = () => Date.now() } = {}) {
     if (!identity?.privateKey || typeof identity.nodeId !== 'string') throw new TypeError('A node identity is required');
     if (typeof host !== 'string' || !host || !Number.isInteger(port) || port < 0 || port > 65535) throw new RangeError('Invalid bind address');
@@ -69,7 +71,7 @@ export class PeerTransport {
     this.admissionVouchers = Object.freeze([...admissionVouchers]);
     this.admittedPeerIds = new Set();
     this.maxFrameBytes = maxFrameBytes; this.maxMessageBytes = this.genesis?.limits.maxMessageBytes ?? maxFrameBytes; this.allowedTypes = new Set(allowedTypes); this.trustedPeerIds = trustedPeerIds === null ? null : new Set(trustedPeerIds); this.onMessage = onMessage;
-    this.replayGuard = replayGuard; this.rateLimiter = rateLimiter; this.unauthenticatedRateLimiter = unauthenticatedRateLimiter; this.socketRateLimiter = socketRateLimiter; this.transferScheduler = transferScheduler; this.now = now;
+    this.replayGuard = replayGuard; this.rateLimiter = rateLimiter; this.unauthenticatedRateLimiter = unauthenticatedRateLimiter; this.socketRateLimiter = socketRateLimiter; this.globalRateLimiter = globalRateLimiter; this.transferScheduler = transferScheduler; this.now = now;
     this.networkId = this.genesis ? calculateNetworkId(this.genesis) : null;
     this.connections = new Set(); this.inFlightMessages = new Set(); this.pendingConnections = 0; this.pendingOutboundSockets = new Set(); this.pendingOutboundSettlements = new Set(); this.serverSockets = new Set(); this.pendingInboundTlsSockets = new Set(); this.server = null; this.started = false; this.starting = false; this.closing = false; this.quarantined = false; this.closeOperations = 0; this.closeCompletion = null;
     this.removeQuarantineListener = this.networkMode === 'official' && typeof integrityGuard.addQuarantineListener === 'function'
@@ -342,6 +344,8 @@ export class PeerTransport {
     // Apply the cheap socket budget before parsing attacker-controlled JSON, checking integrity state,
     // deriving public keys, or verifying signatures. Frame length was already bounded by the parser.
     if (!(await this.#admitWithinRate(socket, this.socketRateLimiter, socket.__zionSession?.id ?? 'socket'))) { socket.destroy(); return; }
+    // Per-socket budgets reset on reconnect; a shared global budget bounds aggregate signature work across churn.
+    if (!(await this.#admitWithinRate(socket, this.globalRateLimiter, 'global'))) { socket.destroy(); return; }
     // The awaited limiter can yield even when it admits immediately. Recheck before
     // touching integrity state or parsing attacker-controlled bytes.
     if (socket.destroyed) return;
