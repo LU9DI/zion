@@ -647,6 +647,38 @@ test('a limiter that never refills still disconnects an over-budget peer', async
   assert.ok(received.length <= 2);
 });
 
+test('global pre-verification token is refunded when socket closes before parsing', async t => {
+  const serverIdentity = createNodeIdentity();
+  const clientIdentity = createNodeIdentity();
+  let refunds = 0;
+  let handled = 0;
+  let destroyedOnce = false;
+  const server = new PeerTransport({
+    identity: serverIdentity,
+    globalRateLimiter: {
+      allow: () => {
+        if (!destroyedOnce) {
+          destroyedOnce = true;
+          queueMicrotask(() => [...server.connections][0]?.destroy());
+        }
+        return true;
+      },
+      refund: key => { assert.equal(key, 'global'); refunds += 1; return true; },
+    },
+    onMessage: async () => { handled += 1; },
+  });
+  const addr = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({ identity: clientIdentity });
+  t.after(() => client.close());
+  const socket = await client.connect('127.0.0.1', addr.port);
+  t.after(() => socket.destroy());
+  client.send(socket, { type: 'PING', nonce: 'cancel-global-admission' });
+  await waitFor(() => destroyedOnce && [...server.connections].length === 0);
+  assert.equal(refunds, 1, 'cancelled pre-verification admission restores the shared token');
+  assert.equal(handled, 0, 'cancelled frames are not dispatched');
+});
+
 test('shared pre-verification budget limits valid frames across fresh sockets', async t => {
   const serverIdentity = createNodeIdentity();
   const clientIdentity = createNodeIdentity();
