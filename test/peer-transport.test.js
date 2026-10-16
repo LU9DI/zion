@@ -1162,7 +1162,9 @@ test('concurrent copies of one envelope charge the pre-handshake identity tier o
   }))}\n`);
   first.write(captured);
   second.write(captured);
-  await waitFor(() => checksEntered === 2);
+  await waitFor(() => checksEntered === 2).catch(() => {
+    throw new Error(`Expected two blocked integrity checks; got ${checksEntered}; connections=${server.connections.size}; firstDestroyed=${first.destroyed}; secondDestroyed=${second.destroyed}`);
+  });
   releaseChecks();
 
   await waitFor(() => tierLimiter.buckets.has(victim.nodeId));
