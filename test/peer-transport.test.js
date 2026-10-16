@@ -1167,8 +1167,12 @@ test('concurrent copies of one envelope charge the pre-handshake identity tier o
   });
   releaseChecks();
 
-  await waitFor(() => tierLimiter.buckets.has(victim.nodeId));
-  await waitFor(() => first.destroyed || second.destroyed);
+  await waitFor(() => tierLimiter.buckets.has(victim.nodeId)).catch(() => {
+    throw new Error(`Tier was not charged; checks=${checksEntered}; connections=${server.connections.size}; firstDestroyed=${first.destroyed}; secondDestroyed=${second.destroyed}; replayEntries=${server.replayGuard.seen.size}`);
+  });
+  await waitFor(() => first.destroyed || second.destroyed).catch(() => {
+    throw new Error(`Sockets remained open after processing; checks=${checksEntered}; firstDestroyed=${first.destroyed}; secondDestroyed=${second.destroyed}; replayEntries=${server.replayGuard.seen.size}`);
+  });
   assert.equal(tierLimiter.buckets.get(victim.nodeId).tokens, 2,
     'two concurrent copies of one signed envelope must consume one identity token');
   assert.equal(server.replayGuard.seen.size, 1,
