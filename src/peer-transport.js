@@ -341,6 +341,10 @@ export class PeerTransport {
     if (socket.__zionSession) socket.__zionSession.peerNodeId = checked.nodeId;
     const trustedByAllowlist = !this.trustedPeerIds || this.trustedPeerIds.has(checked.nodeId);
     if (!trustedByAllowlist && !this.admissionController) { socket.destroy(); return; }
+    // Reject an already-seen envelope before the identity tier is charged. Replayed frames
+    // are signed by a third party, so charging them would let an attacker replay one captured
+    // frame from fresh sockets and drain the victim's tier budget to lock out its real traffic.
+    if (this.replayGuard.has?.(message) === true) { socket.destroy(); return; }
     // Enforce the peer tier before any potentially remote/transactional admission lookup.
     // Otherwise a validly signed pre-handshake flood can still force one backend read per frame.
     const tierLimiter = socket.__zionSession?.authenticated ? this.rateLimiter : this.unauthenticatedRateLimiter;

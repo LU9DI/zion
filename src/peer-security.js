@@ -94,6 +94,19 @@ export class ReplayGuard {
       if (this.seen.get(key) === expires) this.seen.delete(key);
     }
   }
+  /**
+   * Membership check for an already-accepted message. Never inserts, never consumes
+   * capacity and never mutates the cache. Callers use it to reject a duplicate before
+   * spending shared per-identity budgets on it: a captured signed frame can be replayed
+   * from fresh sockets, so charging the victim's bucket would otherwise let a third
+   * party drain an honest peer's tokens. A stale entry that was not pruned yet can only
+   * match the same (nodeId, nonce) pair, which is itself either the original message or
+   * a replay, so returning true early stays fail-closed.
+   */
+  has(message) {
+    if (!message || typeof message.nodeId !== 'string' || typeof message.nonce !== 'string') return false;
+    return this.seen.has(`${message.nodeId}:${message.nonce}`);
+  }
   accept(message, now = Date.now()) {
     // Replay expiry arithmetic must remain representable. Huge but finite injected
     // clocks can overflow `now + ttlMs` to Infinity, pinning entries forever.

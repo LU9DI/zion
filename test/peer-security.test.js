@@ -44,6 +44,23 @@ test('replay guard accepts once and rejects duplicates and cache overflow', () =
   assert.equal(g.accept({ nodeId: 'b', nonce: '2' }, 101), true);
 });
 
+test('replay guard membership check never inserts or consumes capacity', () => {
+  const g = new ReplayGuard({ ttlMs: 100, maxEntries: 1 });
+  const m = { nodeId: 'a'.repeat(64), nonce: '1'.repeat(32) };
+  assert.equal(g.has(m), false, 'an unseen message is not a replay');
+  assert.equal(g.seen.size, 0, 'checking membership must not insert an entry');
+  assert.equal(g.accept(m, 0), true);
+  assert.equal(g.has(m), true, 'an accepted message is reported as a replay');
+  assert.equal(g.has(null), false);
+  assert.equal(g.has({ nodeId: 'a'.repeat(64) }), false);
+  // A full cache must not report unseen messages as replays, so callers do not attribute
+  // capacity exhaustion to a specific peer.
+  assert.equal(g.has({ nodeId: 'b'.repeat(64), nonce: '2'.repeat(32) }), false);
+  assert.equal(g.accept({ nodeId: 'b'.repeat(64), nonce: '2'.repeat(32) }, 0), false);
+  assert.equal(g.has({ nodeId: 'b'.repeat(64), nonce: '2'.repeat(32) }), false, 'a rejected insertion is not cached');
+  assert.equal(g.seen.size, 1, 'membership checks never evict accepted entries');
+});
+
 test('token bucket rate-limits a noisy peer and refills gradually', () => {
   let now = 0; const r = new PeerRateLimiter({ capacity: 2, refillPerSecond: 1, now: () => now });
   assert.equal(r.allow('peer'), true); assert.equal(r.allow('peer'), true); assert.equal(r.allow('peer'), false);

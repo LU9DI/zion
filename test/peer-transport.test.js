@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createNodeIdentity, PeerRateLimiter } from '../src/peer-security.js';
+import { createNodeIdentity, signPeerMessage, PeerRateLimiter } from '../src/peer-security.js';
 import { PeerTransport } from '../src/peer-transport.js';
 
 function waitFor(predicate, timeoutMs = 1500) {
@@ -1011,4 +1011,47 @@ test('socket destroyed during peer-tier admission never reaches replay or the me
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(replayGuard.accepted, 0, 'a destroyed socket must not consume replay-cache state after tier admission');
   assert.equal(handled, 0, 'a destroyed socket must not reach application processing after tier admission');
+});
+
+test('replaying a captured frame never drains the victim identity tier budget', async t => {
+  // A captured envelope is signed by its victim, so anyone who observed it can replay it
+  // from fresh sockets. If the tier limiter charged those replays, an attacker could empty
+  // the victim's bucket and lock out its legitimate traffic.
+  const victim = createNodeIdentity();
+  const rateLimiter = new PeerRateLimiter({ capacity: 3, refillPerSecond: 0 });
+  const handled = [];
+  const server = new PeerTransport({
+    identity: createNodeIdentity(), rateLimiter,
+    onMessage: async message => { handled.push(message.payload.nonce); },
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+
+  const captured = Buffer.from(`${JSON.stringify(signPeerMessage(victim, { type: 'PING', nonce: 'a'.repeat(32) }))}\n`);
+
+  const victimSocket = connect(address.port, '127.0.0.1');
+  t.after(() => victimSocket.destroy());
+  await once(victimSocket, 'connect');
+  victimSocket.write(captured);
+  await waitFor(() => handled.length === 1);
+  const tokensAfterFirstFrame = rateLimiter.buckets.get(victim.nodeId)?.tokens;
+  assert.equal(tokensAfterFirstFrame, 2, 'the victim frame consumes one token');
+
+  for (let replay = 0; replay < 2; replay++) {
+    const attackerSocket = connect(address.port, '127.0.0.1');
+    await once(attackerSocket, 'connect');
+    attackerSocket.write(captured);
+    await once(attackerSocket, 'close');
+  }
+  assert.equal(rateLimiter.buckets.get(victim.nodeId)?.tokens, tokensAfterFirstFrame,
+    'replayed frames must not consume the victim tier budget');
+  assert.equal(handled.length, 1, 'replayed frames are rejected before dispatch');
+
+  // The victim's next fresh frame must still be admitted even though its bucket is now empty.
+  victimSocket.write(Buffer.from(`${JSON.stringify(signPeerMessage(victim, { type: 'PING', nonce: 'c'.repeat(32) }))}\n`));
+  await waitFor(() => handled.length === 2);
+  assert.deepEqual(handled, ['a'.repeat(32), 'c'.repeat(32)]);
+  assert.equal(victimSocket.destroyed, false, 'the victim connection must survive a replay flood');
+  assert.equal(rateLimiter.buckets.get(victim.nodeId)?.tokens, tokensAfterFirstFrame - 1,
+    'the fresh frame consumes the remaining budget instead of the replays');
 });
