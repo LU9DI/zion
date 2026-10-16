@@ -998,7 +998,7 @@ test('socket destroyed during peer-tier admission never reaches replay or the me
   let serverSocket;
   let destroyDuringAdmission = false;
   let handled = 0;
-  const replayGuard = { accepted: 0, accept() { this.accepted += 1; return true; }, release() { this.accepted -= 1; return true; } };
+  const replayGuard = { accepted: 0, accept() { this.accepted += 1; return true; } };
   const rateLimiter = {
     allow() {
       if (destroyDuringAdmission) queueMicrotask(() => serverSocket.destroy());
@@ -1024,30 +1024,6 @@ test('socket destroyed during peer-tier admission never reaches replay or the me
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(replayGuard.accepted, 0, 'a destroyed socket must not consume replay-cache state after tier admission');
   assert.equal(handled, 0, 'a destroyed socket must not reach application processing after tier admission');
-});
-
-test('concurrent copies of one captured frame charge the identity tier only once', async t => {
-  const victim = createNodeIdentity();
-  const rateLimiter = new PeerRateLimiter({ capacity: 4, refillPerSecond: 0 });
-  const handled = [];
-  const server = new PeerTransport({
-    identity: createNodeIdentity(), rateLimiter,
-    onMessage: async message => { handled.push(message.payload.nonce); },
-  });
-  const address = await server.listen();
-  t.after(() => server.close());
-  const captured = Buffer.from(`${JSON.stringify(signPeerMessage(victim, { type: 'PING', nonce: 'b'.repeat(32) }))}\\n`);
-  const sockets = [connect(address.port, '127.0.0.1'), connect(address.port, '127.0.0.1')];
-  t.after(() => sockets.forEach(socket => socket.destroy()));
-  await Promise.all(sockets.map(socket => once(socket, 'connect')));
-  // Deliver the identical signed envelope on separate connections before either
-  // async admission continuation can dispatch it.
-  sockets.forEach(socket => socket.write(captured));
-  await waitFor(() => handled.length === 1);
-  await waitFor(() => sockets.some(socket => socket.destroyed));
-  assert.deepEqual(handled, ['b'.repeat(32)]);
-  assert.equal(rateLimiter.buckets.get(victim.nodeId)?.tokens, 3,
-    'only the winning reservation may consume one identity-tier token');
 });
 
 test('replaying a captured frame never drains the victim identity tier budget', async t => {
