@@ -142,6 +142,23 @@ export class PeerRateLimiter {
     if (typeof peerId !== 'string' || !peerId) return false;
     return this.buckets.delete(peerId);
   }
+  /** Restore a token when an admitted operation is cancelled before it can be committed. */
+  refund(peerId, cost = 1) {
+    if (typeof peerId !== 'string' || !peerId || peerId.length > 256 ||
+        !Number.isFinite(cost) || cost <= 0 || cost > this.capacity) return false;
+    const time = this.now();
+    if (!Number.isFinite(time)) return false;
+    const old = this.buckets.get(peerId);
+    if (!old || time < old.at) return false;
+    const refilled = Math.min(this.capacity, old.tokens + (time - old.at) * this.refillPerMs);
+    this.buckets.delete(peerId);
+    this.buckets.set(peerId, {
+      tokens: Math.min(this.capacity, refilled + cost),
+      at: time,
+      lastSeen: time,
+    });
+    return true;
+  }
   allow(peerId, cost = 1) {
     if (typeof peerId !== 'string' || !peerId || peerId.length > 256 || !Number.isFinite(cost) || cost <= 0 || cost > this.capacity) return false;
     const time = this.now();
