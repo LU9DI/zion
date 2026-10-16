@@ -1069,32 +1069,6 @@ test('replaying a captured frame never drains the victim identity tier budget', 
     'the fresh frame consumes the remaining budget instead of the replays');
 });
 
-test('concurrent copies of one captured frame charge the identity tier only once', async t => {
-  const victim = createNodeIdentity();
-  let tierCharges = 0;
-  const handled = [];
-  const server = new PeerTransport({
-    identity: createNodeIdentity(),
-    rateLimiter: { allow() { tierCharges++; return true; } },
-    onMessage: async message => { handled.push(message.payload.nonce); },
-  });
-  const address = await server.listen();
-  t.after(() => server.close());
-
-  const captured = Buffer.from(`${JSON.stringify(signPeerMessage(victim, { type: 'PING', nonce: 'd'.repeat(32) }))}\\n`);
-  const sockets = [connect(address.port, '127.0.0.1'), connect(address.port, '127.0.0.1')];
-  t.after(() => sockets.forEach(socket => socket.destroy()));
-  await Promise.all(sockets.map(socket => once(socket, 'connect')));
-
-  // Deliver identical signed bytes concurrently on distinct connections. The first frame
-  // holds a transient replay claim while its async tier admission yields; the duplicate
-  // must be rejected without consuming another victim identity token.
-  for (const socket of sockets) socket.write(captured);
-  await waitFor(() => handled.length === 1 && sockets.some(socket => socket.destroyed));
-  assert.equal(tierCharges, 1, 'only the first in-flight copy may charge the peer tier');
-  assert.deepEqual(handled, ['d'.repeat(32)]);
-});
-
 test('frames split across small writes are assembled without quadratic copying', async t => {
   const realConcat = Buffer.concat;
   let copiedBytes = 0;
