@@ -105,6 +105,15 @@ export class PeerRateLimiter {
     if (!Number.isFinite(capacity) || capacity < 1 || !Number.isFinite(refillPerSecond) || refillPerSecond < 0 || !Number.isSafeInteger(maxPeers) || maxPeers < 1 || !Number.isSafeInteger(idleTtlMs) || idleTtlMs < 1) throw new RangeError('Invalid rate limits');
     this.capacity = capacity; this.refillPerMs = refillPerSecond / 1000; this.now = now; this.maxPeers = maxPeers; this.idleTtlMs = idleTtlMs; this.buckets = new Map();
   }
+  /** Milliseconds until `cost` tokens are available for this peer (0 = now, Infinity = never refills). Does not consume. */
+  retryAfterMs(peerId, cost = 1) {
+    if (typeof peerId !== 'string' || !peerId || !Number.isFinite(cost) || cost <= 0 || cost > this.capacity) return Infinity;
+    const bucket = this.buckets.get(peerId);
+    if (!bucket) return 0;
+    if (this.refillPerMs <= 0) return Infinity;
+    const tokens = Math.min(this.capacity, bucket.tokens + Math.max(0, this.now() - bucket.at) * this.refillPerMs);
+    return tokens >= cost ? 0 : Math.ceil((cost - tokens) / this.refillPerMs);
+  }
   allow(peerId, cost = 1) {
     if (typeof peerId !== 'string' || !peerId || peerId.length > 256 || !Number.isFinite(cost) || cost <= 0 || cost > this.capacity) return false;
     const time = this.now();
