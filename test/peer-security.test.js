@@ -54,3 +54,17 @@ test('replay guard expires entries through an ordered heap and rejects invalid c
   assert.equal(guard.accept({ nodeId: 'e', nonce: '5' }, Number.NaN), false);
   assert.equal(guard.seen.size, 3);
 });
+
+test('rate limiter evicts only idle peers and keeps active ones when stopping the sweep early', () => {
+  let now = 0;
+  const limiter = new PeerRateLimiter({ capacity: 2, refillPerSecond: 0, maxPeers: 3, idleTtlMs: 100, now: () => now });
+  assert.equal(limiter.allow('a'), true);  // t=0
+  now = 50; assert.equal(limiter.allow('b'), true);
+  now = 90; assert.equal(limiter.allow('a'), true); // 'a' becomes the most recent
+  now = 120; assert.equal(limiter.allow('c'), true); // 'b' (idle 70) is still live, nothing evicted
+  assert.equal(limiter.buckets.size, 3);
+  now = 160; // 'b' idle 110 -> evicted; 'a' (70) and 'c' (40) stay
+  assert.equal(limiter.allow('d'), true);
+  assert.equal(limiter.buckets.has('b'), false);
+  assert.equal(limiter.buckets.has('a') && limiter.buckets.has('c') && limiter.buckets.has('d'), true);
+});
