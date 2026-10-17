@@ -2,7 +2,7 @@ import { createServer as createTcpServer, createConnection } from 'node:net';
 import { createServer as createTlsServer, connect as createTlsConnection } from 'node:tls';
 import { isIP as netIsIpAddress } from 'node:net';
 import { randomBytes } from 'node:crypto';
-import { signPeerMessage, verifyPeerMessage, ReplayGuard, PeerRateLimiter } from './peer-security.js';
+import { signPeerMessage, signPeerFrame, verifyPeerMessage, ReplayGuard, PeerRateLimiter } from './peer-security.js';
 import { calculateNetworkId, validateGenesisDocument } from './protocol-genesis.js';
 import { validateProtocolOperation } from './protocol-operation-validator.js';
 
@@ -196,9 +196,8 @@ export class PeerTransport {
     if (!trustedByAllowlist && !previouslyAdmitted && !this.admissionController) { socket.destroy(); return; }
     // Admission control applies to handshake frames as well as application traffic.
     if (!(await this.#admitWithinRate(socket, checked.nodeId)) || !this.replayGuard.accept(message, this.now())) { socket.destroy(); return; }
-    let payloadBytes;
-    try { payloadBytes = Buffer.byteLength(JSON.stringify(checked.payload), 'utf8'); }
-    catch { socket.destroy(); return; }
+    // Size comes from the canonical text verifyPeerMessage already built; no second serialisation.
+    const payloadBytes = checked.payloadBytes;
     if (payloadBytes > this.maxMessageBytes || !checked.payload || typeof checked.payload !== 'object' || Array.isArray(checked.payload)) { socket.destroy(); return; }
     if (this.genesis && !socket.__zionSession?.authenticated) {
       const session = socket.__zionSession; const payload = checked.payload;
@@ -268,13 +267,14 @@ export class PeerTransport {
     if (!socket || socket.destroyed || !socket.writable) throw new Error('Peer socket is not writable');
     if (this.genesis && !socket.__zionSession?.authenticated) throw new Error('Protocol handshake has not completed');
     if (!payload || typeof payload !== 'object' || Array.isArray(payload) || typeof payload.type !== 'string' || !this.allowedTypes.has(payload.type)) throw new TypeError('Unsupported protocol message type');
-    if (Buffer.byteLength(JSON.stringify(payload), 'utf8') > this.maxMessageBytes) throw new RangeError('Protocol message exceeds configured genesis limit');
+    // One canonicalisation pass yields both the exact payload size and the signed frame. The size check keeps its
+    // original precedence over operation validation; nothing is written to the socket unless every check passes.
+    const { frame, payloadBytes } = signPeerFrame(this.identity, payload, { now: this.now(), maxPayloadBytes: this.maxMessageBytes, payloadTooLargeMessage: 'Protocol message exceeds configured genesis limit' });
+    if (payloadBytes > this.maxMessageBytes) throw new RangeError('Protocol message exceeds configured genesis limit');
     if (this.networkMode === 'official') {
       const operation = validateProtocolOperation(payload, { genesis: this.genesis, now: this.now() });
       if (!operation.ok) throw new TypeError(`Invalid official protocol operation: ${operation.reason}`);
     }
-    const signed = signPeerMessage(this.identity, payload, { now: this.now() });
-    const frame = Buffer.from(`${JSON.stringify(signed)}\n`);
     if (frame.length > this.maxFrameBytes) throw new RangeError('Protocol frame too large');
     if (this.transferScheduler) return this.transferScheduler.enqueue(socket, frame);
     return socket.write(frame);

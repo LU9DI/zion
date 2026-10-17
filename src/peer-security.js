@@ -31,6 +31,24 @@ export function signPeerMessage(identity, payload, { now = Date.now(), nonce = r
   return Object.freeze({ ...body, publicKeyPem: identity.publicKeyPem, signature });
 }
 
+/**
+ * Same signature and envelope as signPeerMessage, but also returns the newline-terminated wire frame and the
+ * payload size from a single canonicalisation pass. Canonical JSON is valid JSON, so the payload text is reused
+ * verbatim instead of serialising the (possibly 100+ KiB) payload again.
+ */
+export function signPeerFrame(identity, payload, { now = Date.now(), nonce = randomBytes(16).toString('hex'), maxPayloadBytes = Infinity, payloadTooLargeMessage = 'Protocol message too large' } = {}) {
+  if (!identity?.privateKey || !/^[a-f0-9]{64}$/.test(identity.nodeId)) throw new TypeError('Invalid node identity');
+  const payloadText = canonical(payload);
+  const payloadBytes = Buffer.byteLength(payloadText);
+  if (payloadBytes > maxPayloadBytes) throw new RangeError(payloadTooLargeMessage);
+  const bodyText = `{"nodeId":${JSON.stringify(identity.nodeId)},"nonce":${JSON.stringify(nonce)},"payload":${payloadText},"timestamp":${canonical(now)},"version":1}`;
+  const bytes = Buffer.from(bodyText);
+  if (bytes.length > MAX_MESSAGE_BYTES) throw new RangeError('Protocol message too large');
+  const signature = sign(null, bytes, identity.privateKey).toString('base64');
+  const frame = Buffer.from(`{"version":1,"nodeId":${JSON.stringify(identity.nodeId)},"timestamp":${canonical(now)},"nonce":${JSON.stringify(nonce)},"payload":${payloadText},"publicKeyPem":${JSON.stringify(identity.publicKeyPem)},"signature":${JSON.stringify(signature)}}\n`);
+  return Object.freeze({ frame, payloadBytes });
+}
+
 /** Stateless signature/schema validation; freshness and replay checks are separate. */
 export function verifyPeerMessage(message, { now = Date.now(), maxClockSkewMs = 120_000, maxBytes = MAX_MESSAGE_BYTES } = {}) {
   try {
@@ -38,14 +56,14 @@ export function verifyPeerMessage(message, { now = Date.now(), maxClockSkewMs = 
     if (typeof message.timestamp !== 'number' || !Number.isSafeInteger(message.timestamp) || Math.abs(now - message.timestamp) > maxClockSkewMs) return { ok: false, reason: 'stale-timestamp' };
     if (typeof message.nonce !== 'string' || !/^[a-f0-9]{32,128}$/.test(message.nonce)) return { ok: false, reason: 'invalid-nonce' };
     if (typeof message.publicKeyPem !== 'string' || typeof message.signature !== 'string' || !message.payload || typeof message.payload !== 'object') return { ok: false, reason: 'invalid-envelope' };
-    const body = { version: message.version, nodeId: message.nodeId, timestamp: message.timestamp, nonce: message.nonce, payload: message.payload };
-    const bytes = Buffer.from(canonical(body));
+    const payloadText = canonical(message.payload);
+    const bytes = Buffer.from(`{"nodeId":${JSON.stringify(message.nodeId)},"nonce":${JSON.stringify(message.nonce)},"payload":${payloadText},"timestamp":${canonical(message.timestamp)},"version":${canonical(message.version)}}`);
     if (bytes.length > maxBytes) return { ok: false, reason: 'message-too-large' };
     const publicKey = createPublicKey(message.publicKeyPem);
     const derivedId = createHash('sha256').update(publicKey.export({ type: 'spki', format: 'der' })).digest('hex');
     if (derivedId !== message.nodeId) return { ok: false, reason: 'identity-mismatch' };
     if (!verify(null, bytes, publicKey, Buffer.from(message.signature, 'base64'))) return { ok: false, reason: 'bad-signature' };
-    return { ok: true, nodeId: derivedId, payload: message.payload };
+    return { ok: true, nodeId: derivedId, payload: message.payload, payloadBytes: Buffer.byteLength(payloadText) };
   } catch { return { ok: false, reason: 'malformed-message' }; }
 }
 
