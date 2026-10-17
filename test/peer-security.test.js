@@ -89,3 +89,24 @@ test('signPeerFrame produces a wire frame equivalent to signPeerMessage and repo
   // multi-byte text: character count is under the limit but the UTF-8 size is over it
   assert.throws(() => signPeerFrame(id, { type: 'X', t: '€'.repeat(60) }, { ...opts, maxPayloadBytes: 100 }), /too large/);
 });
+
+test('canonical string fast path is byte-identical to JSON.stringify for plain, escaped and non-ASCII text', () => {
+  const id = createNodeIdentity();
+  const samples = [
+    'A'.repeat(5000), Buffer.alloc(70_000, 7).toString('base64'),
+    'x'.repeat(2000) + '"' + 'y'.repeat(2000), 'x'.repeat(2000) + '\\', 'x'.repeat(2000) + '\n',
+    'x'.repeat(2000) + 'é', 'x'.repeat(2000) + '\u007f', 'x'.repeat(2000) + '\ud800', 'x'.repeat(2000) + ' ', '',
+  ];
+  for (const text of samples) {
+    const { frame } = signPeerFrame(id, { type: 'T', data: text }, { now: 1, nonce: 'd'.repeat(32), maxPayloadBytes: 1 << 20 });
+    const reference = signPeerMessage(id, { type: 'T', data: text }, { now: 1, nonce: 'd'.repeat(32) });
+    assert.equal(JSON.parse(frame.subarray(0, -1).toString('utf8')).signature, reference.signature);
+  }
+  for (let i = 0; i < 200; i++) {
+    const length = 1024 + Math.floor(Math.random() * 3000);
+    const text = Array.from({ length }, () => String.fromCharCode(Math.floor(Math.random() * 0x250))).join('');
+    const { frame } = signPeerFrame(id, { type: 'T', data: text }, { now: 1, nonce: 'e'.repeat(32), maxPayloadBytes: 1 << 20 });
+    const reference = signPeerMessage(id, { type: 'T', data: text }, { now: 1, nonce: 'e'.repeat(32) });
+    assert.equal(JSON.parse(frame.subarray(0, -1).toString('utf8')).signature, reference.signature);
+  }
+});

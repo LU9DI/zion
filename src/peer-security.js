@@ -1,8 +1,15 @@
 import { generateKeyPairSync, sign, verify, randomBytes, createHash, createPublicKey } from 'node:crypto';
 
 const MAX_MESSAGE_BYTES = 256 * 1024;
+// Printable ASCII without '"' and '\\': JSON.stringify returns such text unchanged between quotes. Chunk parts are
+// ~128 KiB of base64, where scanning with this class is several times cheaper than JSON.stringify. Anything else
+// (quotes, backslashes, control or non-ASCII characters) still goes through JSON.stringify, so the canonical bytes
+// -- and therefore every existing signature -- are identical.
+const JSON_PLAIN_ASCII = /^[\x20\x21\x23-\x5b\x5d-\x7e]*$/;
+const canonicalString = value => value.length >= 1024 && JSON_PLAIN_ASCII.test(value) ? `"${value}"` : JSON.stringify(value);
 const canonical = value => {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
+  if (typeof value === 'string') return canonicalString(value);
+  if (value === null || typeof value === 'boolean') return JSON.stringify(value);
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) throw new TypeError('Non-finite numbers are forbidden');
     return JSON.stringify(value);
