@@ -302,3 +302,15 @@ test('fetchChunk rejects promptly when the peer connection closes instead of wai
   assert.equal(service.pendingGets.size, 0);
   assert.equal(socket.listenerCount('close') <= 2, true); // transport's own listener only; ours was removed
 });
+
+
+test('rejects abort signals without cleanup support before registering a request', async () => {
+  const identity = createNodeIdentity();
+  const service = new PeerStorageService({ identity, store: {} });
+  const signal = { aborted: false, addEventListener() {} };
+  await assert.rejects(
+    service.fetchChunk({}, {}, identity.nodeId, 'a'.repeat(64), { signal }),
+    error => error instanceof TypeError && /Invalid chunk fetch request/.test(error.message)
+  );
+  assert.equal(service.pendingGets.size, 0);
+});
