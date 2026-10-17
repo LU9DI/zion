@@ -59,6 +59,12 @@ export function signPeerFrame(identity, payload, { now = Date.now(), nonce = ran
 /** Stateless signature/schema validation; freshness and replay checks are separate. */
 export function verifyPeerMessage(message, { now = Date.now(), maxClockSkewMs = 120_000, maxBytes = MAX_MESSAGE_BYTES } = {}) {
   try {
+    if (!Number.isFinite(now)) return { ok: false, reason: 'invalid-clock' };
+    // Invalid verification policy must not silently disable freshness or size checks.
+    if (!Number.isFinite(maxClockSkewMs) || maxClockSkewMs < 0 ||
+        !Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+      return { ok: false, reason: 'invalid-verification-options' };
+    }
     if (!message || message.version !== 1 || typeof message.nodeId !== 'string' || !/^[a-f0-9]{64}$/.test(message.nodeId)) return { ok: false, reason: 'invalid-envelope' };
     if (typeof message.timestamp !== 'number' || !Number.isSafeInteger(message.timestamp) || Math.abs(now - message.timestamp) > maxClockSkewMs) return { ok: false, reason: 'stale-timestamp' };
     if (typeof message.nonce !== 'string' || !/^[a-f0-9]{32,128}$/.test(message.nonce)) return { ok: false, reason: 'invalid-nonce' };
@@ -113,8 +119,23 @@ export class ReplayGuard {
       if (this.seen.get(key) === expires) this.seen.delete(key);
     }
   }
+  /**
+   * Membership check for an already-accepted message. Never inserts, never consumes
+   * capacity and never mutates the cache. Callers use it to reject a duplicate before
+   * spending shared per-identity budgets on it: a captured signed frame can be replayed
+   * from fresh sockets, so charging the victim's bucket would otherwise let a third
+   * party drain an honest peer's tokens. A stale entry that was not pruned yet can only
+   * match the same (nodeId, nonce) pair, which is itself either the original message or
+   * a replay, so returning true early stays fail-closed.
+   */
+  has(message) {
+    if (!message || typeof message.nodeId !== 'string' || typeof message.nonce !== 'string') return false;
+    return this.seen.has(`${message.nodeId}:${message.nonce}`);
+  }
   accept(message, now = Date.now()) {
-    if (!Number.isFinite(now)) return false;
+    // Replay expiry arithmetic must remain representable. Huge but finite injected
+    // clocks can overflow `now + ttlMs` to Infinity, pinning entries forever.
+    if (!Number.isSafeInteger(now) || !Number.isSafeInteger(now + this.ttlMs)) return false;
     this.#prune(now);
     if (!message || typeof message.nodeId !== 'string' || typeof message.nonce !== 'string') return false;
     const key = `${message.nodeId}:${message.nonce}`;
@@ -136,24 +157,65 @@ export class PeerRateLimiter {
     const bucket = this.buckets.get(peerId);
     if (!bucket) return 0;
     if (this.refillPerMs <= 0) return Infinity;
-    const tokens = Math.min(this.capacity, bucket.tokens + Math.max(0, this.now() - bucket.at) * this.refillPerMs);
+    const time = this.now();
+    if (!Number.isFinite(time) || time < bucket.at) return Infinity;
+    const tokens = Math.min(this.capacity, bucket.tokens + (time - bucket.at) * this.refillPerMs);
     return tokens >= cost ? 0 : Math.ceil((cost - tokens) / this.refillPerMs);
+  }
+  /** Remove per-peer state when its identity is no longer active (e.g. a closed socket). */
+  forget(peerId) {
+    if (typeof peerId !== 'string' || !peerId) return false;
+    return this.buckets.delete(peerId);
+  }
+  /** Restore a token when an admitted operation is cancelled before it can be committed. */
+  refund(peerId, cost = 1) {
+    if (typeof peerId !== 'string' || !peerId || peerId.length > 256 ||
+        !Number.isFinite(cost) || cost <= 0 || cost > this.capacity) return false;
+    const time = this.now();
+    if (!Number.isFinite(time)) return false;
+    const old = this.buckets.get(peerId);
+    if (!old || time < old.at) return false;
+    const refilled = Math.min(this.capacity, old.tokens + (time - old.at) * this.refillPerMs);
+    this.buckets.delete(peerId);
+    this.buckets.set(peerId, {
+      tokens: Math.min(this.capacity, refilled + cost),
+      at: time,
+      lastSeen: time,
+    });
+    return true;
   }
   allow(peerId, cost = 1) {
     if (typeof peerId !== 'string' || !peerId || peerId.length > 256 || !Number.isFinite(cost) || cost <= 0 || cost > this.capacity) return false;
     const time = this.now();
-    // Buckets are re-inserted on every call, so Map order is ascending lastSeen: stop at the
-    // first live bucket instead of scanning every tracked peer on every frame.
-    for (const [id, bucket] of this.buckets) {
-      if (time - bucket.lastSeen < this.idleTtlMs) break;
-      this.buckets.delete(id);
+    // A broken injected clock must fail closed without corrupting token state.
+    if (!Number.isFinite(time)) return false;
+    // Sweep a bounded rotating batch: an untrusted peer can grow this map up to
+    // maxPeers, so a full scan on every frame is O(maxPeers) CPU under churn.
+    // Rotate live buckets to the end so repeated calls eventually inspect all entries,
+    // without relying on wall-clock timestamps being monotonic.
+    const sweep = [];
+    for (const entry of this.buckets) {
+      sweep.push(entry);
+      if (sweep.length >= 64) break;
+    }
+    for (const [id, bucket] of sweep) {
+      if (time - bucket.lastSeen >= this.idleTtlMs) this.buckets.delete(id);
+      else {
+        this.buckets.delete(id);
+        this.buckets.set(id, bucket);
+      }
     }
     let old = this.buckets.get(peerId);
     if (!old) {
       if (this.buckets.size >= this.maxPeers) return false; // Fail closed instead of evicting active peers under attack.
       old = { tokens: this.capacity, at: time, lastSeen: time };
+    } else if (time < old.at) {
+      // A wall-clock rollback must not move the bucket's refill baseline backwards.
+      // Otherwise, when time catches up, the same interval can refill tokens twice.
+      // Reject without mutation; retryAfterMs() also fails closed until time catches up.
+      return false;
     }
-    const tokens = Math.min(this.capacity, old.tokens + Math.max(0, time - old.at) * this.refillPerMs);
+    const tokens = Math.min(this.capacity, old.tokens + (time - old.at) * this.refillPerMs);
     this.buckets.delete(peerId);
     this.buckets.set(peerId, { tokens: tokens >= cost ? tokens - cost : tokens, at: time, lastSeen: time });
     return tokens >= cost;
