@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createNodeIdentity } from '../src/peer-security.js';
+import { createNodeIdentity, signPeerMessage, PeerRateLimiter } from '../src/peer-security.js';
 import { PeerTransport } from '../src/peer-transport.js';
 
 function waitFor(predicate, timeoutMs = 1500) {
@@ -58,6 +58,32 @@ test('transport defaults to loopback and bounds frames', async t => {
   await server.close();
 });
 
+test('listen does not start a server if close races with an asynchronous integrity check', async () => {
+  const identity = createNodeIdentity();
+  let releaseHealthCheck;
+  const healthCheck = new Promise(resolve => { releaseHealthCheck = resolve; });
+  const integrityGuard = {
+    status: { quarantined: false },
+    checkHealthy: () => healthCheck,
+    assertHealthy() {},
+  };
+  const genesis = testGenesis();
+  const transport = new PeerTransport({
+    identity, networkMode: 'official', protocolGenesis: genesis, integrityGuard,
+    trustedPeerIds: [identity.nodeId],
+  });
+
+  const listening = transport.listen();
+  await Promise.resolve();
+  await assert.rejects(transport.listen(), /already started or starting/i);
+  const closing = transport.close();
+  releaseHealthCheck();
+  await closing;
+  await assert.rejects(listening, /closed before listen completed/i);
+  assert.equal(transport.started, false);
+  assert.equal(transport.server, null, 'shutdown must prevent server creation after the health check');
+});
+
 test('transport serializes async handlers and bounds queued frames per socket', async t => {
   let release;
   let entered = 0;
@@ -80,9 +106,15 @@ test('transport serializes async handlers and bounds queued frames per socket', 
   const socket = connect(address.port, '127.0.0.1');
   t.after(() => socket.destroy());
   await once(socket, 'connect');
-  for (let i = 0; i < 70; i++) client.send(socket, { type: 'PING', nonce: String(i) });
-  await waitFor(() => socket.destroyed || entered > 0);
-  assert.equal(maxConcurrent, 1);
+  // Queue the burst in two waves. A single burst can overflow the queue before the first
+  // handler microtask runs, which would make the serialization assertion untestable.
+  for (let i = 0; i < 32; i++) client.send(socket, { type: 'PING', nonce: String(i) });
+  await waitFor(() => entered > 0);
+  for (let i = 32; i < 96; i++) {
+    try { client.send(socket, { type: 'PING', nonce: String(i) }); } catch { break; }
+  }
+  await waitFor(() => socket.destroyed);
+  assert.equal(maxConcurrent, 1, 'handlers must not run concurrently for one socket');
   assert.equal(socket.destroyed, true, 'socket is closed when its per-connection work queue overflows');
 });
 
@@ -184,8 +216,12 @@ test('genesis-enabled peers reject different network IDs before application mess
   const client = new PeerTransport({ identity: createNodeIdentity(), protocolGenesis: testGenesis('Zion B') });
   const socket = await client.connect('127.0.0.1', address.port);
   t.after(() => socket.destroy());
-  await waitFor(() => socket.destroyed || [...server.connections].every(peer => peer.destroyed));
+  // `every()` on an empty connection set is vacuously true, so wait for the actual
+  // rejection instead of accepting a not-yet-accepted connection.
+  await waitFor(() => socket.destroyed);
   assert.equal(socket.destroyed, true);
+  assert.equal([...server.connections].filter(peer => !peer.destroyed).length, 0,
+    'a mismatched network ID must not leave a live session on the server');
 });
 
 test('genesis-enabled peers cannot send application messages before handshake', async () => {
@@ -235,6 +271,33 @@ test('official transport immediately closes peer sessions and stops listening on
   await waitFor(() => socket.destroyed && transport.connections.size === 0 && !transport.server.listening);
   assert.equal(transport.started, false);
   assert.throws(() => transport.send(socket, { type: 'PING', nonce: 'after-quarantine' }), /ZION_INTEGRITY_QUARANTINED|not writable|quarantined/);
+});
+
+test('restarted official transport restores integrity quarantine notifications', async t => {
+  const listeners = new Set();
+  const integrityGuard = {
+    status: { verified: true, quarantined: false, reason: null },
+    async checkHealthy() { if (this.status.quarantined) throw new Error('quarantined'); },
+    assertHealthy() { if (this.status.quarantined) throw new Error('quarantined'); },
+    addQuarantineListener(listener) { listeners.add(listener); return () => listeners.delete(listener); }
+  };
+  const transport = new PeerTransport({
+    identity: createNodeIdentity(), protocolGenesis: testGenesis(),
+    networkMode: 'official', integrityGuard,
+  });
+  t.after(() => transport.close());
+
+  await transport.listen();
+  assert.equal(listeners.size, 1);
+  await transport.close();
+  assert.equal(listeners.size, 0);
+
+  await transport.listen();
+  assert.equal(listeners.size, 1, 'listen() must restore the quarantine subscription after close()');
+  integrityGuard.status = { verified: false, quarantined: true, reason: 'test-quarantine' };
+  for (const listener of listeners) await listener({ reason: 'test-quarantine' });
+  await waitFor(() => !transport.server.listening);
+  assert.equal(transport.started, false);
 });
 
 test('three-node isolation quarantines only the compromised node while healthy peers continue communicating', async t => {
@@ -314,20 +377,24 @@ test('mutual TLS peer transport completes a real verified handshake and exchange
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const material = createTlsTestMaterial(directory);
   let received;
+  const genesis = testGenesis();
   const server = new PeerTransport({
     identity: createNodeIdentity(),
     host: '127.0.0.1',
     tlsOptions: material.server,
+    protocolGenesis: genesis,
     onMessage: async message => { received = message; }
   });
   const address = await server.listen();
   t.after(() => server.close());
-  const client = new PeerTransport({ identity: createNodeIdentity(), tlsOptions: material.client });
+  const client = new PeerTransport({ identity: createNodeIdentity(), tlsOptions: material.client, protocolGenesis: genesis });
   const socket = await client.connect('127.0.0.1', address.port);
   t.after(async () => { socket.destroy(); await client.close(); });
+  await waitFor(() => socket.__zionSession?.authenticated && [...server.connections][0]?.__zionSession?.authenticated);
   client.send(socket, { type: 'PING', nonce: 'verified-mtls' });
   await waitFor(() => Boolean(received));
   assert.equal(received.payload.nonce, 'verified-mtls');
+  assert.equal(server.pendingInboundTlsSockets.size, 0, 'completed TLS handshakes must release their raw-socket capacity reservations');
 });
 
 test('mutual TLS rejects a server certificate signed by an untrusted CA', { skip: !opensslAvailable }, async t => {
@@ -347,6 +414,99 @@ test('localhost bind requires TLS because resolver aliases are not trusted as lo
   assert.throws(() => new PeerTransport({ identity: createNodeIdentity(), host: 'localhost', trustedPeerIds: ['a'.repeat(64)] }), /requires mutual TLS/);
 });
 
+
+test('closing transport aborts pending outbound TLS handshakes immediately', { skip: !opensslAvailable }, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'zion-mtls-close-pending-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const material = createTlsTestMaterial(directory);
+  const stalledServer = createTcpServer(() => { /* accept TCP but never perform TLS handshake */ });
+  stalledServer.listen(0, '127.0.0.1');
+  await once(stalledServer, 'listening');
+  t.after(() => stalledServer.close());
+  const address = stalledServer.address();
+  const client = new PeerTransport({ identity: createNodeIdentity(), tlsOptions: material.client, tlsHandshakeTimeoutMs: 5000 });
+  const pending = client.connect('127.0.0.1', address.port);
+  await waitFor(() => client.pendingConnections === 1);
+  assert.equal(client.pendingOutboundSockets.size, 1);
+  const pendingSocket = [...client.pendingOutboundSockets][0];
+  assert.ok(pendingSocket && !pendingSocket.destroyed, 'TLS socket should still be negotiating before close');
+  await client.close();
+  assert.equal(pendingSocket.destroyed, true, 'close() must destroy the pending TLS socket immediately');
+  assert.equal(client.pendingConnections, 0, 'close() must await release of outbound capacity reservations');
+  assert.equal(client.pendingOutboundSockets.size, 0);
+  await assert.rejects(pending, /closed before peer connection completed|TLS|socket|closed|connect/i);
+  assert.equal(client.pendingConnections, 0);
+  assert.equal(client.pendingOutboundSockets.size, 0);
+});
+
+test('close aborts inbound TLS sockets that have not completed their handshake', { skip: !opensslAvailable }, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'zion-mtls-inbound-close-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const material = createTlsTestMaterial(directory);
+  const server = new PeerTransport({ identity: createNodeIdentity(), tlsOptions: material.server });
+  const address = await server.listen();
+  const rawSocket = connect(address.port, '127.0.0.1');
+  t.after(() => rawSocket.destroy());
+  await once(rawSocket, 'connect');
+  await waitFor(() => server.serverSockets.size === 1);
+  assert.equal(server.connections.size, 0, 'the TLS socket is not yet an authenticated transport connection');
+  const pendingServerSocket = [...server.serverSockets][0];
+  assert.ok(pendingServerSocket && !pendingServerSocket.destroyed);
+
+  const rawClosed = once(rawSocket, 'close');
+  await server.close();
+  assert.equal(pendingServerSocket.destroyed, true, 'close() must destroy the server-side socket during TLS negotiation');
+  await rawClosed;
+  assert.equal(server.serverSockets.size, 0);
+});
+
+test('inbound TLS handshakes share the global connection budget with pending outbound dials', { skip: !opensslAvailable }, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'zion-mtls-capacity-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const material = createTlsTestMaterial(directory);
+  const stalledServer = createTcpServer(() => { /* accept TCP but never perform TLS handshake */ });
+  stalledServer.listen(0, '127.0.0.1');
+  await once(stalledServer, 'listening');
+  t.after(() => stalledServer.close());
+
+  const server = new PeerTransport({
+    identity: createNodeIdentity(), tlsOptions: material.server,
+    maxConnections: 1, tlsHandshakeTimeoutMs: 5000,
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+
+  const pendingDial = server.connect('127.0.0.1', stalledServer.address().port);
+  await waitFor(() => server.pendingConnections === 1);
+  const rawSocket = connect(address.port, '127.0.0.1');
+  t.after(() => rawSocket.destroy());
+  const closed = new Promise(resolve => rawSocket.once('close', resolve));
+  await once(rawSocket, 'connect');
+  await closed;
+  assert.equal(server.pendingConnections, 1, 'the outbound handshake still holds the only connection reservation');
+  assert.equal(server.connections.size, 0, 'the inbound raw socket must be rejected before TLS negotiation consumes another slot');
+
+  await server.close();
+  await assert.rejects(pendingDial, /closed before peer connection completed|TLS|socket|closed|connect/i);
+
+  // The reverse ordering must reserve capacity too: an inbound TLS handshake
+  // already in progress prevents a new outbound dial from taking the same slot.
+  const server2 = new PeerTransport({
+    identity: createNodeIdentity(), tlsOptions: material.server,
+    maxConnections: 1, tlsHandshakeTimeoutMs: 5000,
+  });
+  const address2 = await server2.listen();
+  t.after(() => server2.close());
+  const rawSocket2 = connect(address2.port, '127.0.0.1');
+  t.after(() => rawSocket2.destroy());
+  await once(rawSocket2, 'connect');
+  await waitFor(() => server2.pendingInboundTlsSockets.size === 1);
+  await assert.rejects(
+    server2.connect('127.0.0.1', stalledServer.address().port),
+    /Connection capacity reached/,
+  );
+  await server2.close();
+});
 
 test('outbound TLS handshake timeout closes an unresponsive peer', { skip: !opensslAvailable }, async t => {
   const directory = mkdtempSync(join(tmpdir(), 'zion-mtls-timeout-'));
@@ -417,9 +577,15 @@ test('official transport admits an unknown peer only when its signed handshake c
   const socket = await client.connect('127.0.0.1', address.port);
   t.after(() => { socket.destroy(); client.close(); });
   await waitFor(() => server.admittedPeerIds.has(newcomer.nodeId));
+  // Server-side admission precedes the ACK on the wire; the client may send only after its own session is authenticated.
+  await waitFor(() => socket.__zionSession?.authenticated === true);
   client.send(socket, { type: 'PING', nonce: 'invite-admitted' });
   await waitFor(() => received);
   assert.equal(admissionController.isAdmitted(newcomer.nodeId), true);
+
+  // The admission cache is an active-session optimization, not an unbounded history.
+  socket.destroy();
+  await waitFor(() => !server.admittedPeerIds.has(newcomer.nodeId));
 });
 
 test('official transport rejects an unknown peer with no valid invite vouchers', async t => {
@@ -456,4 +622,628 @@ test('official transport rejects an unknown peer with no valid invite vouchers',
   t.after(() => { socket.destroy(); client.close(); });
   await waitFor(() => socket.destroyed);
   assert.equal(admissionController.isAdmitted(newcomer.nodeId), false);
+});
+
+test('rate limit applies backpressure and delivers every frame instead of dropping an honest burst', async t => {
+  const serverIdentity = createNodeIdentity(); const clientIdentity = createNodeIdentity();
+  const received = [];
+  const rateLimiter = new PeerRateLimiter({ capacity: 3, refillPerSecond: 200 });
+  const server = new PeerTransport({ identity: serverIdentity, rateLimiter, onMessage: async m => { received.push(m.payload.nonce); } });
+  const addr = await server.listen(); t.after(() => server.close());
+  const client = new PeerTransport({ identity: clientIdentity, onMessage: async () => {} });
+  const socket = await client.connect('127.0.0.1', addr.port); t.after(() => { socket.destroy(); client.close(); });
+  for (let i = 0; i < 12; i++) client.send(socket, { type: 'PING', nonce: `burst-${i}` });
+  await waitFor(() => received.length === 12);
+  assert.equal(socket.destroyed, false);
+  assert.deepEqual(received, Array.from({ length: 12 }, (_, i) => `burst-${i}`));
+});
+
+test('a limiter that never refills still disconnects an over-budget peer', async t => {
+  const serverIdentity = createNodeIdentity(); const clientIdentity = createNodeIdentity();
+  const received = [];
+  const server = new PeerTransport({ identity: serverIdentity, rateLimiter: new PeerRateLimiter({ capacity: 2, refillPerSecond: 0 }), onMessage: async m => { received.push(m.payload.nonce); } });
+  const addr = await server.listen(); t.after(() => server.close());
+  const client = new PeerTransport({ identity: clientIdentity, onMessage: async () => {} });
+  const socket = await client.connect('127.0.0.1', addr.port); t.after(() => { socket.destroy(); client.close(); });
+  for (let i = 0; i < 5; i++) { try { client.send(socket, { type: 'PING', nonce: `x-${i}` }); } catch { break; } }
+  await waitFor(() => socket.destroyed);
+  assert.ok(received.length <= 2);
+});
+
+test('global pre-verification token is refunded when socket closes before parsing', async t => {
+  const serverIdentity = createNodeIdentity();
+  const clientIdentity = createNodeIdentity();
+  let refunds = 0;
+  let handled = 0;
+  let destroyedOnce = false;
+  const server = new PeerTransport({
+    identity: serverIdentity,
+    globalRateLimiter: {
+      allow: () => {
+        if (!destroyedOnce) {
+          destroyedOnce = true;
+          queueMicrotask(() => [...server.connections][0]?.destroy());
+        }
+        return true;
+      },
+      refund: key => { assert.equal(key, 'global'); refunds += 1; return true; },
+    },
+    onMessage: async () => { handled += 1; },
+  });
+  const addr = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({ identity: clientIdentity });
+  t.after(() => client.close());
+  const socket = await client.connect('127.0.0.1', addr.port);
+  t.after(() => socket.destroy());
+  client.send(socket, { type: 'PING', nonce: 'cancel-global-admission' });
+  await waitFor(() => destroyedOnce && [...server.connections].length === 0);
+  assert.equal(refunds, 1, 'cancelled pre-verification admission restores the shared token');
+  assert.equal(handled, 0, 'cancelled frames are not dispatched');
+});
+
+test('shared pre-verification budget limits valid frames across fresh sockets', async t => {
+  const serverIdentity = createNodeIdentity();
+  const clientIdentity = createNodeIdentity();
+  let globalAttempts = 0;
+  let handled = 0;
+  const server = new PeerTransport({
+    identity: serverIdentity,
+    globalRateLimiter: {
+      allow: () => ++globalAttempts === 1,
+      retryAfterMs: () => Infinity,
+    },
+    onMessage: async () => { handled += 1; },
+  });
+  const addr = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({ identity: clientIdentity });
+  t.after(() => client.close());
+
+  const first = await client.connect('127.0.0.1', addr.port);
+  t.after(() => first.destroy());
+  client.send(first, { type: 'PING', nonce: 'global-budget-first' });
+  await waitFor(() => handled === 1);
+
+  // A fresh connection receives a fresh socket bucket, but not a fresh global budget.
+  const second = await client.connect('127.0.0.1', addr.port);
+  t.after(() => second.destroy());
+  client.send(second, { type: 'PING', nonce: 'global-budget-second' });
+  await waitFor(() => second.destroyed);
+  assert.equal(globalAttempts, 2, 'the shared budget is consulted for each socket independently');
+  assert.equal(handled, 1, 'a frame denied by the shared budget must not reach the handler');
+});
+
+test('per-socket limiter is checked first: a denied socket never reaches the per-peer limiters or the handler', async t => {
+  const serverIdentity = createNodeIdentity(); const clientIdentity = createNodeIdentity();
+  let peerLimiterCalls = 0; let handled = 0;
+  const server = new PeerTransport({
+    identity: serverIdentity,
+    socketRateLimiter: { allow: () => false },
+    rateLimiter: { allow() { peerLimiterCalls += 1; return true; } },
+    onMessage: async () => { handled += 1; },
+  });
+  const addr = await server.listen(); t.after(() => server.close());
+  const client = new PeerTransport({ identity: clientIdentity, onMessage: async () => {} });
+  const socket = await client.connect('127.0.0.1', addr.port); t.after(() => { socket.destroy(); client.close(); });
+  client.send(socket, { type: 'PING', nonce: 'denied' });
+  await waitFor(() => socket.destroyed);
+  assert.equal(peerLimiterCalls, 0); assert.equal(handled, 0);
+});
+
+test('pre-handshake frames use the strict tier and application frames use the generous tier after authentication', async t => {
+  const serverIdentity = createNodeIdentity(); const clientIdentity = createNodeIdentity();
+  const calls = { strict: 0, generous: 0 };
+  const count = key => ({ allow() { calls[key] += 1; return true; }, retryAfterMs: () => 0 });
+  const genesis = testGenesis();
+  const server = new PeerTransport({
+    identity: serverIdentity, protocolGenesis: genesis,
+    rateLimiter: count('generous'), unauthenticatedRateLimiter: count('strict'),
+    onMessage: async () => {},
+  });
+  const addr = await server.listen(); t.after(() => server.close());
+  const client = new PeerTransport({ identity: clientIdentity, protocolGenesis: genesis });
+  const socket = await client.connect('127.0.0.1', addr.port); t.after(() => { socket.destroy(); client.close(); });
+  await waitFor(() => socket.__zionSession?.authenticated && [...server.connections][0]?.__zionSession?.authenticated);
+  assert.ok(calls.strict >= 2, 'handshake and acknowledgement must use the strict tier');
+  client.send(socket, { type: 'PING', nonce: 'tier' });
+  await waitFor(() => calls.generous >= 1);
+  assert.equal(calls.generous, 1);
+});
+
+
+test('closed sockets release their pre-verification limiter buckets so connection churn cannot exhaust the map', async t => {
+  const received = [];
+  const socketRateLimiter = new PeerRateLimiter({ capacity: 8, refillPerSecond: 8, maxPeers: 1 });
+  const server = new PeerTransport({
+    identity: createNodeIdentity(),
+    socketRateLimiter,
+    onMessage: async message => { received.push(message.payload.nonce); },
+  });
+  const addr = await server.listen(); t.after(() => server.close());
+
+  const firstClient = new PeerTransport({ identity: createNodeIdentity() });
+  const firstSocket = await firstClient.connect('127.0.0.1', addr.port);
+  firstClient.send(firstSocket, { type: 'PING', nonce: 'first-session' });
+  await waitFor(() => received.includes('first-session'));
+  assert.equal(socketRateLimiter.buckets.size, 1);
+
+  firstSocket.destroy();
+  await firstClient.close();
+  await waitFor(() => socketRateLimiter.buckets.size === 0);
+
+  const secondClient = new PeerTransport({ identity: createNodeIdentity() });
+  const secondSocket = await secondClient.connect('127.0.0.1', addr.port);
+  t.after(() => { secondSocket.destroy(); secondClient.close(); });
+  secondClient.send(secondSocket, { type: 'PING', nonce: 'second-session' });
+  await waitFor(() => received.includes('second-session'));
+  assert.equal(secondSocket.destroyed, false);
+});
+
+
+test('pre-handshake rate limiting happens before the admission backend is queried', async t => {
+  const genesis = testGenesis();
+  const seed = createNodeIdentity();
+  const newcomer = createNodeIdentity();
+  let admissionReads = 0;
+  const integrityGuard = { async checkHealthy() {}, assertHealthy() {} };
+  const admissionController = {
+    async isAdmitted() { admissionReads += 1; return false; },
+    async admit() { return { ok: false }; },
+  };
+  const server = new PeerTransport({
+    identity: seed, networkMode: 'official', protocolGenesis: genesis, integrityGuard,
+    trustedPeerIds: [seed.nodeId], admissionController,
+    unauthenticatedRateLimiter: { allow: () => false },
+  });
+  const addr = await server.listen(); t.after(() => server.close());
+  const client = new PeerTransport({ identity: newcomer, protocolGenesis: genesis });
+  const socket = await client.connect('127.0.0.1', addr.port);
+  t.after(() => { socket.destroy(); client.close(); });
+  await waitFor(() => socket.destroyed);
+  assert.equal(admissionReads, 0, 'a rate-limited handshake must not trigger an admission-store read');
+});
+
+
+test('queued frame bytes are bounded before rate-limited processing can catch up', async t => {
+  const serverIdentity = createNodeIdentity(); const clientIdentity = createNodeIdentity();
+  let releaseHandler;
+  const handlerGate = new Promise(resolve => { releaseHandler = resolve; });
+  const server = new PeerTransport({
+    identity: serverIdentity,
+    maxFrameBytes: 4096,
+    onMessage: async () => { await handlerGate; },
+  });
+  const addr = await server.listen(); t.after(() => { releaseHandler(); server.close(); });
+  const client = new PeerTransport({ identity: clientIdentity });
+  const socket = await client.connect('127.0.0.1', addr.port);
+  t.after(() => { socket.destroy(); client.close(); });
+  const payload = 'x'.repeat(3000);
+  for (let i = 0; i < 10; i++) {
+    try { client.send(socket, { type: 'PING', nonce: `queued-${i}`, payload }); } catch { break; }
+  }
+  await waitFor(() => socket.destroyed);
+  releaseHandler();
+});
+
+test('socket budget runs before the official integrity guard and JSON/signature processing', async t => {
+  const genesis = testGenesis();
+  const identity = createNodeIdentity();
+  let guardChecks = 0;
+  const integrityGuard = { async checkHealthy() { guardChecks += 1; }, assertHealthy() {} };
+  const server = new PeerTransport({
+    identity, networkMode: 'official', protocolGenesis: genesis, integrityGuard,
+    trustedPeerIds: [identity.nodeId],
+    socketRateLimiter: { allow: () => false },
+  });
+  const addr = await server.listen(); t.after(() => server.close());
+  // listen() performs its own startup health check; isolate checks caused by inbound frames.
+  guardChecks = 0;
+  const client = new PeerTransport({ identity: createNodeIdentity(), protocolGenesis: genesis });
+  const socket = await client.connect('127.0.0.1', addr.port);
+  t.after(() => { socket.destroy(); client.close(); });
+  await waitFor(() => socket.destroyed);
+  assert.equal(guardChecks, 0, 'a denied socket must not trigger integrity checks or later frame processing');
+});
+
+
+test('closing a throttled peer cancels its pending refill wait', async t => {
+  const server = new PeerTransport({
+    identity: createNodeIdentity(),
+    socketRateLimiter: {
+      allow: () => false,
+      retryAfterMs: () => 5000,
+    },
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({ identity: createNodeIdentity() });
+  t.after(() => client.close());
+  const clientSocket = await client.connect('127.0.0.1', address.port);
+  // The dialer resolves on its own TCP connect; wait until the server has attached the
+  // socket before inspecting its session state.
+  await waitFor(() => server.connections.size === 1);
+  const serverSocket = [...server.connections][0];
+  assert.ok(serverSocket);
+  client.send(clientSocket, { type: 'PING', nonce: 'cancel-refill-wait' });
+  await waitFor(() => serverSocket.__zionSession?.throttled === 1);
+  const started = Date.now();
+  clientSocket.destroy();
+  await waitFor(() => serverSocket.__zionSession?.throttled === 0);
+  assert.ok(Date.now() - started < 500, 'closing the peer should not wait for the 5-second refill timeout');
+});
+
+test('socket destroyed during immediate budget admission skips official integrity work', async t => {
+  const genesis = testGenesis();
+  const identity = createNodeIdentity();
+  const clientIdentity = createNodeIdentity();
+  let serverSocket;
+  let destroyOnAdmission = false;
+  let guardChecks = 0;
+  const integrityGuard = { async checkHealthy() { guardChecks += 1; }, assertHealthy() {} };
+  const server = new PeerTransport({
+    identity, networkMode: 'official', protocolGenesis: genesis, integrityGuard,
+    trustedPeerIds: [clientIdentity.nodeId],
+    socketRateLimiter: { allow: () => { if (destroyOnAdmission) serverSocket?.destroy(); return true; } },
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({ identity: clientIdentity, protocolGenesis: genesis });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(() => { socket.destroy(); client.close(); });
+  await waitFor(() => server.connections.size === 1 &&
+    socket.__zionSession?.authenticated && [...server.connections][0]?.__zionSession?.authenticated);
+  serverSocket = [...server.connections][0];
+  guardChecks = 0;
+  destroyOnAdmission = true;
+  client.send(socket, { type: 'PING', nonce: 'destroy-during-budget-admission' });
+  await waitFor(() => serverSocket.destroyed);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(guardChecks, 0, 'a destroyed socket must not trigger official integrity checks');
+});
+
+test('destroyed socket stops frame processing after an asynchronous integrity check', async t => {
+  const genesis = testGenesis();
+  const serverIdentity = createNodeIdentity();
+  const clientIdentity = createNodeIdentity();
+  let blockChecks = false;
+  let enteredBlockedCheck;
+  let releaseBlockedCheck;
+  const blockedCheck = new Promise(resolve => { releaseBlockedCheck = resolve; });
+  const entered = new Promise(resolve => { enteredBlockedCheck = resolve; });
+  let handled = 0;
+  const integrityGuard = {
+    async checkHealthy() {
+      if (blockChecks) {
+        enteredBlockedCheck();
+        await blockedCheck;
+      }
+    },
+    assertHealthy() {},
+  };
+  const server = new PeerTransport({
+    identity: serverIdentity,
+    networkMode: 'official',
+    protocolGenesis: genesis,
+    integrityGuard,
+    trustedPeerIds: [serverIdentity.nodeId, clientIdentity.nodeId],
+    onMessage: async () => { handled++; },
+  });
+  const address = await server.listen();
+  t.after(async () => { releaseBlockedCheck(); await server.close(); });
+  const client = new PeerTransport({ identity: clientIdentity, protocolGenesis: genesis });
+  t.after(() => client.close());
+  const clientSocket = await client.connect('127.0.0.1', address.port);
+  await waitFor(() => clientSocket.__zionSession?.authenticated &&
+    [...server.connections][0]?.__zionSession?.authenticated);
+
+  blockChecks = true;
+  client.send(clientSocket, { type: 'PING', nonce: 'close-during-health-check' });
+  await entered;
+  const serverSocket = [...server.connections][0];
+  assert.ok(serverSocket);
+  serverSocket.destroy();
+  releaseBlockedCheck();
+  await waitFor(() => serverSocket.destroyed);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(handled, 0, 'a frame must not be processed after its socket is destroyed during an awaited health check');
+});
+
+test('authenticated application frames do not query the admission backend again', async t => {
+  const genesis = testGenesis();
+  const serverIdentity = createNodeIdentity(); const clientIdentity = createNodeIdentity();
+  let admissionReads = 0; let handled = 0;
+  const integrityGuard = { async checkHealthy() {}, assertHealthy() {} };
+  const admissionController = {
+    async isAdmitted() { admissionReads += 1; return true; },
+    async admit() { return { ok: true }; },
+  };
+  const server = new PeerTransport({
+    identity: serverIdentity, networkMode: 'official', protocolGenesis: genesis, integrityGuard,
+    trustedPeerIds: [serverIdentity.nodeId, clientIdentity.nodeId], admissionController,
+    onMessage: async () => { handled += 1; },
+  });
+  const addr = await server.listen(); t.after(() => server.close());
+  const client = new PeerTransport({ identity: clientIdentity, protocolGenesis: genesis });
+  const socket = await client.connect('127.0.0.1', addr.port); t.after(() => { socket.destroy(); client.close(); });
+  await waitFor(() => socket.__zionSession?.authenticated && [...server.connections][0]?.__zionSession?.authenticated);
+  const readsAfterHandshake = admissionReads;
+  client.send(socket, { type: 'PING', nonce: 'no-admission-read' });
+  await waitFor(() => handled === 1);
+  assert.ok(readsAfterHandshake >= 1, 'the handshake checks admission state');
+  assert.equal(admissionReads, readsAfterHandshake, 'application traffic must not query admission storage');
+});
+
+
+test('outbound connection capacity includes sockets still completing their handshake', async t => {
+  const server = new PeerTransport({ identity: createNodeIdentity(), maxConnections: 4 });
+  const addr = await server.listen(); t.after(() => server.close());
+  const client = new PeerTransport({ identity: createNodeIdentity(), maxConnections: 1 });
+  t.after(() => client.close());
+
+  const attempts = await Promise.allSettled([
+    client.connect('127.0.0.1', addr.port),
+    client.connect('127.0.0.1', addr.port),
+  ]);
+  const connected = attempts.filter(result => result.status === 'fulfilled');
+  const rejected = attempts.filter(result => result.status === 'rejected');
+  for (const result of connected) result.value.destroy();
+  assert.equal(connected.length, 1, 'only one outbound connection may reserve the final slot');
+  assert.equal(rejected.length, 1, 'concurrent connection attempts must fail once capacity is reserved');
+  assert.equal(client.pendingConnections, 0, 'pending capacity reservations must always be released');
+  assert.equal(client.connections.size, 1);
+});
+
+
+test('concurrent close calls share one shutdown operation and remain idempotent', async t => {
+  const transport = new PeerTransport({ identity: createNodeIdentity() });
+  t.after(() => transport.close());
+  await transport.listen();
+  const server = transport.server;
+
+  const firstClose = transport.close();
+  const secondClose = transport.close();
+  assert.equal(firstClose, secondClose, 'concurrent callers must await the same shutdown promise');
+  await Promise.all([firstClose, secondClose]);
+  assert.equal(transport.started, false);
+  assert.equal(server.listening, false);
+  await transport.close();
+  assert.equal(server.listening, false, 'a repeated close after completion must remain safe');
+
+  // Explicit restart starts a new lifecycle and must not reuse the prior close promise.
+  await transport.listen();
+  assert.equal(transport.started, true);
+  await transport.close();
+});
+
+
+test('integrity quarantine during startup prevents the transport from listening or restarting', async t => {
+  const genesis = testGenesis();
+  const identity = createNodeIdentity();
+  let releaseHealth;
+  let signalHealthEntered;
+  let notifyQuarantine;
+  const healthGate = new Promise(resolve => { releaseHealth = resolve; });
+  const healthEntered = new Promise(resolve => { signalHealthEntered = resolve; });
+  const integrityGuard = {
+    async checkHealthy() {
+      signalHealthEntered();
+      await healthGate;
+    },
+    assertHealthy() {},
+    addQuarantineListener(listener) {
+      notifyQuarantine = listener;
+      return () => { notifyQuarantine = null; };
+    },
+  };
+  const transport = new PeerTransport({
+    identity,
+    networkMode: 'official',
+    protocolGenesis: genesis,
+    integrityGuard,
+    trustedPeerIds: [identity.nodeId],
+  });
+  t.after(async () => { releaseHealth(); await transport.close(); });
+
+  const starting = transport.listen();
+  await healthEntered;
+  assert.equal(typeof notifyQuarantine, 'function');
+  notifyQuarantine({ reason: 'test-quarantine' });
+  releaseHealth();
+
+  await assert.rejects(starting, /quarantined/i);
+  assert.equal(transport.started, false);
+  assert.equal(transport.server, null, 'startup must not leave a server behind after quarantine');
+  await assert.rejects(transport.listen(), /quarantined/i, 'a quarantined transport instance must not restart');
+  await assert.rejects(transport.connect('127.0.0.1', 1), /quarantined/i, 'a quarantined transport must not create outbound connections');
+});
+
+
+test('socket destroyed during peer-tier admission never reaches replay or the message handler', async t => {
+  const serverIdentity = createNodeIdentity();
+  const clientIdentity = createNodeIdentity();
+  let serverSocket;
+  let destroyDuringAdmission = false;
+  let handled = 0;
+  const replayGuard = { accepted: 0, accept() { this.accepted += 1; return true; } };
+  const rateLimiter = new PeerRateLimiter({ capacity: 3, refillPerSecond: 0 });
+  const originalAllow = rateLimiter.allow.bind(rateLimiter);
+  rateLimiter.allow = peerId => {
+    const admitted = originalAllow(peerId);
+    if (destroyDuringAdmission) queueMicrotask(() => serverSocket.destroy());
+    return admitted;
+  };
+  const server = new PeerTransport({
+    identity: serverIdentity,
+    rateLimiter,
+    replayGuard,
+    onMessage: async () => { handled += 1; },
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({ identity: clientIdentity });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(() => { socket.destroy(); client.close(); });
+  await waitFor(() => server.connections.size === 1);
+  serverSocket = [...server.connections][0];
+  destroyDuringAdmission = true;
+  client.send(socket, { type: 'PING', nonce: 'destroy-during-peer-tier-admission' });
+  await waitFor(() => serverSocket.destroyed);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(replayGuard.accepted, 0, 'a destroyed socket must not consume replay-cache state after tier admission');
+  assert.equal(rateLimiter.buckets.get(clientIdentity.nodeId)?.tokens, 3,
+    'a cancelled admission must refund its identity-tier token');
+  assert.equal(handled, 0, 'a destroyed socket must not reach application processing after tier admission');
+});
+
+test('replaying a captured frame never drains the victim identity tier budget', async t => {
+  // A captured envelope is signed by its victim, so anyone who observed it can replay it
+  // from fresh sockets. If the tier limiter charged those replays, an attacker could empty
+  // the victim's bucket and lock out its legitimate traffic.
+  const victim = createNodeIdentity();
+  const rateLimiter = new PeerRateLimiter({ capacity: 3, refillPerSecond: 0 });
+  const handled = [];
+  const server = new PeerTransport({
+    identity: createNodeIdentity(), rateLimiter,
+    onMessage: async message => { handled.push(message.payload.nonce); },
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+
+  const captured = Buffer.from(`${JSON.stringify(signPeerMessage(victim, { type: 'PING', nonce: 'a'.repeat(32) }))}\n`);
+
+  const victimSocket = connect(address.port, '127.0.0.1');
+  t.after(() => victimSocket.destroy());
+  await once(victimSocket, 'connect');
+  victimSocket.write(captured);
+  await waitFor(() => handled.length === 1);
+  const tokensAfterFirstFrame = rateLimiter.buckets.get(victim.nodeId)?.tokens;
+  assert.equal(tokensAfterFirstFrame, 2, 'the victim frame consumes one token');
+
+  for (let replay = 0; replay < 2; replay++) {
+    const attackerSocket = connect(address.port, '127.0.0.1');
+    await once(attackerSocket, 'connect');
+    attackerSocket.write(captured);
+    await once(attackerSocket, 'close');
+  }
+  assert.equal(rateLimiter.buckets.get(victim.nodeId)?.tokens, tokensAfterFirstFrame,
+    'replayed frames must not consume the victim tier budget');
+  assert.equal(handled.length, 1, 'replayed frames are rejected before dispatch');
+
+  // The victim's next fresh frame must still be admitted even though its bucket is now empty.
+  victimSocket.write(Buffer.from(`${JSON.stringify(signPeerMessage(victim, { type: 'PING', nonce: 'c'.repeat(32) }))}\n`));
+  await waitFor(() => handled.length === 2);
+  assert.deepEqual(handled, ['a'.repeat(32), 'c'.repeat(32)]);
+  assert.equal(victimSocket.destroyed, false, 'the victim connection must survive a replay flood');
+  assert.equal(rateLimiter.buckets.get(victim.nodeId)?.tokens, tokensAfterFirstFrame - 1,
+    'the fresh frame consumes the remaining budget instead of the replays');
+});
+
+test('frames split across small writes are assembled without quadratic copying', async t => {
+  const realConcat = Buffer.concat;
+  let copiedBytes = 0;
+  Buffer.concat = function countingConcat(list, totalLength) {
+    copiedBytes += totalLength ?? list.reduce((sum, buffer) => sum + buffer.length, 0);
+    return realConcat.call(Buffer, list, totalLength);
+  };
+  t.after(() => { Buffer.concat = realConcat; });
+
+  const maxFrameBytes = 4096;
+  const received = [];
+  const server = new PeerTransport({
+    identity: createNodeIdentity(), maxFrameBytes,
+    onMessage: async message => { received.push(message.payload.nonce); },
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+
+  // A legitimate frame delivered one byte at a time must be assembled correctly.
+  const signed = Buffer.from(`${JSON.stringify(signPeerMessage(createNodeIdentity(), { type: 'PING', nonce: 'split-frame' }))}\n`);
+  assert.ok(signed.length > 256 && signed.length < maxFrameBytes);
+  copiedBytes = 0;
+  const splitSocket = connect(address.port, '127.0.0.1');
+  splitSocket.setNoDelay(true);
+  t.after(() => splitSocket.destroy());
+  await once(splitSocket, 'connect');
+  for (const byte of signed) {
+    splitSocket.write(Buffer.from([byte]));
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  await waitFor(() => received.length === 1);
+  assert.deepEqual(received, ['split-frame']);
+  assert.ok(copiedBytes <= signed.length * 2,
+    `assembling one frame must copy a linear amount of data (copied ${copiedBytes} bytes for ${signed.length} bytes)`);
+
+  // An incomplete frame that never terminates must still be bounded by the frame limit
+  // and must not make the parser copy the accumulated bytes on every chunk.
+  copiedBytes = 0;
+  const stalledSocket = connect(address.port, '127.0.0.1');
+  stalledSocket.setNoDelay(true);
+  t.after(() => stalledSocket.destroy());
+  await once(stalledSocket, 'connect');
+  for (let sent = 0; sent <= maxFrameBytes && !stalledSocket.destroyed; sent++) {
+    stalledSocket.write(Buffer.from([0x41]));
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  await once(stalledSocket, 'close');
+  assert.ok(copiedBytes <= maxFrameBytes * 4,
+    `an unterminated frame must not cost quadratic copying (copied ${copiedBytes} bytes for a ${maxFrameBytes} byte limit)`);
+});
+
+
+test('concurrent copies of one envelope charge the pre-handshake identity tier only once', async t => {
+  const victim = createNodeIdentity();
+  const genesis = testGenesis();
+  let blockChecks = false;
+  let checksEntered = 0;
+  let releaseChecks;
+  const checksGate = new Promise(resolve => { releaseChecks = resolve; });
+  const integrityGuard = {
+    async checkHealthy() {
+      if (blockChecks) {
+        checksEntered++;
+        await checksGate;
+      }
+    },
+    assertHealthy() {},
+  };
+  const tierLimiter = new PeerRateLimiter({ capacity: 3, refillPerSecond: 0 });
+  const server = new PeerTransport({
+    identity: createNodeIdentity(),
+    networkMode: 'official',
+    protocolGenesis: genesis,
+    integrityGuard,
+    unauthenticatedRateLimiter: tierLimiter,
+  });
+  const address = await server.listen();
+  t.after(async () => { releaseChecks(); await server.close(); });
+
+  const first = connect(address.port, '127.0.0.1');
+  const second = connect(address.port, '127.0.0.1');
+  t.after(() => { first.destroy(); second.destroy(); });
+  await Promise.all([once(first, 'connect'), once(second, 'connect')]);
+  await waitFor(() => server.connections.size === 2);
+
+  // Hold both frames at the same asynchronous integrity check so each reaches the
+  // replay membership check before either can finish rate admission.
+  blockChecks = true;
+  const captured = Buffer.from(`${JSON.stringify(signPeerMessage(victim, {
+    type: 'PING', nonce: 'a'.repeat(64),
+  }))}\n`);
+  first.write(captured);
+  second.write(captured);
+  await waitFor(() => checksEntered === 2).catch(() => {
+    throw new Error(`Expected two blocked integrity checks; got ${checksEntered}; connections=${server.connections.size}; firstDestroyed=${first.destroyed}; secondDestroyed=${second.destroyed}`);
+  });
+  releaseChecks();
+
+  await waitFor(() => tierLimiter.buckets.has(victim.nodeId)).catch(() => {
+    throw new Error(`Tier was not charged; checks=${checksEntered}; connections=${server.connections.size}; firstDestroyed=${first.destroyed}; secondDestroyed=${second.destroyed}; replayEntries=${server.replayGuard.seen.size}`);
+  });
+  await waitFor(() => server.replayGuard.seen.size === 1);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(tierLimiter.buckets.get(victim.nodeId).tokens, 2,
+    'two concurrent copies of one signed envelope must consume one identity token');
+  assert.equal(server.replayGuard.seen.size, 1,
+    'only one copy may be admitted into the replay cache');
 });

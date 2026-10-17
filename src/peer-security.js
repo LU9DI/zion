@@ -1,8 +1,15 @@
 import { generateKeyPairSync, sign, verify, randomBytes, createHash, createPublicKey } from 'node:crypto';
 
 const MAX_MESSAGE_BYTES = 256 * 1024;
+// Printable ASCII without '"' and '\\': JSON.stringify returns such text unchanged between quotes. Chunk parts are
+// ~128 KiB of base64, where scanning with this class is several times cheaper than JSON.stringify. Anything else
+// (quotes, backslashes, control or non-ASCII characters) still goes through JSON.stringify, so the canonical bytes
+// -- and therefore every existing signature -- are identical.
+const JSON_PLAIN_ASCII = /^[\x20\x21\x23-\x5b\x5d-\x7e]*$/;
+const canonicalString = value => value.length >= 1024 && JSON_PLAIN_ASCII.test(value) ? `"${value}"` : JSON.stringify(value);
 const canonical = value => {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
+  if (typeof value === 'string') return canonicalString(value);
+  if (value === null || typeof value === 'boolean') return JSON.stringify(value);
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) throw new TypeError('Non-finite numbers are forbidden');
     return JSON.stringify(value);
@@ -31,21 +38,45 @@ export function signPeerMessage(identity, payload, { now = Date.now(), nonce = r
   return Object.freeze({ ...body, publicKeyPem: identity.publicKeyPem, signature });
 }
 
+/**
+ * Same signature and envelope as signPeerMessage, but also returns the newline-terminated wire frame and the
+ * payload size from a single canonicalisation pass. Canonical JSON is valid JSON, so the payload text is reused
+ * verbatim instead of serialising the (possibly 100+ KiB) payload again.
+ */
+export function signPeerFrame(identity, payload, { now = Date.now(), nonce = randomBytes(16).toString('hex'), maxPayloadBytes = Infinity, payloadTooLargeMessage = 'Protocol message too large' } = {}) {
+  if (!identity?.privateKey || !/^[a-f0-9]{64}$/.test(identity.nodeId)) throw new TypeError('Invalid node identity');
+  const payloadText = canonical(payload);
+  const payloadBytes = Buffer.byteLength(payloadText);
+  if (payloadBytes > maxPayloadBytes) throw new RangeError(payloadTooLargeMessage);
+  const bodyText = `{"nodeId":${JSON.stringify(identity.nodeId)},"nonce":${JSON.stringify(nonce)},"payload":${payloadText},"timestamp":${canonical(now)},"version":1}`;
+  const bytes = Buffer.from(bodyText);
+  if (bytes.length > MAX_MESSAGE_BYTES) throw new RangeError('Protocol message too large');
+  const signature = sign(null, bytes, identity.privateKey).toString('base64');
+  const frame = Buffer.from(`{"version":1,"nodeId":${JSON.stringify(identity.nodeId)},"timestamp":${canonical(now)},"nonce":${JSON.stringify(nonce)},"payload":${payloadText},"publicKeyPem":${JSON.stringify(identity.publicKeyPem)},"signature":${JSON.stringify(signature)}}\n`);
+  return Object.freeze({ frame, payloadBytes });
+}
+
 /** Stateless signature/schema validation; freshness and replay checks are separate. */
 export function verifyPeerMessage(message, { now = Date.now(), maxClockSkewMs = 120_000, maxBytes = MAX_MESSAGE_BYTES } = {}) {
   try {
+    if (!Number.isFinite(now)) return { ok: false, reason: 'invalid-clock' };
+    // Invalid verification policy must not silently disable freshness or size checks.
+    if (!Number.isFinite(maxClockSkewMs) || maxClockSkewMs < 0 ||
+        !Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+      return { ok: false, reason: 'invalid-verification-options' };
+    }
     if (!message || message.version !== 1 || typeof message.nodeId !== 'string' || !/^[a-f0-9]{64}$/.test(message.nodeId)) return { ok: false, reason: 'invalid-envelope' };
     if (typeof message.timestamp !== 'number' || !Number.isSafeInteger(message.timestamp) || Math.abs(now - message.timestamp) > maxClockSkewMs) return { ok: false, reason: 'stale-timestamp' };
     if (typeof message.nonce !== 'string' || !/^[a-f0-9]{32,128}$/.test(message.nonce)) return { ok: false, reason: 'invalid-nonce' };
     if (typeof message.publicKeyPem !== 'string' || typeof message.signature !== 'string' || !message.payload || typeof message.payload !== 'object') return { ok: false, reason: 'invalid-envelope' };
-    const body = { version: message.version, nodeId: message.nodeId, timestamp: message.timestamp, nonce: message.nonce, payload: message.payload };
-    const bytes = Buffer.from(canonical(body));
+    const payloadText = canonical(message.payload);
+    const bytes = Buffer.from(`{"nodeId":${JSON.stringify(message.nodeId)},"nonce":${JSON.stringify(message.nonce)},"payload":${payloadText},"timestamp":${canonical(message.timestamp)},"version":${canonical(message.version)}}`);
     if (bytes.length > maxBytes) return { ok: false, reason: 'message-too-large' };
     const publicKey = createPublicKey(message.publicKeyPem);
     const derivedId = createHash('sha256').update(publicKey.export({ type: 'spki', format: 'der' })).digest('hex');
     if (derivedId !== message.nodeId) return { ok: false, reason: 'identity-mismatch' };
     if (!verify(null, bytes, publicKey, Buffer.from(message.signature, 'base64'))) return { ok: false, reason: 'bad-signature' };
-    return { ok: true, nodeId: derivedId, payload: message.payload };
+    return { ok: true, nodeId: derivedId, payload: message.payload, payloadBytes: Buffer.byteLength(payloadText) };
   } catch { return { ok: false, reason: 'malformed-message' }; }
 }
 
@@ -88,8 +119,23 @@ export class ReplayGuard {
       if (this.seen.get(key) === expires) this.seen.delete(key);
     }
   }
+  /**
+   * Membership check for an already-accepted message. Never inserts, never consumes
+   * capacity and never mutates the cache. Callers use it to reject a duplicate before
+   * spending shared per-identity budgets on it: a captured signed frame can be replayed
+   * from fresh sockets, so charging the victim's bucket would otherwise let a third
+   * party drain an honest peer's tokens. A stale entry that was not pruned yet can only
+   * match the same (nodeId, nonce) pair, which is itself either the original message or
+   * a replay, so returning true early stays fail-closed.
+   */
+  has(message) {
+    if (!message || typeof message.nodeId !== 'string' || typeof message.nonce !== 'string') return false;
+    return this.seen.has(`${message.nodeId}:${message.nonce}`);
+  }
   accept(message, now = Date.now()) {
-    if (!Number.isFinite(now)) return false;
+    // Replay expiry arithmetic must remain representable. Huge but finite injected
+    // clocks can overflow `now + ttlMs` to Infinity, pinning entries forever.
+    if (!Number.isSafeInteger(now) || !Number.isSafeInteger(now + this.ttlMs)) return false;
     this.#prune(now);
     if (!message || typeof message.nodeId !== 'string' || typeof message.nonce !== 'string') return false;
     const key = `${message.nodeId}:${message.nonce}`;
@@ -105,16 +151,71 @@ export class PeerRateLimiter {
     if (!Number.isFinite(capacity) || capacity < 1 || !Number.isFinite(refillPerSecond) || refillPerSecond < 0 || !Number.isSafeInteger(maxPeers) || maxPeers < 1 || !Number.isSafeInteger(idleTtlMs) || idleTtlMs < 1) throw new RangeError('Invalid rate limits');
     this.capacity = capacity; this.refillPerMs = refillPerSecond / 1000; this.now = now; this.maxPeers = maxPeers; this.idleTtlMs = idleTtlMs; this.buckets = new Map();
   }
+  /** Milliseconds until `cost` tokens are available for this peer (0 = now, Infinity = never refills). Does not consume. */
+  retryAfterMs(peerId, cost = 1) {
+    if (typeof peerId !== 'string' || !peerId || !Number.isFinite(cost) || cost <= 0 || cost > this.capacity) return Infinity;
+    const bucket = this.buckets.get(peerId);
+    if (!bucket) return 0;
+    if (this.refillPerMs <= 0) return Infinity;
+    const time = this.now();
+    if (!Number.isFinite(time) || time < bucket.at) return Infinity;
+    const tokens = Math.min(this.capacity, bucket.tokens + (time - bucket.at) * this.refillPerMs);
+    return tokens >= cost ? 0 : Math.ceil((cost - tokens) / this.refillPerMs);
+  }
+  /** Remove per-peer state when its identity is no longer active (e.g. a closed socket). */
+  forget(peerId) {
+    if (typeof peerId !== 'string' || !peerId) return false;
+    return this.buckets.delete(peerId);
+  }
+  /** Restore a token when an admitted operation is cancelled before it can be committed. */
+  refund(peerId, cost = 1) {
+    if (typeof peerId !== 'string' || !peerId || peerId.length > 256 ||
+        !Number.isFinite(cost) || cost <= 0 || cost > this.capacity) return false;
+    const time = this.now();
+    if (!Number.isFinite(time)) return false;
+    const old = this.buckets.get(peerId);
+    if (!old || time < old.at) return false;
+    const refilled = Math.min(this.capacity, old.tokens + (time - old.at) * this.refillPerMs);
+    this.buckets.delete(peerId);
+    this.buckets.set(peerId, {
+      tokens: Math.min(this.capacity, refilled + cost),
+      at: time,
+      lastSeen: time,
+    });
+    return true;
+  }
   allow(peerId, cost = 1) {
     if (typeof peerId !== 'string' || !peerId || peerId.length > 256 || !Number.isFinite(cost) || cost <= 0 || cost > this.capacity) return false;
     const time = this.now();
-    for (const [id, bucket] of this.buckets) if (time - bucket.lastSeen >= this.idleTtlMs) this.buckets.delete(id);
+    // A broken injected clock must fail closed without corrupting token state.
+    if (!Number.isFinite(time)) return false;
+    // Sweep a bounded rotating batch: an untrusted peer can grow this map up to
+    // maxPeers, so a full scan on every frame is O(maxPeers) CPU under churn.
+    // Rotate live buckets to the end so repeated calls eventually inspect all entries,
+    // without relying on wall-clock timestamps being monotonic.
+    const sweep = [];
+    for (const entry of this.buckets) {
+      sweep.push(entry);
+      if (sweep.length >= 64) break;
+    }
+    for (const [id, bucket] of sweep) {
+      if (time - bucket.lastSeen >= this.idleTtlMs) this.buckets.delete(id);
+      else {
+        this.buckets.delete(id);
+        this.buckets.set(id, bucket);
+      }
+    }
     let old = this.buckets.get(peerId);
     if (!old) {
       if (this.buckets.size >= this.maxPeers) return false; // Fail closed instead of evicting active peers under attack.
       old = { tokens: this.capacity, at: time, lastSeen: time };
+    } else if (time < old.at) {
+      // A wall-clock rollback must not move the bucket's refill baseline backwards.
+      // Otherwise, when time catches up, the same interval can refill tokens twice.
+      // Reject without mutation; retryAfterMs() also fails closed until time catches up.
+      return false;
     }
-    const tokens = Math.min(this.capacity, old.tokens + Math.max(0, time - old.at) * this.refillPerMs);
+    const tokens = Math.min(this.capacity, old.tokens + (time - old.at) * this.refillPerMs);
     this.buckets.delete(peerId);
     this.buckets.set(peerId, { tokens: tokens >= cost ? tokens - cost : tokens, at: time, lastSeen: time });
     return tokens >= cost;
