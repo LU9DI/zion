@@ -1,4 +1,4 @@
-# REA Cloud Rust storage core (experimental)
+# REA Cloud Rust storage core
 
 This crate is the first Rust implementation of the opaque encrypted-block storage boundary. It is intentionally separate from the current Node.js runtime until native integration and cross-language conformance tests are available.
 
