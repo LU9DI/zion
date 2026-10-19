@@ -3,7 +3,7 @@ name = "rea-storage-core"
 version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0-only"
-description = "Experimental Rust storage core for REA Cloud"
+description = "Rust storage core for REA Cloud"
 
 [lib]
 name = "rea_storage_core"

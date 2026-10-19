@@ -18,7 +18,7 @@ REA Cloud borrows security principles from Bitcoin's peer-to-peer design, not Bi
 - **No proof-of-work:** storage providers should not burn CPU or electricity to prove participation; that conflicts with the no-perceptible-impact requirement.
 - **No global blockchain or consensus for each file:** ordinary storage placement does not require a globally replicated ledger. Signed manifests and independent verification are more proportionate.
 - **No assumption that public-key identity prevents Sybil attacks:** an attacker can generate many keys. Later defenses need diversity across networks/failure domains, admission economics or reputation with carefully analyzed tradeoffs, and eclipse-resistance testing.
-- **No claim of Byzantine fault tolerance yet:** this repository is a prototype and does not implement a production P2P transport or distributed consensus.
+- **No claim of Byzantine fault tolerance yet:** this repository does not yet implement a production P2P transport or distributed consensus.
 
 ## Security caveats
 

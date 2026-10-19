@@ -1,6 +1,6 @@
 # Zion Cloud UI preview
 
-A responsive, dependency-free Portuguese (Brazil) interface prototype for Zion Cloud.
+A responsive, dependency-free Portuguese (Brazil) interface for Zion Cloud.
 
 ## Run locally
 
