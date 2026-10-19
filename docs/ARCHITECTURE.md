@@ -1,6 +1,6 @@
 # Architecture status
 
-## Implemented in this prototype
+## Implemented today
 
 1. **ResourceGovernor** calculates a conservative per-node work budget from local telemetry and owner-configured ceilings. Missing telemetry disables work. Production mode requires a verified OS enforcement adapter.
 2. **EncryptedChunkStore** encrypts each chunk with AES-256-GCM, stores only ciphertext, and addresses the encrypted envelope by SHA-256.

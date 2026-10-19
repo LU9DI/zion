@@ -4,7 +4,7 @@
 
 ## Quick status
 
-- **Available for local experiments:** Node.js modules and automated tests; the cloud UI is a local-only preview.
+- **Available today:** Node.js modules and automated tests; the cloud UI is a local-only preview.
 - **Not wired as a complete network:** no running libp2p/Kademlia deployment, bootstrap network, NAT traversal, or validated internet connectivity.
 - **Storage caveat:** the Rust storage sidecar is opt-in and not automatically configured by node bootstrap. `PeerStorageService` accepts the Rust adapter's receipt shape and verifies persisted bytes by read-back, so an operator can inject `RustStorageAdapter` as its `store`; this is not an out-of-the-box deployment or a production durability guarantee. The in-memory ciphertext adapter remains for tests/demos.
 - **Security caveat:** remote peer transport now fails closed unless mutual TLS key/certificate/CA material is configured, but certificate lifecycle/trust distribution, production key management/key sharing, distributed Sybil/DDoS defense, and cross-platform hard resource quotas remain incomplete. CI performs real mutual-TLS handshakes using ephemeral test certificates and rejects an untrusted CA; this is not a substitute for production certificate operations. The local resource governor now treats zero CPU/memory/disk/concurrency limits as a disabled contribution and reports disk budgets, but it still cannot enforce OS-level quotas. Plaintext transport is restricted to loopback. Do not store sensitive data or the only copy of important files.
@@ -192,7 +192,7 @@ This remains defense-in-depth, not a secure-boot mechanism. JavaScript buffer ov
 - Local hard limits are configured by the owner and are never raised by remote peers.
 - The governor can reduce work to zero when the host is busy, hot, on battery, under memory pressure, or when telemetry is unavailable.
 - A JavaScript governor alone cannot guarantee hard OS-level limits. The experimental Linux adapter verifies CPU, memory, and PID limits only; disk I/O, network bandwidth, thermal monitoring, user-activity policy, and Windows/macOS adapters remain missing. Production participation requires a verified adapter marked complete, so this partial adapter cannot enable it.
-- Storage is opt-in. This prototype never executes code supplied by other peers.
+- Storage is opt-in. Zion never executes code supplied by other peers.
 - Encrypted chunks use Node.js built-in AES-256-GCM and SHA-256. The local encrypted chunk store defaults to a 4 MiB maximum plaintext chunk and a 1 GiB storage quota; both are configurable by the local owner. The store tightens root-directory permissions where supported, rejects symlinks in the storage tree, and uses fsynced temporary files with atomic no-overwrite linking. Quota checks serialize writes within one process and coordinate separate store instances through an atomic directory lock with conservative stale-lock recovery. This is best-effort cross-process coordination, not a substitute for OS-enforced quotas or protection from a malicious process with the same account permissions. The caller must protect the 32-byte key; this prototype is not a complete key-management system.
 
 ## Requirements

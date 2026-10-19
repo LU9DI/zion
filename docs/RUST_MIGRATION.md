@@ -2,7 +2,7 @@
 
 ## Current release
 
-The v0.16.0 change introduces `rust-core/` as an independently testable Rust crate. Node.js remains the active application runtime and the existing `OpaqueReplicaStore` is still the production-of-this-prototype path. There is no FFI, N-API addon, or sidecar protocol wired up yet.
+The v0.16.0 change introduces `rust-core/` as an independently testable Rust crate. Node.js remains the active application runtime and the existing `OpaqueReplicaStore` is still the active store path. There is no FFI, N-API addon, or sidecar protocol wired up yet.
 
 ## Stable storage operations
 

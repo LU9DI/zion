@@ -1,6 +1,6 @@
 # Zion SDK v1 — application contract
 
-This document describes the first stable consumer-facing API boundary. It is intentionally honest about the current local-storage prototype and does not imply that a production P2P network is available.
+This document describes the first stable consumer-facing API boundary. It is intentionally honest about the current local-storage implementation and does not imply that a production P2P network is available.
 
 ## Initialize
 

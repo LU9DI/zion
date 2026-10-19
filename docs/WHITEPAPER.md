@@ -106,7 +106,7 @@ Cada nó define quotas locais explícitas de disco, CPU, memória, conexões e b
 
 ### 10.1 Admissão gradual e lançamento controlado
 
-O protótipo inclui uma política local de estágios de admissão (paused, pilot, cohort, scale) com limites configuráveis de peers ativos. Os limites padrão (0, 25, 100 e 500) são valores conservadores de referência, não estimativas de capacidade de produção. O operador deve calibrá-los com testes de carga e métricas reais.
+A implementação atual inclui uma política local de estágios de admissão (paused, pilot, cohort, scale) com limites configuráveis de peers ativos. Os limites padrão (0, 25, 100 e 500) são valores conservadores de referência, não estimativas de capacidade de produção. O operador deve calibrá-los com testes de carga e métricas reais.
 
 Todos os estágios não pausados continuam sujeitos aos vouchers criptográficos, às quotas de emissores, à disponibilidade de armazenamento e aos limites do controlador de admissão. Avançar de estágio não desativa o modelo invite-only. paused bloqueia novas admissões, sem implicar expulsão automática dos peers já conectados. A política é local ao processo/nó e **não** impõe um limite global da rede; coordenar cotas globais exige estado compartilhado transacional e consenso/coordenação explícita.
 
@@ -138,7 +138,7 @@ A passagem de fase exige testes automatizados e evidências reproduzíveis. Test
 
 ## 14. Estado verificado versus objetivos
 
-O código de referência v0.31.0 é um protótipo experimental. Há módulos de catálogo, coordenação de réplicas, governança de recursos, segurança de mensagens e um adaptador de descoberta, com testes locais. Isso não equivale a uma DHT libp2p operacional, rede global, NAT traversal completo, Reed–Solomon de produção ou prova contínua de armazenamento. Esses itens devem ser marcados como pendentes até que dependências reais estejam integradas e testes multi-processo independentes sejam aprovados.
+O código de referência v0.31.0 é uma implementação pré-1.0 em desenvolvimento ativo. Há módulos de catálogo, coordenação de réplicas, governança de recursos, segurança de mensagens e um adaptador de descoberta, com testes locais. Isso não equivale a uma DHT libp2p operacional, rede global, NAT traversal completo, Reed–Solomon de produção ou prova contínua de armazenamento. Esses itens devem ser marcados como pendentes até que dependências reais estejam integradas e testes multi-processo independentes sejam aprovados.
 
 O repositório também não deve ser divulgado como pronto para produção enquanto persistirem lacunas de segurança, auditoria e licença de distribuição.
 
@@ -184,7 +184,7 @@ A capacidade de armazenamento anunciada também pode variar segundo a contribui�
 
 ## Descoberta confiável, provas de armazenamento e SDK local-first
 
-Os seguintes componentes são protótipos de protocolo e precisam ser integrados e avaliados antes de serem tratados como segurança de produção:
+Os seguintes componentes são componentes de protocolo ainda em maturação e precisam ser integrados e avaliados antes de serem tratados como segurança de produção:
 
 - **Vouchers de introdução:** src/peer-introduction-vouchers.js emite introduções Ed25519 com validade limitada e exige um conjunto de introdutores previamente confiáveis e distintos. Vouchers não provam que uma identidade representa uma pessoa ou máquina única; a confiança inicial e os limites de emissão continuam sendo decisões de governança.
 - **Reputação por evidência:** src/peer-reputation.js aceita recibos de armazenamento assinados e resultados de auditoria autenticados, impede a repetição do mesmo identificador de evidência e calcula uma pontuação local limitada. Um recibo de aceitação, isoladamente, não prova armazenamento durável. O sistema não deve aceitar penalidades arbitrárias enviadas por pares.
@@ -228,7 +228,7 @@ Para ativar, passe uma instância de `FileStorageAuditStateStore` como `stateSto
 
 ## Convites restritos e admissão de pares
 
-O protótipo inclui vouchers de introdução assinados Ed25519 e um controlador de política de admissão. A admissão exige um limiar configurável de emissores previamente confiáveis e distintos, validade criptográfica/temporal dos vouchers, consumo persistido de nonces, limite de peers ativos e reserva mínima de capacidade de armazenamento. As quotas limitam quantas admissões podem ser atribuídas a cada emissor; uma falha do convidado não implica punição automática do convidador.
+A implementação atual inclui vouchers de introdução assinados Ed25519 e um controlador de política de admissão. A admissão exige um limiar configurável de emissores previamente confiáveis e distintos, validade criptográfica/temporal dos vouchers, consumo persistido de nonces, limite de peers ativos e reserva mínima de capacidade de armazenamento. As quotas limitam quantas admissões podem ser atribuídas a cada emissor; uma falha do convidado não implica punição automática do convidador.
 
 O controlador `PeerAdmissionController` (`src/peer-admission-controller.js`) requer um `stateStore` durável com `load()` e `save(state)`, além de `capacityProvider()` que retorne `activePeers`, `maxPeers` e `storageHeadroomRatio`. A gravação do estado ocorre antes de confirmar a admissão, e erros de persistência devem ser tratados como falha. O armazenamento fornecido deve preservar o snapshot entre reinícios. A implementação `FilePeerAdmissionStateStore` (`src/peer-admission-file-state-store.js`) fornece snapshots locais com checksum, limite de tamanho, escrita em arquivo temporário exclusivo, `fsync` e renomeação atômica; pode ser passada diretamente como `stateStore`.
 
