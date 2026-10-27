@@ -19,7 +19,7 @@ Zion includes local storage and cryptographic primitives, resource-policy logic,
 
 ### Licensing status
 
-Licensing is intentionally deferred until the project reaches a release-ready state. No license is declared in package metadata at this stage. Before distribution, choose the intended license, add its complete text, and reconcile package metadata and notices. Public visibility alone does not grant reuse rights.
+Licensing is intentionally deferred until the project reaches a release-ready state. No license is declared in package metadata at this stage. Before distribution, choose the intended license, add its complete text, and reconcile package metadata and notices. Public visibility alone does not grant reuse rights. Removing the current metadata does not retroactively change earlier commits, releases, or rights that may already have been granted.
 
 ## Local verification
 
