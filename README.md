@@ -1,32 +1,44 @@
-# Zion v0.33.32 — Experimental decentralized storage foundation
+# Zion v0.33.32 — Production-oriented decentralized storage platform
 
-**Status: research prototype; not production-ready and not a public P2P cloud.** The repository contains local storage/crypto primitives, resource-policy logic, signed Witness recovery, an experimental bounded TCP transport, and an illustrative cloud UI. This public repository currently has no open-source license file, and the Rust crate metadata intentionally omits a license declaration pending an explicit licensing decision. Public visibility does not grant permission to copy, modify, or redistribute the code; prior releases and commits may remain subject to previously published license terms.
+**Mission: build Zion as a production-grade decentralized storage and peer-to-peer cloud platform.** Production is the target for the architecture and engineering roadmap; production use must be gated by verified deployment, operational controls, and release-specific validation—not by the project label or passing unit tests alone.
 
-## Quick status
+Zion includes local storage and cryptographic primitives, resource-policy logic, signed Witness recovery, a bounded TCP peer transport with mutual-TLS admission requirements, and a cloud UI preview. The project is being engineered toward production operation. Capabilities described as experimental, adapter-based, local-only, or incomplete below must not be treated as fully deployed product features.
 
-- **Available for local experiments:** Node.js modules and automated tests; the cloud UI is a local-only preview.
-- **Not wired as a complete network:** no running libp2p/Kademlia deployment, bootstrap network, NAT traversal, or validated internet connectivity.
-- **Storage caveat:** the Rust storage sidecar is opt-in and not automatically configured by node bootstrap. `PeerStorageService` accepts the Rust adapter's receipt shape and verifies persisted bytes by read-back, so an operator can inject `RustStorageAdapter` as its `store`; this is not an out-of-the-box deployment or a production durability guarantee. The in-memory ciphertext adapter remains for tests/demos.
-- **Security caveat:** remote peer transport now fails closed unless mutual TLS key/certificate/CA material is configured, but certificate lifecycle/trust distribution, production key management/key sharing, distributed Sybil/DDoS defense, and cross-platform hard resource quotas remain incomplete. CI performs real mutual-TLS handshakes using ephemeral test certificates and rejects an untrusted CA; this is not a substitute for production certificate operations. The local resource governor now treats zero CPU/memory/disk/concurrency limits as a disabled contribution and reports disk budgets, but it still cannot enforce OS-level quotas. Plaintext transport is restricted to loopback. Do not store sensitive data or the only copy of important files.
-- **Witness caveat:** recovery depends on an integrator-supplied live-session validator and trusted publisher keys. Local signatures and fsync calls do not prove an external authority or device-level durability.
-- **Validation:** The baseline suite previously passed 168 JavaScript module syntax checks, 533 Node tests, both demos, and 3 Rust tests. The newer mutual-TLS integration tests also passed in [validation run for commit `e9e8bd9`](https://github.com/LU9DI/zion/actions/runs/38066430962). Check the [latest Actions runs](https://github.com/LU9DI/zion/actions) for the current branch status.
+> **Production release gate:** do not expose a public network or store sensitive data / the only copy of important files until the production gates in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), [SECURITY.md](SECURITY.md), and [AUDIT_CURRENT_ZION.md](AUDIT_CURRENT_ZION.md) have been closed and independently verified for the intended deployment. This is a deployment-safety requirement, not a change to Zion's production objective.
+
+## Current implementation and production gates
+
+- **Peer-to-peer network:** the repository does not yet contain a validated live libp2p/Kademlia deployment, diverse bootstrap network, NAT traversal, or independently verified internet connectivity. The transport primitives are not a substitute for a deployed and tested network.
+- **Storage and replication:** the Rust storage sidecar is opt-in and is not automatically configured by node bootstrap. `PeerStorageService` can use an injected `RustStorageAdapter` and verify stored bytes by read-back; this is not yet an out-of-the-box production storage/replication path or a durability guarantee. The in-memory ciphertext adapter is for tests and demonstrations only.
+- **Transport security:** remote peer transport fails closed unless mutual-TLS key, certificate, and CA material are configured; plaintext transport is restricted to loopback. CI exercises TLS with ephemeral test certificates, but production certificate issuance, rotation, revocation, trust distribution, and independent deployment verification remain required.
+- **Keys and identity:** production key lifecycle, secure file-key sharing/recovery, identity rotation/revocation, and integrated user-facing recovery are incomplete. Automatic key sharing and ZKP are not implemented; file keys must remain outside manifests.
+- **Resource isolation and abuse resistance:** the resource governor calculates policy budgets but does not enforce OS-level CPU, memory, disk, bandwidth, thermal, or user-activity quotas. Distributed Sybil/eclipse defense, cross-peer DDoS protection, bootstrap diversity, and repair-storm controls are not complete.
+- **Witness and recovery:** recovery depends on an integrator-supplied live-session validator and trusted publisher keys. Local signatures and `fsync` calls do not independently prove an external authority or device-level durability.
+- **Cloud UI:** `cloud/` is a preview, not a connected cloud service. File selection is local metadata; file bytes are not uploaded or persisted, and node/usage metrics are demonstration data. See [cloud/README.md](cloud/README.md).
+- **Validation:** automated tests and CI are useful evidence for the specific revision and checks that ran; they are not a security certification or proof that the production gates above are closed. Check the [latest GitHub Actions runs](https://github.com/LU9DI/zion/actions) before evaluating a revision.
+
+### Licensing status
+
+Licensing is intentionally deferred until the project reaches a release-ready state. No license is declared in package metadata at this stage. Before distribution, choose the intended license, add its complete text, and reconcile package metadata and notices. Public visibility alone does not grant reuse rights. Removing the current metadata does not retroactively change earlier commits, releases, or rights that may already have been granted.
 
 ## Local verification
 
 Requires Node.js 20 or newer:
 
 ```sh
+npm ci
 npm run check
 npm test
 npm run demo
 npm run client:demo
+cargo test --locked
 ```
 
-The repository commits both `package-lock.json` and `Cargo.lock`; CI installs JavaScript dependencies with `npm ci` and runs Rust tests with `cargo test --locked`. Outbound peer connection/TLS handshakes are bounded, and the Rust store syncs its containing directory after publishing a chunk on Unix. These improve reproducibility and local crash behavior but do not certify a secure public network, cross-platform power-loss durability, or resistance to coordinated distributed attacks.
+Run these commands on a clean checkout and retain the CI results for the exact commit being evaluated. The repository commits `package-lock.json` and `Cargo.lock`; the Rust sidecar is tested locally and through CI, but application-level quota accounting is not the same as an OS-enforced quota. Unix directory sync and bounded reads improve local crash behavior; they do not certify cross-platform power-loss durability or resistance to coordinated distributed attacks.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), [SECURITY.md](SECURITY.md), and [AUDIT_CURRENT_ZION.md](AUDIT_CURRENT_ZION.md) for implementation boundaries and remaining blockers.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and [AUDIT_CURRENT_ZION.md](AUDIT_CURRENT_ZION.md) for architecture, contribution rules, security assumptions, known gaps, and release gates.
 
-Consumer apps can call `ZionClient.upload()` and `ZionClient.download()` rather than orchestrating encryption and chunking directly. The client screens input locally, encrypts chunks with AES-256-GCM before passing them to a pluggable storage adapter, and keeps the file key outside the manifest. Do not use the in-memory adapter for real data. Automatic key sharing and ZKP are not implemented.
+Consumer apps can call `ZionClient.upload()` and `ZionClient.download()` instead of orchestrating encryption and chunking directly. The client screens input locally, encrypts chunks with AES-256-GCM before passing them to a pluggable storage adapter, and keeps the file key outside the manifest. Do not use the in-memory adapter for real data. Production use requires a configured, integrated, and independently verified storage path and key-management flow.
 
 ## Historical release notes
 
