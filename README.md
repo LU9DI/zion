@@ -17,9 +17,9 @@ Zion includes local storage and cryptographic primitives, resource-policy logic,
 - **Cloud UI:** `cloud/` is a preview, not a connected cloud service. File selection is local metadata; file bytes are not uploaded or persisted, and node/usage metrics are demonstration data. See [cloud/README.md](cloud/README.md).
 - **Validation:** automated tests and CI are useful evidence for the specific revision and checks that ran; they are not a security certification or proof that the production gates above are closed. Check the [latest GitHub Actions runs](https://github.com/LU9DI/zion/actions) before evaluating a revision.
 
-### License status
+### Licensing status
 
-The package metadata declares `AGPL-3.0-only`, but the `LICENSE` file was not present on the `main` branch at the time this README was updated. This repository metadata and missing license text must be reconciled before distribution; public visibility alone does not grant reuse rights. Do not infer that the full license text is included until the file is present and verified.
+Licensing is intentionally deferred until the project reaches a release-ready state. No license is declared in package metadata at this stage. Before distribution, choose the intended license, add its complete text, and reconcile package metadata and notices. Public visibility alone does not grant reuse rights.
 
 ## Local verification
 
