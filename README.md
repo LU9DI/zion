@@ -1,6 +1,6 @@
 # Zion v0.33.32 — Experimental decentralized storage foundation
 
-**Status: research prototype; not production-ready and not a public P2P cloud.** The repository contains local storage/crypto primitives, resource-policy logic, signed Witness recovery, an experimental bounded TCP transport, and an illustrative cloud UI. This public repository currently has no open-source license file. Public visibility does not grant permission to copy, modify, or redistribute the code; prior releases and commits may remain subject to previously published license terms.
+**Status: research prototype; not production-ready and not a public P2P cloud.** The repository contains local storage/crypto primitives, resource-policy logic, signed Witness recovery, an experimental bounded TCP transport, and an illustrative cloud UI. This public repository currently has no open-source license file, and the Rust crate metadata intentionally omits a license declaration pending an explicit licensing decision. Public visibility does not grant permission to copy, modify, or redistribute the code; prior releases and commits may remain subject to previously published license terms.
 
 ## Quick status
 
