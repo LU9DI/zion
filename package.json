@@ -27,5 +27,4 @@
     "content:verify-uploader": "node scripts/verify-uploader-attribution.js",
     "client:demo": "node scripts/demo-consumer-client.js"
   },
-  "license": "AGPL-3.0-only"
 }
