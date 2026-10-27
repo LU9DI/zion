@@ -26,5 +26,5 @@
     "content:screen-local": "node scripts/screen-content-local.js",
     "content:verify-uploader": "node scripts/verify-uploader-attribution.js",
     "client:demo": "node scripts/demo-consumer-client.js"
-  },
+  }
 }
