@@ -9,7 +9,7 @@ name = "rea_storage_core"
 path = "src/lib.rs"
 
 [dependencies]
-sha2 = "=0.10.9"
+sha2 = "=0.11.1"
 libc = "=0.2.191"
 
 [[bin]]
