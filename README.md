@@ -36,7 +36,7 @@ cargo test --locked
 
 Run these commands on a clean checkout and retain the CI results for the exact commit being evaluated. The repository commits `package-lock.json` and `Cargo.lock`; the Rust sidecar is tested locally and through CI, but application-level quota accounting is not the same as an OS-enforced quota. Unix directory sync and bounded reads improve local crash behavior; they do not certify cross-platform power-loss durability or resistance to coordinated distributed attacks.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), [SECURITY.md](SECURITY.md), and [AUDIT_CURRENT_ZION.md](AUDIT_CURRENT_ZION.md) for architecture, security assumptions, known gaps, and release gates.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and [AUDIT_CURRENT_ZION.md](AUDIT_CURRENT_ZION.md) for architecture, contribution rules, security assumptions, known gaps, and release gates.
 
 Consumer apps can call `ZionClient.upload()` and `ZionClient.download()` instead of orchestrating encryption and chunking directly. The client screens input locally, encrypts chunks with AES-256-GCM before passing them to a pluggable storage adapter, and keeps the file key outside the manifest. Do not use the in-memory adapter for real data. Production use requires a configured, integrated, and independently verified storage path and key-management flow.
 
