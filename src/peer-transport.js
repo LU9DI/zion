@@ -18,6 +18,8 @@ const isLoopbackAddress = host => {
 // Treat only validated IP literals as loopback. Hostnames can be redirected by local resolver configuration.
 const isLoopbackHost = host => isLoopbackAddress(host);
 const MAX_QUEUED_FRAMES_PER_SOCKET = 64;
+const MAX_THROTTLE_MS = 5_000;
+const MAX_THROTTLE_WAITS = 8;
 const DEFAULT_TYPES = new Set(['PING', 'PONG', 'STORE_CHUNK', 'GET_CHUNK', 'CHUNK_DATA', 'MANIFEST', 'STORE_REQUEST', 'STORE_RECEIPT', 'STORE_REJECTED']);
 
 /**
@@ -29,7 +31,7 @@ export class PeerTransport {
   constructor({ identity, host = '127.0.0.1', port = 0, maxConnections = 64,
     maxFrameBytes = MAX_FRAME_BYTES, allowedTypes = DEFAULT_TYPES, trustedPeerIds = null,
     onMessage = async () => {}, replayGuard = new ReplayGuard(),
-    rateLimiter = new PeerRateLimiter({ capacity: 64, refillPerSecond: 20 }), transferScheduler = null,
+    rateLimiter = new PeerRateLimiter({ capacity: 128, refillPerSecond: 100 }), transferScheduler = null,
     protocolGenesis = null, networkMode = 'legacy', integrityGuard = null, admissionController = null, admissionVouchers = [], tlsOptions = null, tlsHandshakeTimeoutMs = 10_000, now = () => Date.now() } = {}) {
     if (!identity?.privateKey || typeof identity.nodeId !== 'string') throw new TypeError('A node identity is required');
     if (typeof host !== 'string' || !host || !Number.isInteger(port) || port < 0 || port > 65535) throw new RangeError('Invalid bind address');
@@ -193,7 +195,7 @@ export class PeerTransport {
     const previouslyAdmitted = this.admittedPeerIds.has(checked.nodeId) || controllerAdmitted === true;
     if (!trustedByAllowlist && !previouslyAdmitted && !this.admissionController) { socket.destroy(); return; }
     // Admission control applies to handshake frames as well as application traffic.
-    if (!this.rateLimiter.allow(checked.nodeId) || !this.replayGuard.accept(message, this.now())) { socket.destroy(); return; }
+    if (!(await this.#admitWithinRate(socket, checked.nodeId)) || !this.replayGuard.accept(message, this.now())) { socket.destroy(); return; }
     let payloadBytes;
     try { payloadBytes = Buffer.byteLength(JSON.stringify(checked.payload), 'utf8'); }
     catch { socket.destroy(); return; }
@@ -235,6 +237,30 @@ export class PeerTransport {
       // Fail closed on handler errors; do not leak internal error details to peers.
       socket.destroy();
     }
+  }
+
+  /**
+   * Rate limiting by backpressure: when a peer is briefly over its budget, stop reading from its socket (TCP
+   * flow control slows the sender) and retry once tokens refill, instead of dropping an honest bulk transfer.
+   * The wait is bounded and the socket idle timeout still applies; a limiter that cannot predict a refill time
+   * (or one that needs longer than MAX_THROTTLE_MS) keeps the previous fail-closed behaviour of disconnecting.
+   */
+  async #admitWithinRate(socket, nodeId) {
+    if (this.rateLimiter.allow(nodeId)) return true;
+    if (typeof this.rateLimiter.retryAfterMs !== 'function') return false;
+    const session = socket.__zionSession;
+    for (let attempt = 0; attempt < MAX_THROTTLE_WAITS; attempt++) {
+      const waitMs = this.rateLimiter.retryAfterMs(nodeId);
+      if (!Number.isFinite(waitMs) || waitMs > MAX_THROTTLE_MS || socket.destroyed) return false;
+      session.throttled = (session.throttled ?? 0) + 1;
+      socket.pause();
+      await new Promise(resolve => setTimeout(resolve, Math.max(1, waitMs)));
+      session.throttled -= 1;
+      if (session.throttled === 0 && !socket.destroyed) socket.resume();
+      if (socket.destroyed) return false;
+      if (this.rateLimiter.allow(nodeId)) return true;
+    }
+    return false;
   }
 
   send(socket, payload) {
