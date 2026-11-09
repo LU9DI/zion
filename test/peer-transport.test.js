@@ -1250,7 +1250,7 @@ test('concurrent copies of one envelope charge the pre-handshake identity tier o
 });
 
 
-test('mutual TLS rejects a captured signed handshake replayed on a different TLS session', { skip: !opensslAvailable }, async t => {
+test('mutual TLS rejects a captured signed handshake payload replayed on a different TLS session', { skip: !opensslAvailable }, async t => {
   const directory = mkdtempSync(join(tmpdir(), 'zion-mtls-channel-binding-replay-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const material = createTlsTestMaterial(directory);
@@ -1288,14 +1288,22 @@ test('mutual TLS rejects a captured signed handshake replayed on a different TLS
   assert.ok(firstServerSession && secondServerSession, 'both client TLS sessions must have matching accepted server sockets');
   assert.equal(exporter(firstSession), exporter(firstServerSession), 'TLS exporter must match across the first client/server session');
   assert.equal(exporter(secondSession), exporter(secondServerSession), 'TLS exporter must match across the second client/server session');
-  const capturedHandshake = signPeerMessage(createNodeIdentity(), {
+  const replayIdentity = createNodeIdentity();
+  const capturedPayload = {
     type: 'ZION_HANDSHAKE',
     networkId,
     protocolMajor: genesis.protocolMajor,
     nonce: 'a'.repeat(64),
     channelBinding: exporter(firstSession),
-  });
+  };
+  const capturedHandshake = signPeerMessage(replayIdentity, capturedPayload);
   const capturedFrame = Buffer.from(JSON.stringify(capturedHandshake) + '\\n');
+  // Re-sign the captured challenge payload with a fresh envelope nonce so the
+  // replay cache cannot be the reason session B rejects it; only the TLS exporter
+  // binding differs between the two sessions.
+  const replayedFrame = Buffer.from(JSON.stringify(
+    signPeerMessage(replayIdentity, capturedPayload),
+  ) + '\\n');
 
   firstSession.write(capturedFrame);
   await waitFor(() => [...server.connections].some(socket =>
@@ -1305,7 +1313,7 @@ test('mutual TLS rejects a captured signed handshake replayed on a different TLS
   // The envelope signature and mTLS certificate remain valid, but the TLS exporter
   // differs on session B. The server must reject the replay for that reason.
   assert.notEqual(exporter(firstSession), exporter(secondSession));
-  secondSession.write(capturedFrame);
+  secondSession.write(replayedFrame);
   await once(secondSession, 'close');
   assert.equal(
     [...server.connections].some(socket => socket.__zionSession?.remoteNonce === 'a'.repeat(64)),
