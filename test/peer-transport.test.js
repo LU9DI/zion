@@ -1222,7 +1222,9 @@ test('concurrent copies of one envelope charge the pre-handshake identity tier o
   const second = connect(address.port, '127.0.0.1');
   t.after(async () => {
     releaseChecks();
-    const closed = Promise.all([once(first, 'close'), once(second, 'close')]);
+    const closed = Promise.all([first, second].map(socket =>
+      socket.closed ? Promise.resolve() : once(socket, 'close'),
+    ));
     first.destroy();
     second.destroy();
     await closed;
@@ -1278,7 +1280,9 @@ test('mutual TLS rejects a captured signed handshake payload replayed on a diffe
     rejectUnauthorized: true, minVersion: 'TLSv1.2',
   });
   t.after(async () => {
-    const closed = Promise.all([once(firstSession, 'close'), once(secondSession, 'close')]);
+    const closed = Promise.all([firstSession, secondSession].map(socket =>
+      socket.closed ? Promise.resolve() : once(socket, 'close'),
+    ));
     firstSession.destroy();
     secondSession.destroy();
     await closed;
