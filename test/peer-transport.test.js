@@ -1297,13 +1297,13 @@ test('mutual TLS rejects a captured signed handshake payload replayed on a diffe
     channelBinding: exporter(firstSession),
   };
   const capturedHandshake = signPeerMessage(replayIdentity, capturedPayload);
-  const capturedFrame = Buffer.from(JSON.stringify(capturedHandshake) + '\\n');
+  const capturedFrame = Buffer.from(JSON.stringify(capturedHandshake) + '\n');
   // Re-sign the captured challenge payload with a fresh envelope nonce so the
   // replay cache cannot be the reason session B rejects it; only the TLS exporter
   // binding differs between the two sessions.
   const replayedFrame = Buffer.from(JSON.stringify(
     signPeerMessage(replayIdentity, capturedPayload),
-  ) + '\\n');
+  ) + '\n');
 
   firstSession.write(capturedFrame);
   await waitFor(() => [...server.connections].some(socket =>
