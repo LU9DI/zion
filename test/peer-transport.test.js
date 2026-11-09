@@ -1217,11 +1217,17 @@ test('concurrent copies of one envelope charge the pre-handshake identity tier o
     unauthenticatedRateLimiter: tierLimiter,
   });
   const address = await server.listen();
-  t.after(async () => { releaseChecks(); await server.close(); });
 
   const first = connect(address.port, '127.0.0.1');
   const second = connect(address.port, '127.0.0.1');
-  t.after(() => { first.destroy(); second.destroy(); });
+  t.after(async () => {
+    releaseChecks();
+    const closed = Promise.all([once(first, 'close'), once(second, 'close')]);
+    first.destroy();
+    second.destroy();
+    await closed;
+    await server.close();
+  });
   await Promise.all([once(first, 'connect'), once(second, 'connect')]);
   await waitFor(() => server.connections.size === 2);
 
@@ -1262,7 +1268,6 @@ test('mutual TLS rejects a captured signed handshake payload replayed on a diffe
     protocolGenesis: genesis,
   });
   const address = await server.listen();
-  t.after(() => server.close());
 
   const firstSession = createTlsConnection({
     ...material.client, host: '127.0.0.1', port: address.port,
@@ -1272,7 +1277,13 @@ test('mutual TLS rejects a captured signed handshake payload replayed on a diffe
     ...material.client, host: '127.0.0.1', port: address.port,
     rejectUnauthorized: true, minVersion: 'TLSv1.2',
   });
-  t.after(() => { firstSession.destroy(); secondSession.destroy(); });
+  t.after(async () => {
+    const closed = Promise.all([once(firstSession, 'close'), once(secondSession, 'close')]);
+    firstSession.destroy();
+    secondSession.destroy();
+    await closed;
+    await server.close();
+  });
   await Promise.all([once(firstSession, 'secureConnect'), once(secondSession, 'secureConnect')]);
 
   await waitFor(() => server.connections.size === 2);
