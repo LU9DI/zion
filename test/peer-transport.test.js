@@ -1276,10 +1276,14 @@ test('mutual TLS rejects a captured signed handshake replayed on a different TLS
   t.after(() => { firstSession.destroy(); secondSession.destroy(); });
   await Promise.all([once(firstSession, 'secureConnect'), once(secondSession, 'secureConnect')]);
 
-  const networkId = calculateNetworkId(genesis);
+  await waitFor(() => server.connections.size === 2);
+  const networkId = server.networkId;
   const exporter = socket => socket.exportKeyingMaterial(
     32, 'EXPORTER-Zion-Peer-Channel-Binding', Buffer.from(networkId, 'utf8'),
   ).toString('hex');
+  const serverSessions = [...server.connections];
+  assert.equal(exporter(firstSession), exporter(serverSessions[0]), 'TLS exporter must match across the first client/server session');
+  assert.equal(exporter(secondSession), exporter(serverSessions[1]), 'TLS exporter must match across the second client/server session');
   const capturedHandshake = signPeerMessage(createNodeIdentity(), {
     type: 'ZION_HANDSHAKE',
     networkId,
