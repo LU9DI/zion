@@ -9,7 +9,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createNodeIdentity, signPeerMessage, PeerRateLimiter } from '../src/peer-security.js';
 import { PeerTransport } from '../src/peer-transport.js';
-import { calculateNetworkId } from '../src/protocol-genesis.js';
 
 function waitFor(predicate, timeoutMs = 1500) {
   return new Promise((resolve, reject) => {
@@ -1281,9 +1280,14 @@ test('mutual TLS rejects a captured signed handshake replayed on a different TLS
   const exporter = socket => socket.exportKeyingMaterial(
     32, 'EXPORTER-Zion-Peer-Channel-Binding', Buffer.from(networkId, 'utf8'),
   ).toString('hex');
-  const serverSessions = [...server.connections];
-  assert.equal(exporter(firstSession), exporter(serverSessions[0]), 'TLS exporter must match across the first client/server session');
-  assert.equal(exporter(secondSession), exporter(serverSessions[1]), 'TLS exporter must match across the second client/server session');
+  const serverSessionFor = clientSocket => [...server.connections].find(
+    socket => socket.remotePort === clientSocket.localPort,
+  );
+  const firstServerSession = serverSessionFor(firstSession);
+  const secondServerSession = serverSessionFor(secondSession);
+  assert.ok(firstServerSession && secondServerSession, 'both client TLS sessions must have matching accepted server sockets');
+  assert.equal(exporter(firstSession), exporter(firstServerSession), 'TLS exporter must match across the first client/server session');
+  assert.equal(exporter(secondSession), exporter(secondServerSession), 'TLS exporter must match across the second client/server session');
   const capturedHandshake = signPeerMessage(createNodeIdentity(), {
     type: 'ZION_HANDSHAKE',
     networkId,
