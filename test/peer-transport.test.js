@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { connect, createServer as createTcpServer } from 'node:net';
+import { connect as createTlsConnection } from 'node:tls';
 import { once } from 'node:events';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
@@ -8,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createNodeIdentity, signPeerMessage, PeerRateLimiter } from '../src/peer-security.js';
 import { PeerTransport } from '../src/peer-transport.js';
+import { calculateNetworkId } from '../src/protocol-genesis.js';
 
 function waitFor(predicate, timeoutMs = 1500) {
   return new Promise((resolve, reject) => {
@@ -1246,4 +1248,60 @@ test('concurrent copies of one envelope charge the pre-handshake identity tier o
     'two concurrent copies of one signed envelope must consume one identity token');
   assert.equal(server.replayGuard.seen.size, 1,
     'only one copy may be admitted into the replay cache');
+});
+
+
+test('mutual TLS rejects a captured signed handshake replayed on a different TLS session', { skip: !opensslAvailable }, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'zion-mtls-channel-binding-replay-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const material = createTlsTestMaterial(directory);
+  const genesis = testGenesis();
+  const server = new PeerTransport({
+    identity: createNodeIdentity(),
+    host: '127.0.0.1',
+    tlsOptions: material.server,
+    protocolGenesis: genesis,
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+
+  const firstSession = createTlsConnection({
+    ...material.client, host: '127.0.0.1', port: address.port,
+    rejectUnauthorized: true, minVersion: 'TLSv1.2',
+  });
+  const secondSession = createTlsConnection({
+    ...material.client, host: '127.0.0.1', port: address.port,
+    rejectUnauthorized: true, minVersion: 'TLSv1.2',
+  });
+  t.after(() => { firstSession.destroy(); secondSession.destroy(); });
+  await Promise.all([once(firstSession, 'secureConnect'), once(secondSession, 'secureConnect')]);
+
+  const networkId = calculateNetworkId(genesis);
+  const exporter = socket => socket.exportKeyingMaterial(
+    32, 'EXPORTER-Zion-Peer-Channel-Binding', Buffer.from(networkId, 'utf8'),
+  ).toString('hex');
+  const capturedHandshake = signPeerMessage(createNodeIdentity(), {
+    type: 'ZION_HANDSHAKE',
+    networkId,
+    protocolMajor: genesis.protocolMajor,
+    nonce: 'a'.repeat(64),
+    channelBinding: exporter(firstSession),
+  });
+  const capturedFrame = Buffer.from(JSON.stringify(capturedHandshake) + '\\n');
+
+  firstSession.write(capturedFrame);
+  await waitFor(() => [...server.connections].some(socket =>
+    socket.__zionSession?.remoteNonce === 'a'.repeat(64),
+  ));
+
+  // The envelope signature and mTLS certificate remain valid, but the TLS exporter
+  // differs on session B. The server must reject the replay for that reason.
+  assert.notEqual(exporter(firstSession), exporter(secondSession));
+  secondSession.write(capturedFrame);
+  await once(secondSession, 'close');
+  assert.equal(
+    [...server.connections].some(socket => socket.__zionSession?.remoteNonce === 'a'.repeat(64)),
+    true,
+    'the original TLS session must retain the accepted handshake',
+  );
 });
