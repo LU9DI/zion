@@ -1329,7 +1329,11 @@ test('mutual TLS rejects a captured signed handshake payload replayed on a diffe
   // differs on session B. The server must reject the replay for that reason.
   assert.notEqual(exporter(firstSession), exporter(secondSession));
   secondSession.write(replayedFrame);
-  await once(secondSession, 'close');
+  // The server already sent a ZION_HANDSHAKE on this socket, so after it destroys
+  // the session-side socket the client does not reliably emit 'close'. Observe the
+  // server-side socket close instead: it is the direct evidence that the replayed
+  // frame tore down this session.
+  await once(secondServerSession, 'close');
   assert.equal(
     [...server.connections].some(socket => socket.__zionSession?.remoteNonce === 'a'.repeat(64)),
     true,
