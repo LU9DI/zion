@@ -131,11 +131,26 @@ test('PostgreSQL migration and independent-process admission races enforce capac
       ok: true, subjectNodeId: id('9'), status: 'active',
     });
 
-    const revoked = await revocationStore.revokeAdmission(id('9'));
-    assert.deepEqual(
-      { ok: revoked.ok, changed: revoked.changed, status: revoked.status },
-      { ok: true, changed: true, status: 'revoked' },
-    );
+    // A dedicated session must observe the notification only after the durable
+    // status transition commits; the listener is independent of pooled query sessions.
+    const notificationClient = await pool.connect();
+    try {
+      await notificationClient.query('LISTEN zion_peer_revocations');
+      const notification = new Promise(resolve => notificationClient.once('notification', resolve));
+      const revoked = await revocationStore.revokeAdmission(id('9'));
+      assert.deepEqual(
+        { ok: revoked.ok, changed: revoked.changed, status: revoked.status },
+        { ok: true, changed: true, status: 'revoked' },
+      );
+      const event = await Promise.race([
+        notification,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('revocation notification timed out')), 2000)),
+      ]);
+      assert.equal(event.channel, 'zion_peer_revocations');
+      assert.equal(event.payload, id('9'));
+    } finally {
+      try { await notificationClient.query('UNLISTEN zion_peer_revocations'); } finally { notificationClient.release(); }
+    }
     const repeatedRevocation = await revocationStore.revokeAdmission(id('9'));
     assert.deepEqual(
       { ok: repeatedRevocation.ok, changed: repeatedRevocation.changed, status: repeatedRevocation.status },
