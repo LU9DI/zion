@@ -261,6 +261,12 @@ export class PostgresPeerAdmissionStore {
       return { ok: false, reason: 'invalid-input' };
     }
     return this.#transaction(async client => {
+      // Every transition out of active admission must serialize against the same
+      // shared dispatch fence, not only the explicit revoke() API.
+      await client.query(
+        'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+        [subjectNodeId],
+      );
       const capacityResult = await client.query(
         'SELECT active_reservations FROM peer_admission_capacity WHERE singleton = true FOR UPDATE',
       );
@@ -275,9 +281,12 @@ export class PostgresPeerAdmissionStore {
         await client.query(
           'UPDATE peer_admission_capacity SET active_reservations = GREATEST(0, active_reservations - 1), updated_at = now() WHERE singleton = true',
         );
+        // Reuse the revocation channel for any transition that removes admission.
+        // Consumers always re-check durable state before dispatch.
+        await client.query("SELECT pg_notify('zion_peer_revocations', $1)", [subjectNodeId]);
       }
       return { ok: true, changed: Boolean(updated.rows?.length), subjectNodeId, status };
-    }).catch(error => {
+    }, { isolation: 'READ COMMITTED' }).catch(error => {
       if (error?.code === 'ZION_ADMISSION_CONFIG_MISSING' ||
         error?.code === 'ZION_ADMISSION_COMMIT_OUTCOME_UNKNOWN') {
         return { ok: false, reason: 'admission-state-unavailable' };
