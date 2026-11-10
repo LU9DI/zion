@@ -7,8 +7,8 @@ const CHANNEL = 'zion_peer_revocations';
  * per-frame admission checks because LISTEN gaps can occur during reconnects.
  */
 export class PostgresPeerRevocationListener {
-  constructor({ pool, onRevocation, minReconnectMs = 250, maxReconnectMs = 30_000 } = {}) {
-    if (!pool || typeof pool.connect !== 'function' || typeof onRevocation !== 'function' ||
+  constructor({ pool, onRevocation = null, minReconnectMs = 250, maxReconnectMs = 30_000 } = {}) {
+    if (!pool || typeof pool.connect !== 'function' || (onRevocation !== null && typeof onRevocation !== 'function') ||
       !Number.isSafeInteger(minReconnectMs) || minReconnectMs < 10 ||
       !Number.isSafeInteger(maxReconnectMs) || maxReconnectMs < minReconnectMs) {
       throw new TypeError('Invalid PostgreSQL peer-revocation listener configuration');
@@ -25,7 +25,9 @@ export class PostgresPeerRevocationListener {
     this.generation = 0;
   }
 
-  async start() {
+  async start(onRevocation = this.onRevocation) {
+    if (typeof onRevocation !== 'function') throw new TypeError('A revocation callback is required');
+    this.onRevocation = onRevocation;
     if (this.running) return;
     this.running = true;
     this.generation++;
