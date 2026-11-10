@@ -59,6 +59,28 @@ test('transport defaults to loopback and bounds frames', async t => {
   await server.close();
 });
 
+test('transport enforces an absolute deadline for slowly fragmented frames', async t => {
+  let received = false;
+  const server = new PeerTransport({
+    identity: createNodeIdentity(),
+    frameAssemblyTimeoutMs: 120,
+    onMessage: async () => { received = true; },
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const socket = connect(address.port, '127.0.0.1');
+  t.after(() => socket.destroy());
+  await once(socket, 'connect');
+
+  // Keep the connection active with fragments arriving inside the ordinary
+  // 15-second idle timeout. The absolute frame deadline must still expire.
+  socket.write('{"slow":');
+  await new Promise(resolve => setTimeout(resolve, 70));
+  socket.write('"fragmented"');
+  await waitFor(() => socket.destroyed, 600, 'slow partial frame was not terminated');
+  assert.equal(received, false, 'an incomplete frame must never reach the message handler');
+});
+
 test('listen does not start a server if close races with an asynchronous integrity check', async () => {
   const identity = createNodeIdentity();
   let releaseHealthCheck;
