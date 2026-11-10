@@ -2,61 +2,54 @@
 
 ## Status
 
-Design proposal only. This document does not implement revocation and must not be treated as an operational revocation mechanism.
+Design proposal only. This document does not implement transport-level revocation and must not be treated as an operational revocation mechanism.
 
-## Current behavior and security gap
+## Existing mechanisms and actual gap
 
-The admission controller persists consumed introduction vouchers and admitted peer identities. Its state is coordinated by a single-process promise queue. The file-backed store uses atomic replacement and a checksum, but explicitly does not provide cross-process transactions. The transport caches admitted identities while at least one session for that identity remains connected.
+The repository already contains part of the durable revocation primitive in the PostgreSQL model:
 
-There is currently no controller API to revoke an admitted identity, no durable revocation record, and no transport API that atomically closes every active session for a peer. Removing an identity from an in-memory cache alone would therefore be insufficient: a persisted admission could be read again, an already-authenticated socket could continue sending, or another process could retain stale state.
+- `migrations/postgres/0001_peer_admission.sql` defines `peer_admissions.status` with `active`, `released`, and `revoked`.
+- `PostgresPeerAdmissionStore.releaseAdmission(subjectNodeId, 'revoked')` changes an active row to `revoked` transactionally and decrements active capacity exactly once.
+- `commitAdmission()` inserts by the subject primary key, so an existing revoked row cannot be silently re-admitted under the same identity.
+- The PostgreSQL store is not wired into `PeerAdmissionController`, and there is no authoritative status/read API exposed to the transport.
+- The file-backed controller persists only version-1 `consumed` and `admissions` arrays and has no revocation state or revocation method.
+- The transport has no public revocation operation that closes every active session for a node ID or fences in-flight frames/handshakes.
+
+Therefore, do not create a parallel PostgreSQL revocation table without a demonstrated need. The existing status column is the preferred durable source of truth for the PostgreSQL adapter. File-store support requires an explicit, backward-compatible state-version migration (or a separately justified tombstone design), not silently extending version 1.
 
 ## Required security properties
 
-A future implementation must satisfy all of the following:
+1. **Durable deny decision:** persist the revoked status before reporting success. If the commit outcome is ambiguous, fail closed and reconcile authoritative state before allowing new admissions.
+2. **No silent re-admission:** a revoked node ID cannot be admitted with fresh or previously issued vouchers. Reinstatement, if ever supported, must be a separate explicit administrative operation with auditable authorization.
+3. **Capacity accounting:** transition from active to revoked decrements active reservations exactly once; repeated revocation is idempotent and must not decrement again. A released row must not be confused with a security revocation.
+4. **Session termination:** every active socket authenticated as the revoked node is destroyed, including multiple simultaneous sessions.
+5. **Receive-side enforcement:** after revocation commits, no application frame from that identity may reach `onMessage`. Closing sockets is primary; a receive-side authorization/fencing check must cover queued frames and races.
+6. **Race serialization:** admission and revocation for the same subject share an authoritative serialization boundary. A racing handshake must not become usable after revocation commits.
+7. **Restart safety:** revoked identities remain denied after process restart and authoritative store reload.
+8. **Bounded state:** file-store migration must enforce record and byte limits. Exhaustion fails closed; it must not discard old revocations.
+9. **No false distributed guarantee:** the file store and process-local Promise queue are single-process only. Multi-process operation requires the PostgreSQL transactional store (or equivalent) to be integrated and queried consistently.
 
-1. **Durable deny decision:** revocation is persisted before the operation reports success. A persistence error puts the controller into its existing fail-closed unavailable state.
-2. **No silent re-admission:** a revoked node ID cannot be re-admitted by presenting fresh or previously issued vouchers. Reinstatement, if ever supported, must be a separate explicit administrative operation with an auditable transition.
-3. **Session termination:** every active socket authenticated as the revoked node is destroyed, including multiple simultaneous sessions.
-4. **Receive-side enforcement:** after revocation commits, no application frame from that identity may reach `onMessage`. Closing sockets is the primary mechanism; a receive-side authorization check must cover queued frames and races with revocation.
-5. **Race serialization:** admission, revocation, and persistence must share one serialization boundary. A handshake racing revocation must resolve to exactly one outcome: either admission completes before revocation and the session is then terminated, or revocation wins and admission is rejected.
-6. **Restart safety:** revoked identities remain denied after process restart and state-store reload.
-7. **Bounded state:** revocation records have explicit cardinality and byte limits. Capacity exhaustion fails closed; it must not silently discard older revocations.
-8. **No false distributed guarantee:** the current file store and in-memory queue are single-process only. Multi-process deployments require a transactional shared store with uniqueness/serialization guarantees and a consistent revocation read path.
+## Required API boundary
 
-## State format and migration
+The PostgreSQL adapter should expose an explicit `revokeAdmission(subjectNodeId)` operation (or a narrowly scoped wrapper over `releaseAdmission(subjectNodeId, 'revoked')`) and an authoritative `getAdmissionStatus(subjectNodeId)` query. Both must validate identifiers, handle missing rows deterministically, and treat ambiguous commit outcomes as unavailable. A status query must not treat `released` as `revoked`.
 
-Do not add a `revoked` array to version 1 and silently accept it. Introduce an explicit state schema version and a migration that:
+The file-backed controller needs an explicit versioned state migration that preserves consumed vouchers and admissions while adding durable revocation tombstones. Its queue must serialize admission and revocation. On save failure, retain the existing fail-closed behavior because the write may have committed despite an error.
 
-- preserves every consumed voucher key;
-- preserves every admitted subject and issuer list;
-- initializes the revocation set as empty for legacy version 1 snapshots;
-- validates uniqueness, ID format, record count, and total serialized size;
-- writes the migrated snapshot atomically before the controller becomes available.
+The transport should expose `revokePeer(subjectNodeId)`: commit durable revocation first, then destroy every matching active socket, invalidate the peer's ephemeral cache, and fence any in-flight handshake or frame dispatch. It must not report success if persistence failed. Do not expose a remote unauthenticated protocol message that lets any peer revoke another peer.
 
-A failed migration must prevent the admission controller from serving requests.
+## Required tests before implementation is complete
 
-## Proposed API boundary
-
-The controller should expose a serialized `revoke(subjectNodeId, metadata)` operation and an authoritative `isRevoked(subjectNodeId)` query. Metadata should be bounded and non-secret (for example, reason code and timestamp); do not store arbitrary operator-supplied text without limits.
-
-The transport should expose an explicit `revokePeer(subjectNodeId)` operation that first commits controller revocation, then destroys all matching sockets and clears only the corresponding ephemeral cache entries. It must not report success if durable revocation failed.
-
-Avoid automatic un-revocation or deletion of consumed vouchers. A future reinstatement path requires separate authorization and audit semantics.
-
-## Required tests before implementation is considered complete
-
-- valid revocation persists and survives constructing a new controller from the same store;
-- malformed IDs and duplicate revocations are deterministic and do not corrupt state;
-- persistence failure rejects revocation and makes subsequent admission checks fail closed;
-- admission and revocation racing on the same identity are serialized;
-- two or more active sockets for one identity are all terminated;
-- a frame queued before revocation cannot reach the application handler after revocation commits;
-- a handshake racing revocation cannot leave an authenticated session alive;
-- a revoked identity with fresh valid vouchers is rejected and does not consume replay-cache capacity;
-- revocation-state capacity exhaustion fails closed;
-- schema migration preserves voucher consumption and prior admissions;
-- multi-process behavior is tested against the actual shared transactional store before being claimed as supported.
+- PostgreSQL: active-to-revoked transition commits; duplicate revocation is idempotent; capacity decrements once; released is distinct from revoked.
+- PostgreSQL: revoked subject cannot be re-admitted with fresh valid vouchers; consumed voucher uniqueness remains intact.
+- PostgreSQL: ambiguous commit fails closed and status is reconciled from the authoritative database after reconnect/restart.
+- File store: version-1 snapshots migrate without losing consumed voucher keys or admissions; revoked tombstones survive restart.
+- File store: malformed IDs, duplicate tombstones, size limits, and persistence failure fail closed.
+- Controller: admission and revocation racing for one identity serialize deterministically.
+- Transport: all simultaneous sessions for the identity are destroyed.
+- Transport: a queued frame and an in-flight handshake cannot reach application handling or remain authenticated after revocation commits.
+- Transport: a revoked peer with fresh valid vouchers is rejected before replay-cache insertion.
+- Multi-process behavior is tested against the actual shared transactional store before being claimed as supported.
 
 ## Rollout constraints
 
-Keep revocation behind an explicit API until the persistent schema, transport lifecycle, and concurrency tests are complete. Do not advertise this feature as available based on cache eviction or socket closure alone. Do not merge or deploy this design document as if it were an implementation.
+Keep revocation behind an explicit administrative API until the persistent state, transport lifecycle, and concurrency tests are complete. Do not advertise the existing PostgreSQL status column as a complete revocation feature: it currently covers durable status and capacity accounting only, not controller integration or live-session termination. Do not merge or deploy this design document as if it were an implementation.
