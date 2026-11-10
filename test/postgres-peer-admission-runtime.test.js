@@ -5,6 +5,7 @@ import { createPostgresPeerAdmissionRuntime } from '../src/postgres-peer-admissi
 import { PostgresPeerAdmissionController } from '../src/peer-admission-postgres-controller.js';
 import { PostgresPeerRevocationListener } from '../src/peer-admission-postgres-listener.js';
 import { PostgresPeerAdmissionStore } from '../src/peer-admission-postgres-store.js';
+import { OfficialNodeBootstrap } from '../src/official-node-bootstrap.js';
 
 const id = digit => digit.repeat(64);
 
@@ -23,7 +24,8 @@ function testGenesis() {
 
 function integrityGuard() {
   return {
-    status: { quarantined: false },
+    status: { quarantined: false, verified: true },
+    verify: async () => ({ ok: true }),
     checkHealthy: async () => {},
     assertHealthy() {},
     addQuarantineListener() { return () => {}; },
@@ -74,4 +76,51 @@ test('PostgreSQL runtime rejects legacy mode and externally supplied admission a
   assert.throws(() => createPostgresPeerAdmissionRuntime({
     ...base, transportOptions: { admissionController: {}, revocationListener: {} },
   }), /managed by this runtime/);
+});
+
+test('OfficialNodeBootstrap starts and stops the composed PostgreSQL listener with transport lifecycle', async () => {
+  const clients = [];
+  const pool = {
+    async connect() {
+      const client = new EventEmitter();
+      client.queries = [];
+      client.query = async sql => { client.queries.push(sql); return { rows: [] }; };
+      client.release = () => { client.released = true; };
+      clients.push(client);
+      return client;
+    },
+  };
+  const guard = integrityGuard();
+  const identity = createNodeIdentity();
+  const runtime = createPostgresPeerAdmissionRuntime({
+    pool,
+    controllerOptions: {
+      trustedIssuerNodeIds: [id('1')],
+      capacityProvider: async () => ({ activePeers: 0, maxPeers: 10, storageHeadroomRatio: 0.5 }),
+    },
+    transportOptions: {
+      identity,
+      integrityGuard: guard,
+      protocolGenesis: testGenesis(),
+      trustedPeerIds: [identity.nodeId],
+      onMessage: async () => {},
+    },
+  });
+  let storageRunning = false;
+  const bootstrap = new OfficialNodeBootstrap({
+    integrityGuard: guard,
+    transport: runtime.transport,
+    startStorage: async () => { storageRunning = true; },
+    stopStorage: async () => { storageRunning = false; },
+    getStorageStatus: async () => ({ running: storageRunning }),
+  });
+
+  await bootstrap.start();
+  assert.equal(runtime.revocationListener.running, true);
+  assert.deepEqual(clients[0].queries, ['LISTEN zion_peer_revocations']);
+  await bootstrap.close();
+  assert.equal(runtime.revocationListener.running, false);
+  assert.deepEqual(clients[0].queries, ['LISTEN zion_peer_revocations', 'UNLISTEN zion_peer_revocations']);
+  assert.equal(clients[0].released, true);
+  assert.equal(storageRunning, false);
 });
