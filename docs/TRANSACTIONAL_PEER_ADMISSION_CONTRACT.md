@@ -1,82 +1,83 @@
 # Transactional peer-admission backend contract
 
-Status (2026-10-10): PostgreSQL schema migration, initial injected-pool transaction store, CI PostgreSQL 16 service, and real-database integration tests using independent Node.js processes are committed. The integration test covers capacity serialization, release accounting, duplicate invitation nonce races, duplicate subject races, and issuer quota races. The workflow is configured to run these checks, but a successful run for the latest test commit must be confirmed before treating the test suite as green. **The store is still not wired into `PeerAdmissionController`; production rollout, restart reconciliation, and operational migration/restore remain incomplete.**
+Status (2026-11-10): the PostgreSQL schema, transactional store, PostgreSQL-backed admission controller, dedicated revocation listener, per-frame distributed dispatch fence, and runtime composition helper are implemented. The validation workflow has exercised the real PostgreSQL 16 integration tests with independent Node.js processes, including capacity, issuer quota, duplicate nonce/subject races, release accounting, and dispatch-versus-revocation ordering. The latest runtime-composition commits still require their own CI and CodeQL results. **This is not yet a production rollout: deployment-specific configuration, migration/backup operations, and restart reconciliation remain operator responsibilities and have not been certified.**
 
 ## Why the file store is insufficient
 
-`PeerAdmissionController` currently serializes operations with a Promise queue and commits a local snapshot. That queue exists only inside one JavaScript process. Two processes can both load the same snapshot, validate the same invitation nonces, pass issuer quotas and capacity checks, then overwrite one another's snapshots. Atomic rename and a checksum do not make the read/validate/write sequence transactional. A failed save also has an ambiguous outcome; the controller now fails closed for the remainder of that process.
+`PeerAdmissionController` with `FilePeerAdmissionStateStore` serializes operations only inside one JavaScript process. Two processes can both load the same snapshot, validate the same invitation nonces, pass issuer quotas and capacity checks, then overwrite one another's snapshots. Atomic rename and a checksum do not make the read/validate/write sequence transactional.
 
-Do not run multiple admission coordinators against `FilePeerAdmissionStateStore`, a shared filesystem snapshot, or a generic key-value store without a proven transaction primitive.
+Do not run multiple admission coordinators against the file-backed store, a shared filesystem snapshot, or a generic key-value store without a proven transaction primitive. The file-backed controller's compatibility fence is local-only and does not provide persistent or cross-process revocation.
 
-## Required adapter boundary
+## PostgreSQL implementation
 
-A production adapter must expose an operation equivalent to:
+The executable schema is `migrations/postgres/0001_peer_admission.sql`. It defines normalized issuer membership, unique invitation consumption, policy and capacity singleton rows, and constrained admission states.
 
-```ts
-withAdmissionTransaction<T>(
-  work: (tx: AdmissionTransaction) => Promise<T>
-): Promise<T>
+The implementation is split across:
+
+- `src/peer-admission-postgres-store.js`: injected node-postgres-compatible pool, transactional admission, authoritative status, shared/exclusive advisory-lock dispatch fence, revocation and administrative release.
+- `src/peer-admission-postgres-controller.js`: trusted-voucher verification and controller facade over the store.
+- `src/peer-admission-postgres-listener.js`: dedicated `LISTEN` connection with bounded reconnect and strict notification payload validation.
+- `src/postgres-peer-admission-runtime.js`: composes store, controller, listener, and official `PeerTransport` from deployment-supplied dependencies.
+
+Example composition:
+
+```js
+const runtime = createPostgresPeerAdmissionRuntime({
+  pool, // caller-owned node-postgres-compatible pool
+  controllerOptions: {
+    trustedIssuerNodeIds,
+    capacityProvider, // authoritative deployment adapter
+  },
+  transportOptions: {
+    identity,
+    integrityGuard,
+    protocolGenesis,
+    trustedPeerIds,
+    onMessage,
+    // host, port, TLS, limits, and transfer scheduler as required
+  },
+});
+
+// Give this exact transport to OfficialNodeBootstrap.
+const bootstrap = new OfficialNodeBootstrap({
+  integrityGuard,
+  transport: runtime.transport,
+  startStorage,
+  stopStorage,
+});
 ```
 
-The callback must run against one database transaction, with commit/rollback owned by the adapter. The transaction interface must support:
+The factory deliberately does not create a pool, load secrets, apply migrations, choose trusted issuers, or invent a storage-capacity provider. The caller owns pool lifecycle and passes the same pool to the store and listener. Do not pass separate admission adapters in `transportOptions`; the factory rejects those overrides.
 
-- Reading and locking the authoritative admission policy/capacity row(s).
-- Checking whether a subject has already been admitted.
-- Atomically consuming a set of invitation keys.
-- Enforcing per-issuer admission quotas.
-- Reserving one unit of peer capacity.
-- Writing the admission record and consumption records.
-- Returning success only after the database confirms commit.
+## Transaction and dispatch guarantees
 
-The callback must not perform network calls or unbounded work while holding locks. Cryptographic voucher verification and syntactic validation should happen before opening the transaction; all mutable facts (nonce uniqueness, subject uniqueness, issuer quota, rollout/capacity reservation) must be rechecked inside it.
+Admission writes use serializable transactions, singleton policy/capacity row locks, normalized issuer-quota checks, uniqueness constraints, and bounded retries of the entire transaction for serialization/deadlock errors. A commit failure after COMMIT begins is treated as ambiguous: the store latches admission operations closed for that process and requires authoritative reconciliation rather than blindly replaying a potentially committed write.
 
-A generic `load()` + `save()` pair is not a substitute for this interface. Neither a process-local mutex nor a transaction around only the final write is sufficient.
+For application dispatch, `withAdmissionFence(subjectNodeId, work)` obtains a transaction-scoped shared advisory lock, reads durable admission status, and holds the connection and lock through the bounded application callback. Revocation and administrative release take the matching exclusive advisory lock before changing status. This linearizes each admission-controlled frame against every transition out of active status across processes.
 
-## PostgreSQL reference model
+Notifications are sent transactionally and delivered only after commit. They are an acceleration path for closing local sessions, not the authorization boundary: each subsequent frame still checks durable status under the shared fence. The listener uses a dedicated pool connection, so pool sizing must account for that reserved connection plus concurrent in-flight frame handlers.
 
-The executable schema draft is committed at `migrations/postgres/0001_peer_admission.sql`. `src/peer-admission-postgres-store.js` provides an initial transaction-bound persistence API for a node-postgres-compatible injected pool, with serializable transactions, singleton-row locks, uniqueness handling, issuer-quota checks, capacity reservation, bounded serialization/deadlock retries, and release/revoke operations. Fake-pool unit tests cover transaction boundaries and rollback behavior. The real PostgreSQL 16 integration test applies the migration and starts independent Node.js processes, each with its own pool, to race admission attempts. It covers one-slot capacity, the same invitation nonces across different subjects, the same subject with different invitations, issuer quota one, and release/capacity accounting. The migration is applied by the integration test, not automatically by the runtime. **This test coverage does not mean the latest workflow run has passed, and the store is not yet integrated into `PeerAdmissionController`.**
+The dispatch callback executes while a database transaction, connection, and lock are held. It must be bounded and must not wait on unrelated long-running work. Do not use a timeout wrapper that releases the transaction while the callback continues.
 
-Important: the schema and implementation are an initial adapter, not a production-ready admission system. The implementation must validate identifier and nonce encodings, cap array sizes, prevent duplicate issuer IDs in a row, and use normalized issuer-admission rows (with a unique key on `subject_node_id, issuer_node_id`) if quota queries rely on issuer membership. The current migration does use normalized issuer rows. Trusted issuer configuration and cryptographic voucher verification remain caller responsibilities.
+The guarantee applies to admission-controlled sessions. Peers independently trusted by the explicit bootstrap allowlist remain governed by that allowlist.
 
-## Required transaction algorithm
+## External capacity and policy inputs
 
-Use a real serializable transaction or a carefully reviewed locking strategy that provides equivalent guarantees. Handle serialization failures by retrying the entire bounded transaction with a finite retry limit; never retry only the final insert.
+Voucher signatures, subject binding, issuer trust, expiry, nonce syntax, and distinct issuer identities are checked before admission persistence. Mutable database facts (subject uniqueness, consumed nonces, issuer quota, and reserved peer capacity) are checked transactionally.
 
-1. Validate voucher signatures, subject binding, issuer trust, expiry, nonce syntax, and distinct issuer identities before entering the transaction.
-2. Begin a transaction and lock the singleton capacity/policy row (or use a proven atomic capacity reservation).
-3. Re-read current policy, rollout stage, active reservations, and storage headroom from authoritative sources. If those facts are external and cannot be locked or versioned, explicitly define the stale-data bound and fail closed when unavailable.
-4. Check the subject does not already exist.
-5. Check each `(issuer_node_id, nonce)` is unconsumed. Database uniqueness remains the final arbiter under races.
-6. Check issuer quotas using normalized issuer-membership rows inside the same transaction.
-7. Reserve capacity atomically, subject to the configured cap and policy version.
-8. Insert the admission, issuer-membership rows, and consumed invitation rows in the same transaction.
-9. Commit. Only then report success or let transport accept the peer.
-10. On any constraint conflict, serialization failure beyond retry limit, unavailable capacity state, or ambiguous commit, return a typed failure and reconcile authoritative state before allowing further admissions.
+The controller's `capacityProvider` supplies active-peer count, max-peer limit, and storage headroom. These values are external to the PostgreSQL transaction unless the deployment explicitly sources/version-controls them in the same database. A production deployment must define their freshness bound, fail closed when unavailable, and avoid treating a stale physical-storage snapshot as a durable reservation. Real distributed storage capacity requires leases/reservations with expiry and reconciliation.
 
-## Required concurrency and failure tests
+## Required operational gates before production
 
-The real PostgreSQL integration test now exercises independent processes and checks persisted state for:
-- Two independent processes racing the same nonce: exactly one transaction commits.
-- Two processes racing the same subject: exactly one admission exists.
-- Concurrent admissions cannot exceed an issuer's quota of one.
-- Concurrent admissions cannot exceed a one-peer capacity reservation.
-- Release decrements active reservations and removes the peer from the active set.
-
-Additional gates remain:
-- Rollback leaves no consumed nonce, membership row, or capacity reservation behind.
-- Simulated connection loss during commit is treated as ambiguous; the client re-reads authoritative state before retrying. (Fail-closed latch exists, but durable restart reconciliation is outstanding.)
-- Database restart preserves admission, nonce, quota, and capacity invariants.
-- Serialization/deadlock retries are bounded and rerun the complete transaction.
-- Repeated migration/upgrade/rollback and backup-restore behavior is validated against realistic operational data.
-
-## Rollout and security constraints
-
-- Keep `FilePeerAdmissionStateStore` explicitly single-process and suitable only for local/test deployments.
-- Do not enable a distributed deployment until the transactional adapter is integrated, migrations and operational backups are validated, restart reconciliation exists, and the multi-process tests pass in CI.
-- Database uniqueness protects against concurrent duplicate writes, not malicious administrators or rollback of restored backups. Backup rollback requires a separate monotonic epoch/checkpoint or external witness design.
-- A database transaction cannot atomically reserve real physical storage on remote peers. Distributed storage capacity must use leases/reservations with expiry and reconciliation, not a snapshot number alone.
-- The admission database is security-sensitive metadata. Apply least-privilege credentials, TLS, access controls, bounded queries, retention rules, and audit logging without logging invitation secrets.
+- Apply and verify migration `0001_peer_admission.sql` through a reviewed deployment migration process. Runtime startup does not apply migrations automatically.
+- Provision the PostgreSQL pool with TLS, least-privilege credentials, bounded connection counts/timeouts, monitoring, and backup/restore procedures. Size it for the dedicated listener connection and dispatch transactions held through callbacks.
+- Supply trusted issuer IDs, genesis, bootstrap allowlist, identity, mutual-TLS material for non-loopback transport, and an authoritative capacity provider through deployment-owned configuration.
+- Construct the runtime with `createPostgresPeerAdmissionRuntime` and pass its exact `transport` to `OfficialNodeBootstrap`. Confirm that the production entrypoint actually uses this composition; component tests alone do not prove deployment wiring.
+- Define restart reconciliation for ambiguous commits and capacity counters. The current in-process fail-closed latch does not survive restart and is not a durable reconciliation protocol.
+- Exercise database restart, backup restore, migration upgrade/rollback, and counter reconciliation against realistic operational data.
+- Keep the file-backed controller single-process only.
+- Protect admission metadata and audit logs; never log invitation secrets or bearer material.
 
 ## Acceptance gate
 
-The schema and initial store are not a production-ready integrated backend. The controller still uses its existing `stateStore` API, and the PostgreSQL store has fake-pool unit coverage plus newly added real-database multi-process tests. Before production use, wire cryptographically verified vouchers to this transaction boundary, confirm CI results, test ambiguous commits and restart/reconciliation, and validate migration/rollback operations. Until those gates pass, the controller's documented guarantee remains single-process only, and Zion remains not production-ready.
+The component-level PostgreSQL path and concurrency tests are implemented, and CI has validated the real PostgreSQL integration path on prior commits. The new composition helper has dedicated unit tests but must pass CI and CodeQL at its current commit. Production readiness additionally requires the deployment to wire the helper into the official bootstrap, apply and rehearse migrations, validate capacity-provider freshness, and implement durable restart reconciliation and backup/restore procedures. Until those gates are demonstrated, do not describe Zion's distributed peer admission as production-ready.
