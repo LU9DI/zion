@@ -597,6 +597,208 @@ test('official transport admits an unknown peer only when its signed handshake c
   await waitFor(() => !server.admittedPeerIds.has(newcomer.nodeId));
 });
 
+test('admission-store failure refunds the unauthenticated tier token and closes the peer', async t => {
+  const genesis = testGenesis('Zion admission-store failure');
+  const seed = createNodeIdentity();
+  const newcomer = createNodeIdentity();
+  let refunds = 0;
+  const integrityGuard = { async checkHealthy() {}, assertHealthy() {} };
+  const admissionController = {
+    async isAdmitted() { throw new Error('admission database unavailable'); },
+    async admit() { throw new Error('must not attempt admission after failed lookup'); },
+  };
+  const unauthenticatedRateLimiter = {
+    allow() { return true; },
+    refund(nodeId) { assert.equal(nodeId, newcomer.nodeId); refunds++; return true; },
+  };
+  const server = new PeerTransport({
+    identity: seed, networkMode: 'official', protocolGenesis: genesis, integrityGuard,
+    trustedPeerIds: [seed.nodeId], admissionController, unauthenticatedRateLimiter,
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({ identity: newcomer, protocolGenesis: genesis });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(() => { socket.destroy(); client.close(); });
+  await waitFor(() => socket.destroyed);
+  assert.equal(refunds, 1, 'failed authorization lookup must restore the charged tier token');
+  assert.equal(server.replayGuard.seen.size, 0, 'storage failure must not consume replay-cache capacity');
+});
+
+test('admission persistence failure refunds the tier token without replay admission', async t => {
+  const genesis = testGenesis('Zion admission persistence failure');
+  const seed = createNodeIdentity();
+  const newcomer = createNodeIdentity();
+  let reads = 0;
+  let refunds = 0;
+  const admissionController = {
+    async isAdmitted() { reads++; return false; },
+    async admit() { throw new Error('admission state persistence failed'); },
+  };
+  const unauthenticatedRateLimiter = {
+    allow() { return true; },
+    refund(nodeId) { assert.equal(nodeId, newcomer.nodeId); refunds++; return true; },
+  };
+  const integrityGuard = { async checkHealthy() {}, assertHealthy() {} };
+  const server = new PeerTransport({
+    identity: seed,
+    networkMode: 'official',
+    protocolGenesis: genesis,
+    integrityGuard,
+    trustedPeerIds: [seed.nodeId],
+    admissionController,
+    unauthenticatedRateLimiter,
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({
+    identity: newcomer,
+    protocolGenesis: genesis,
+    trustedPeerIds: [seed.nodeId],
+  });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(() => { socket.destroy(); client.close(); });
+
+  await waitFor(() => socket.destroyed);
+  assert.ok(reads >= 1, 'the admission state must be checked before persistence is attempted');
+  assert.equal(refunds, 1, 'a failed admission persistence attempt must refund the tier token once');
+  assert.equal(server.replayGuard.seen.size, 0, 'failed admission must not consume replay-cache capacity');
+});
+
+test('admission read-back failure after persistence fails closed and refunds the tier token', async t => {
+  const genesis = testGenesis('Zion admission read-back failure');
+  const seed = createNodeIdentity();
+  const newcomer = createNodeIdentity();
+  let reads = 0;
+  let refunds = 0;
+  const admissionController = {
+    async isAdmitted() {
+      reads++;
+      if (reads === 1) return false;
+      throw new Error('admission read-back unavailable');
+    },
+    async admit() { return { ok: true, subjectNodeId: newcomer.nodeId }; },
+  };
+  const unauthenticatedRateLimiter = {
+    allow() { return true; },
+    refund(nodeId) { assert.equal(nodeId, newcomer.nodeId); refunds++; return true; },
+  };
+  const integrityGuard = { async checkHealthy() {}, assertHealthy() {} };
+  const server = new PeerTransport({
+    identity: seed,
+    networkMode: 'official',
+    protocolGenesis: genesis,
+    integrityGuard,
+    trustedPeerIds: [seed.nodeId],
+    admissionController,
+    unauthenticatedRateLimiter,
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({
+    identity: newcomer,
+    protocolGenesis: genesis,
+    trustedPeerIds: [seed.nodeId],
+  });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(() => { socket.destroy(); client.close(); });
+
+  await waitFor(() => socket.destroyed);
+  assert.equal(reads, 2, 'the persisted admission must be verified before the handshake is accepted');
+  assert.equal(refunds, 1, 'failed read-back must refund the tier token once');
+  assert.equal(server.replayGuard.seen.size, 0, 'unverified admission must not consume replay-cache capacity');
+});
+
+test('concurrent handshakes for one identity persist invitation admission only once', async t => {
+  const { createPeerIntroductionVoucher } = await import('../src/peer-introduction-vouchers.js');
+  const { PeerAdmissionController } = await import('../src/peer-admission-controller.js');
+  const genesis = testGenesis('Zion concurrent admission');
+  const issuerA = createNodeIdentity();
+  const issuerB = createNodeIdentity();
+  const newcomer = createNodeIdentity();
+  const seed = createNodeIdentity();
+  const vouchers = [
+    createPeerIntroductionVoucher({ issuerIdentity: issuerA, subjectNodeId: newcomer.nodeId }),
+    createPeerIntroductionVoucher({ issuerIdentity: issuerB, subjectNodeId: newcomer.nodeId }),
+  ];
+
+  let persistedState = null;
+  let saveCalls = 0;
+  let releaseSave;
+  let notifySaveStarted;
+  const saveGate = new Promise(resolve => { releaseSave = resolve; });
+  const saveStarted = new Promise(resolve => { notifySaveStarted = resolve; });
+  const controller = new PeerAdmissionController({
+    trustedIssuerNodeIds: [issuerA.nodeId, issuerB.nodeId],
+    threshold: 2,
+    stateStore: {
+      load: () => persistedState,
+      async save(next) {
+        saveCalls++;
+        notifySaveStarted();
+        await saveGate;
+        persistedState = structuredClone(next);
+      },
+    },
+    capacityProvider: async () => ({ activePeers: 0, maxPeers: 10, storageHeadroomRatio: 0.5 }),
+  });
+
+  let initialReads = 0;
+  let releaseInitialReads;
+  const initialReadsGate = new Promise(resolve => { releaseInitialReads = resolve; });
+  let admitCalls = 0;
+  const admissionController = {
+    async isAdmitted(nodeId) {
+      if (initialReads < 2) {
+        initialReads++;
+        if (initialReads === 2) releaseInitialReads();
+        await initialReadsGate;
+      }
+      return controller.isAdmitted(nodeId);
+    },
+    admit(input) {
+      admitCalls++;
+      return controller.admit(input);
+    },
+  };
+  const integrityGuard = { async checkHealthy() {}, assertHealthy() {} };
+  const server = new PeerTransport({
+    identity: seed,
+    networkMode: 'official',
+    protocolGenesis: genesis,
+    integrityGuard,
+    trustedPeerIds: [issuerA.nodeId, issuerB.nodeId],
+    admissionController,
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({
+    identity: newcomer,
+    networkMode: 'official',
+    protocolGenesis: genesis,
+    integrityGuard,
+    trustedPeerIds: [seed.nodeId],
+    admissionVouchers: vouchers,
+  });
+  const sockets = await Promise.all([
+    client.connect('127.0.0.1', address.port),
+    client.connect('127.0.0.1', address.port),
+  ]);
+  t.after(() => { for (const socket of sockets) socket.destroy(); client.close(); });
+
+  await saveStarted;
+  await waitFor(() => admitCalls === 2);
+  releaseSave();
+  releaseInitialReads();
+
+  await waitFor(() => sockets.every(socket => socket.__zionSession?.authenticated === true));
+  assert.equal(saveCalls, 1, 'the same subject must consume invitation vouchers in one persisted admission');
+  assert.equal(controller.snapshot().admittedPeers, 1);
+  assert.equal(controller.snapshot().consumedInvitations, 2);
+  assert.equal(server.admittedPeerIds.has(newcomer.nodeId), true);
+});
+
+
 test('official transport rejects an unknown peer with no valid invite vouchers', async t => {
   const { PeerAdmissionController } = await import('../src/peer-admission-controller.js');
   const genesis = {

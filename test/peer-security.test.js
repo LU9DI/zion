@@ -67,6 +67,46 @@ test('token bucket rate-limits a noisy peer and refills gradually', () => {
   now = 1000; assert.equal(r.allow('peer'), true);
 });
 
+test('rate limiter refund restores a charged token without exceeding capacity', () => {
+  let now = 0;
+  const limiter = new PeerRateLimiter({ capacity: 2, refillPerSecond: 1, now: () => now });
+  assert.equal(limiter.allow('peer'), true);
+  assert.equal(limiter.allow('peer'), true);
+  assert.equal(limiter.allow('peer'), false);
+  assert.equal(limiter.refund('peer'), true);
+  assert.equal(limiter.allow('peer'), true);
+  assert.equal(limiter.allow('peer'), false);
+
+  now = 1000;
+  assert.equal(limiter.refund('peer', 2), true);
+  assert.equal(limiter.buckets.get('peer').tokens, 2, 'refill plus refund must be capped at bucket capacity');
+});
+
+test('rate limiter refund fails closed for missing buckets, invalid costs, and invalid or regressed clocks', () => {
+  let now = 100;
+  const limiter = new PeerRateLimiter({ capacity: 2, refillPerSecond: 1, now: () => now });
+  assert.equal(limiter.refund('missing'), false);
+  assert.equal(limiter.allow('peer'), true);
+  const before = { ...limiter.buckets.get('peer') };
+
+  for (const cost of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 3]) {
+    assert.equal(limiter.refund('peer', cost), false);
+  }
+  now = Number.NaN;
+  assert.equal(limiter.refund('peer'), false);
+  now = 99;
+  assert.equal(limiter.refund('peer'), false);
+  assert.deepEqual(limiter.buckets.get('peer'), before, 'failed refunds must not mutate token state');
+});
+
+test('rate limiter refund preserves the peer cardinality bound', () => {
+  const limiter = new PeerRateLimiter({ capacity: 1, refillPerSecond: 1, maxPeers: 1 });
+  assert.equal(limiter.allow('peer'), true);
+  assert.equal(limiter.refund('peer'), true);
+  assert.equal(limiter.buckets.size, 1);
+  assert.equal(limiter.allow('other'), false, 'refund must not create an additional bucket');
+});
+
 test('rate limiter bounds peer cardinality and fails closed when full', () => {
   let now = 0;
   const limiter = new PeerRateLimiter({ capacity: 1, refillPerSecond: 1, maxPeers: 2, idleTtlMs: 100, now: () => now });
