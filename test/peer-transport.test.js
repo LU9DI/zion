@@ -1659,7 +1659,8 @@ test('admitted sessions revalidate shared status before dispatching application 
   });
   const socket = await client.connect('127.0.0.1', address.port);
   t.after(() => { socket.destroy(); client.close(); });
-  const serverSocket = await waitFor(() => [...server.connections].find(peer => peer.__zionSession?.peerNodeId === newcomer.nodeId && peer.__zionSession?.authenticated));
+  await waitFor(() => [...server.connections].some(peer => peer.__zionSession?.peerNodeId === newcomer.nodeId && peer.__zionSession?.authenticated));
+  const serverSocket = [...server.connections].find(peer => peer.__zionSession?.peerNodeId === newcomer.nodeId && peer.__zionSession?.authenticated);
   assert.ok(serverSocket, 'the admitted peer must complete the handshake');
   revoked = true; // Simulate another process committing the durable revocation.
   client.send(socket, { type: 'PING' });
