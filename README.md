@@ -270,6 +270,8 @@ This is an **opt-in storage backend**, not a default deployment: build `rea-stor
 
 See [`docs/FAIR_USE_AND_ANTI_ABUSE.md`](docs/FAIR_USE_AND_ANTI_ABUSE.md) for the contribution-based personal quota, in-memory and persistent per-peer admission guards, setup instructions, and the remaining Sybil/global-accounting limitations.
 
+See [`docs/POSTGRES_PEER_ADMISSION_RUNTIME.md`](docs/POSTGRES_PEER_ADMISSION_RUNTIME.md) for the PostgreSQL-backed admission runtime integration contract, pool/lifecycle requirements, and production release gates. The factory is not wired to a production node entrypoint in this repository; host deployment wiring remains required.
+
 
 ### Anti-abuse hardening (v0.20.0)
 
