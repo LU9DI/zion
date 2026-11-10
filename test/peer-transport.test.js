@@ -625,6 +625,46 @@ test('admission-store failure refunds the unauthenticated tier token and closes 
   assert.equal(server.replayGuard.seen.size, 0, 'storage failure must not consume replay-cache capacity');
 });
 
+test('admission persistence failure refunds the tier token without replay admission', async t => {
+  const genesis = testGenesis('Zion admission persistence failure');
+  const seed = createNodeIdentity();
+  const newcomer = createNodeIdentity();
+  let reads = 0;
+  let refunds = 0;
+  const admissionController = {
+    async isAdmitted() { reads++; return false; },
+    async admit() { throw new Error('admission state persistence failed'); },
+  };
+  const unauthenticatedRateLimiter = {
+    allow() { return true; },
+    refund(nodeId) { assert.equal(nodeId, newcomer.nodeId); refunds++; return true; },
+  };
+  const integrityGuard = { async checkHealthy() {}, assertHealthy() {} };
+  const server = new PeerTransport({
+    identity: seed,
+    networkMode: 'official',
+    protocolGenesis: genesis,
+    integrityGuard,
+    trustedPeerIds: [seed.nodeId],
+    admissionController,
+    unauthenticatedRateLimiter,
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({
+    identity: newcomer,
+    protocolGenesis: genesis,
+    trustedPeerIds: [seed.nodeId],
+  });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(() => { socket.destroy(); client.close(); });
+
+  await waitFor(() => socket.destroyed);
+  assert.ok(reads >= 1, 'the admission state must be checked before persistence is attempted');
+  assert.equal(refunds, 1, 'a failed admission persistence attempt must refund the tier token once');
+  assert.equal(server.replayGuard.seen.size, 0, 'failed admission must not consume replay-cache capacity');
+});
+
 test('concurrent handshakes for one identity persist invitation admission only once', async t => {
   const { createPeerIntroductionVoucher } = await import('../src/peer-introduction-vouchers.js');
   const { PeerAdmissionController } = await import('../src/peer-admission-controller.js');
