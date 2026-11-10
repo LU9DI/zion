@@ -428,8 +428,10 @@ export class PeerTransport {
             socket.destroy();
             return;
           }
-          if (socket.destroyed) {
+          if (socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
+              (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) {
             tierLimiter.refund?.(checked.nodeId);
+            socket.destroy();
             return;
           }
           if (!previouslyAdmitted) {
@@ -444,8 +446,10 @@ export class PeerTransport {
               socket.destroy();
               return;
             }
-            if (socket.destroyed) {
+            if (socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
+                (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) {
               tierLimiter.refund?.(checked.nodeId);
+              socket.destroy();
               return;
             }
             let admittedAfterAttempt;
@@ -456,8 +460,10 @@ export class PeerTransport {
               socket.destroy();
               return;
             }
-            if (socket.destroyed) {
+            if (socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
+                (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) {
               tierLimiter.refund?.(checked.nodeId);
+              socket.destroy();
               return;
             }
             if (!admission?.ok && !admittedAfterAttempt) { socket.destroy(); return; }
@@ -498,14 +504,17 @@ export class PeerTransport {
         // store read for every authenticated application frame from an already connected peer.
         const previouslyAdmitted = this.admissionController ?
           await this.admissionController.isAdmitted(checked.nodeId) === true : false;
-        if (socket.destroyed) return;
+        if (socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
+            (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) { socket.destroy(); return; }
         if (!trustedByAllowlist && !previouslyAdmitted) {
           let admission;
           try { admission = await this.admissionController.admit({ subjectNodeId: checked.nodeId, vouchers: payload.vouchers }); }
           catch { socket.destroy(); return; }
-          if (socket.destroyed) return;
+          if (socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
+              (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) { socket.destroy(); return; }
           const admittedAfterAttempt = await this.admissionController.isAdmitted(checked.nodeId);
-          if (socket.destroyed) return;
+          if (socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
+              (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) { socket.destroy(); return; }
           if (!admission?.ok && !admittedAfterAttempt) { socket.destroy(); return; }
           this.admittedPeerIds.add(checked.nodeId);
         }
