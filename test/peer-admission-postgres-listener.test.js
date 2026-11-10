@@ -56,3 +56,38 @@ test('listener reconnects after a dedicated session ends and stops without leavi
   assert.equal(pool.clients[1].released, true);
   assert.equal(listener.running, false);
 });
+
+test('listener detaches its event handlers before returning a client to the pool', async () => {
+  const pool = fakePool();
+  const listener = new PostgresPeerRevocationListener({
+    pool, onRevocation: () => {},
+    minReconnectMs: 10, maxReconnectMs: 20,
+  });
+  await listener.start();
+  const client = pool.clients[0];
+  assert.equal(client.listenerCount('notification'), 1);
+  assert.equal(client.listenerCount('error'), 1);
+  assert.equal(client.listenerCount('end'), 1);
+  await listener.stop();
+  assert.equal(client.listenerCount('notification'), 0);
+  assert.equal(client.listenerCount('error'), 0);
+  assert.equal(client.listenerCount('end'), 0);
+  assert.equal(client.released, true);
+});
+
+test('listener detaches failed-session handlers before reconnecting', async () => {
+  const pool = fakePool();
+  const listener = new PostgresPeerRevocationListener({
+    pool, onRevocation: () => {},
+    minReconnectMs: 10, maxReconnectMs: 20,
+  });
+  await listener.start();
+  const failedClient = pool.clients[0];
+  failedClient.emit('end');
+  assert.equal(failedClient.listenerCount('notification'), 0);
+  assert.equal(failedClient.listenerCount('error'), 0);
+  assert.equal(failedClient.listenerCount('end'), 0);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(pool.clients.length, 2);
+  await listener.stop();
+});
