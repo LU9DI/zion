@@ -537,7 +537,12 @@ export class PeerTransport {
       if (!operation.ok) { socket.destroy(); return; }
     }
     try {
-      if (this.revokedPeerIds.has(checked.nodeId) ||\n          (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch || socket.destroyed) {\n        socket.destroy();\n        return;\n      }\n      await this.onMessage(Object.freeze({ nodeId: checked.nodeId, payload: checked.payload, envelope: message }), socket);
+      if (this.revokedPeerIds.has(checked.nodeId) ||
+          (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch || socket.destroyed) {
+        socket.destroy();
+        return;
+      }
+      await this.onMessage(Object.freeze({ nodeId: checked.nodeId, payload: checked.payload, envelope: message }), socket);
     } catch {
       // Fail closed on handler errors; do not leak internal error details to peers.
       socket.destroy();
