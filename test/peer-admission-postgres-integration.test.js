@@ -142,10 +142,13 @@ test('PostgreSQL migration and independent-process admission races enforce capac
         { ok: revoked.ok, changed: revoked.changed, status: revoked.status },
         { ok: true, changed: true, status: 'revoked' },
       );
+      let timeout;
       const event = await Promise.race([
         notification,
-        new Promise((_, reject) => setTimeout(() => reject(new Error('revocation notification timed out')), 2000)),
-      ]);
+        new Promise((_, reject) => {
+          timeout = setTimeout(() => reject(new Error('revocation notification timed out')), 2000);
+        }),
+      ]).finally(() => clearTimeout(timeout));
       assert.equal(event.channel, 'zion_peer_revocations');
       assert.equal(event.payload, id('9'));
     } finally {
