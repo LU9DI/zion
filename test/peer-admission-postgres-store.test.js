@@ -167,3 +167,38 @@ test('ambiguous commit outcome fails closed and is never automatically retried',
   });
   assert.equal(pool.calls.filter(x => x.sql === 'BEGIN ISOLATION LEVEL SERIALIZABLE').length, 1);
 });
+
+
+test('shared admission fence holds the advisory lock through dispatch and rejects revoked peers', async () => {
+  const pool = fakePool({ admissionStatus: 'active' });
+  const store = new PostgresPeerAdmissionStore({ pool });
+  let dispatched = 0;
+  const allowed = await store.withAdmissionFence(id('a'), async () => { dispatched++; return 'handled'; });
+  assert.deepEqual(allowed, {
+    ok: true, admitted: true, status: 'active', value: 'handled',
+  });
+  assert.equal(dispatched, 1);
+  const sql = pool.calls.map(x => x.sql);
+  assert.ok(sql.includes('SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))'));
+  assert.ok(sql.indexOf('SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))') <
+    sql.findIndex(x => x.startsWith('SELECT status FROM peer_admissions')));
+  assert.equal(sql.at(-1), 'COMMIT');
+
+  const revokedPool = fakePool({ admissionStatus: 'revoked' });
+  const revokedStore = new PostgresPeerAdmissionStore({ pool: revokedPool });
+  const denied = await revokedStore.withAdmissionFence(id('b'), async () => { dispatched++; });
+  assert.deepEqual(denied, { ok: true, admitted: false, status: 'revoked' });
+  assert.equal(dispatched, 1);
+});
+
+test('revocation acquires the exclusive advisory fence before changing durable admission state', async () => {
+  const pool = fakePool({ admissionStatus: 'active' });
+  const store = new PostgresPeerAdmissionStore({ pool });
+  const result = await store.revokeAdmission(id('a'));
+  assert.equal(result.ok, true);
+  const sql = pool.calls.map(x => x.sql);
+  const exclusive = sql.indexOf('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))');
+  const statusRead = sql.findIndex(x => x.startsWith('SELECT status FROM peer_admissions'));
+  const statusWrite = sql.findIndex(x => x.includes("SET status = 'revoked'"));
+  assert.ok(exclusive >= 0 && exclusive < statusRead && statusRead < statusWrite);
+});
