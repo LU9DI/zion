@@ -414,8 +414,17 @@ export class PeerTransport {
             (!session.remoteNonce || session.remoteNonce === payload.nonce);
           if (!validHandshake) { socket.destroy(); return; }
 
-          const previouslyAdmitted = this.admittedPeerIds.has(checked.nodeId) ||
-            await this.admissionController.isAdmitted(checked.nodeId) === true;
+          let previouslyAdmitted;
+          try {
+            previouslyAdmitted = this.admittedPeerIds.has(checked.nodeId) ||
+              await this.admissionController.isAdmitted(checked.nodeId) === true;
+          } catch {
+            // Admission storage is part of the authorization decision. Fail closed,
+            // but restore the tier token because no replay entry or handler work follows.
+            tierLimiter.refund?.(checked.nodeId);
+            socket.destroy();
+            return;
+          }
           if (socket.destroyed) {
             tierLimiter.refund?.(checked.nodeId);
             return;
@@ -428,6 +437,7 @@ export class PeerTransport {
                 vouchers: payload.vouchers,
               });
             } catch {
+              tierLimiter.refund?.(checked.nodeId);
               socket.destroy();
               return;
             }
@@ -435,7 +445,14 @@ export class PeerTransport {
               tierLimiter.refund?.(checked.nodeId);
               return;
             }
-            const admittedAfterAttempt = await this.admissionController.isAdmitted(checked.nodeId);
+            let admittedAfterAttempt;
+            try {
+              admittedAfterAttempt = await this.admissionController.isAdmitted(checked.nodeId);
+            } catch {
+              tierLimiter.refund?.(checked.nodeId);
+              socket.destroy();
+              return;
+            }
             if (socket.destroyed) {
               tierLimiter.refund?.(checked.nodeId);
               return;
