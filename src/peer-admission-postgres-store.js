@@ -200,6 +200,9 @@ export class PostgresPeerAdmissionStore {
       await client.query(
         'UPDATE peer_admission_capacity SET active_reservations = GREATEST(0, active_reservations - 1), updated_at = now() WHERE singleton = true',
       );
+      // PostgreSQL delivers NOTIFY only after this transaction commits. The payload
+      // contains only the validated node ID; consumers still re-check durable state.
+      await client.query("SELECT pg_notify('zion_peer_revocations', $1)", [subjectNodeId]);
       return { ok: true, changed: true, subjectNodeId, status: 'revoked' };
     }).catch(error => {
       if (error?.code === 'ZION_ADMISSION_CONFIG_MISSING' ||
