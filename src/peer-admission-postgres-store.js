@@ -40,13 +40,14 @@ export class PostgresPeerAdmissionStore {
     this.commitOutcomeUnknown = false;
   }
 
-  async #transaction(work) {
+  async #transaction(work, { isolation = 'SERIALIZABLE' } = {}) {
+    if (!['SERIALIZABLE', 'READ COMMITTED'].includes(isolation)) throw new TypeError('Unsupported transaction isolation level');
     for (let attempt = 0; ; attempt++) {
       const client = await this.pool.connect();
       let began = false;
       let commitStarted = false;
       try {
-        await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+        await client.query(`BEGIN ISOLATION LEVEL ${isolation}`);
         began = true;
         const result = await work(client);
         commitStarted = true;
@@ -153,17 +154,138 @@ export class PostgresPeerAdmissionStore {
     }
   }
 
+
+  async getAdmissionStatus(subjectNodeId) {
+    if (this.commitOutcomeUnknown) return { ok: false, reason: 'admission-state-unavailable' };
+    if (!NODE_ID.test(subjectNodeId ?? '')) return { ok: false, reason: 'invalid-input' };
+    try {
+      const result = await this.pool.query(
+        'SELECT status FROM peer_admissions WHERE subject_node_id = $1',
+        [subjectNodeId],
+      );
+      const status = result.rows?.[0]?.status ?? null;
+      if (status !== null && !['active', 'released', 'revoked'].includes(status)) {
+        return { ok: false, reason: 'admission-state-unavailable' };
+      }
+      return { ok: true, subjectNodeId, status };
+    } catch {
+      return { ok: false, reason: 'admission-state-unavailable' };
+    }
+  }
+
+  /**
+   * Linearizes one application-frame dispatch against revocation.
+   * The shared transaction advisory lock remains held until work completes;
+   * revokeAdmission takes the matching exclusive lock before changing status.
+   * Keep work bounded: it runs while one PostgreSQL connection and lock are held.
+   */
+  async withAdmissionFence(subjectNodeId, work) {
+    if (this.commitOutcomeUnknown) return { ok: false, reason: 'admission-state-unavailable' };
+    if (!NODE_ID.test(subjectNodeId ?? '') || typeof work !== 'function') {
+      return { ok: false, reason: 'invalid-input' };
+    }
+    try {
+      // READ COMMITTED is required here: after a transaction-level advisory lock
+      // waits, the following statement must see the transaction that released it.
+      return await this.#transaction(async client => {
+        await client.query(
+          'SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))',
+          [subjectNodeId],
+        );
+        const current = await client.query(
+          'SELECT status FROM peer_admissions WHERE subject_node_id = $1',
+          [subjectNodeId],
+        );
+        const status = current.rows?.[0]?.status ?? null;
+        if (status !== 'active') return { ok: true, admitted: false, status };
+        const value = await work();
+        return { ok: true, admitted: true, status: 'active', value };
+      }, { isolation: 'READ COMMITTED' });
+    } catch {
+      return { ok: false, reason: 'admission-state-unavailable' };
+    }
+  }
+
+  async revokeAdmission(subjectNodeId) {
+    if (this.commitOutcomeUnknown) return { ok: false, reason: 'admission-state-unavailable' };
+    if (!NODE_ID.test(subjectNodeId ?? '')) return { ok: false, reason: 'invalid-input' };
+    // READ COMMITTED ensures the status read after waiting for the exclusive
+    // advisory lock observes any dispatch transaction that just committed.
+    return this.#transaction(async client => {
+      // Exclusive lock waits for already-authorized dispatches to finish and
+      // prevents new dispatches from passing their authoritative status read.
+      await client.query(
+        'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+        [subjectNodeId],
+      );
+      const capacityResult = await client.query(
+        'SELECT active_reservations FROM peer_admission_capacity WHERE singleton = true FOR UPDATE',
+      );
+      if (!capacityResult.rows?.[0]) {
+        throw Object.assign(new Error('Admission capacity row missing'), { code: 'ZION_ADMISSION_CONFIG_MISSING' });
+      }
+      const current = await client.query(
+        'SELECT status FROM peer_admissions WHERE subject_node_id = $1 FOR UPDATE',
+        [subjectNodeId],
+      );
+      const status = current.rows?.[0]?.status;
+      if (status === undefined) return { ok: false, reason: 'admission-not-found', subjectNodeId };
+      if (status === 'revoked') return { ok: true, changed: false, subjectNodeId, status: 'revoked' };
+      if (status === 'released') return { ok: false, reason: 'admission-already-released', subjectNodeId, status: 'released' };
+      if (status !== 'active') {
+        throw Object.assign(new Error('Unknown peer admission status'), { code: 'ZION_ADMISSION_CONFIG_MISSING' });
+      }
+      await client.query(
+        "UPDATE peer_admissions SET status = 'revoked', updated_at = now() WHERE subject_node_id = $1 AND status = 'active'",
+        [subjectNodeId],
+      );
+      await client.query(
+        'UPDATE peer_admission_capacity SET active_reservations = GREATEST(0, active_reservations - 1), updated_at = now() WHERE singleton = true',
+      );
+      // PostgreSQL delivers NOTIFY only after this transaction commits. The payload
+      // contains only the validated node ID; consumers still re-check durable state.
+      await client.query("SELECT pg_notify('zion_peer_revocations', $1)", [subjectNodeId]);
+      return { ok: true, changed: true, subjectNodeId, status: 'revoked' };
+    }, { isolation: 'READ COMMITTED' }).catch(error => {
+      if (error?.code === 'ZION_ADMISSION_CONFIG_MISSING' ||
+        error?.code === 'ZION_ADMISSION_COMMIT_OUTCOME_UNKNOWN') {
+        return { ok: false, reason: 'admission-state-unavailable' };
+      }
+      throw error;
+    });
+  }
+
   async releaseAdmission(subjectNodeId, status = 'released') {
     if (this.commitOutcomeUnknown) return { ok: false, reason: 'admission-state-unavailable' };
     if (!NODE_ID.test(subjectNodeId ?? '') || !['released', 'revoked'].includes(status)) {
       return { ok: false, reason: 'invalid-input' };
     }
     return this.#transaction(async client => {
+      // Every transition out of active admission must serialize against the same
+      // shared dispatch fence, not only the explicit revoke() API.
+      await client.query(
+        'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+        [subjectNodeId],
+      );
       const capacityResult = await client.query(
         'SELECT active_reservations FROM peer_admission_capacity WHERE singleton = true FOR UPDATE',
       );
       if (!capacityResult.rows?.[0]) {
         throw Object.assign(new Error('Admission capacity row missing'), { code: 'ZION_ADMISSION_CONFIG_MISSING' });
+      }
+      const current = await client.query(
+        'SELECT status FROM peer_admissions WHERE subject_node_id = $1 FOR UPDATE',
+        [subjectNodeId],
+      );
+      const currentStatus = current.rows?.[0]?.status;
+      if (currentStatus === undefined) {
+        return { ok: false, reason: 'admission-not-found', subjectNodeId };
+      }
+      if (currentStatus === status) {
+        return { ok: true, changed: false, subjectNodeId, status: currentStatus };
+      }
+      if (currentStatus !== 'active') {
+        return { ok: false, changed: false, reason: 'admission-already-inactive', subjectNodeId, status: currentStatus };
       }
       const updated = await client.query(
         "UPDATE peer_admissions SET status = $2, updated_at = now() WHERE subject_node_id = $1 AND status = 'active' RETURNING subject_node_id",
@@ -173,9 +295,12 @@ export class PostgresPeerAdmissionStore {
         await client.query(
           'UPDATE peer_admission_capacity SET active_reservations = GREATEST(0, active_reservations - 1), updated_at = now() WHERE singleton = true',
         );
+        // Reuse the revocation channel for any transition that removes admission.
+        // Consumers always re-check durable state before dispatch.
+        await client.query("SELECT pg_notify('zion_peer_revocations', $1)", [subjectNodeId]);
       }
       return { ok: true, changed: Boolean(updated.rows?.length), subjectNodeId, status };
-    }).catch(error => {
+    }, { isolation: 'READ COMMITTED' }).catch(error => {
       if (error?.code === 'ZION_ADMISSION_CONFIG_MISSING' ||
         error?.code === 'ZION_ADMISSION_COMMIT_OUTCOME_UNKNOWN') {
         return { ok: false, reason: 'admission-state-unavailable' };

@@ -117,6 +117,150 @@ test('PostgreSQL migration and independent-process admission races enforce capac
     assert.equal(Number(after[0].active_reservations), 0);
     assert.equal(after[0].active_admissions, 0);
 
+    // Scenario 1b: revocation is durable, idempotent, and decrements capacity once.
+    await clearAdmissions(pool);
+    await pool.query(
+      'UPDATE peer_admission_policy SET max_active_peers = 10, max_admissions_per_issuer = 5, policy_version = policy_version + 1 WHERE singleton = true',
+    );
+    const revocationStore = new PostgresPeerAdmissionStore({ pool, maxTransactionRetries: 5 });
+    const admitted = await revocationStore.commitAdmission(
+      admissionInput('9', ['1', '2'], ['9', 'a']),
+    );
+    assert.equal(admitted.ok, true);
+    assert.deepEqual(await revocationStore.getAdmissionStatus(id('9')), {
+      ok: true, subjectNodeId: id('9'), status: 'active',
+    });
+
+    // A dedicated session must observe the notification only after the durable
+    // status transition commits; the listener is independent of pooled query sessions.
+    const notificationClient = await pool.connect();
+    try {
+      await notificationClient.query('LISTEN zion_peer_revocations');
+      const notification = new Promise(resolve => notificationClient.once('notification', resolve));
+      const revoked = await revocationStore.revokeAdmission(id('9'));
+      assert.deepEqual(
+        { ok: revoked.ok, changed: revoked.changed, status: revoked.status },
+        { ok: true, changed: true, status: 'revoked' },
+      );
+      let timeout;
+      const event = await Promise.race([
+        notification,
+        new Promise((_, reject) => {
+          timeout = setTimeout(() => reject(new Error('revocation notification timed out')), 2000);
+        }),
+      ]).finally(() => clearTimeout(timeout));
+      assert.equal(event.channel, 'zion_peer_revocations');
+      assert.equal(event.payload, id('9'));
+    } finally {
+      try { await notificationClient.query('UNLISTEN zion_peer_revocations'); } finally { notificationClient.release(); }
+    }
+    const repeatedRevocation = await revocationStore.revokeAdmission(id('9'));
+    assert.deepEqual(
+      { ok: repeatedRevocation.ok, changed: repeatedRevocation.changed, status: repeatedRevocation.status },
+      { ok: true, changed: false, status: 'revoked' },
+    );
+    assert.deepEqual(await revocationStore.getAdmissionStatus(id('9')), {
+      ok: true, subjectNodeId: id('9'), status: 'revoked',
+    });
+    const { rows: revokedCapacity } = await pool.query(
+      "SELECT c.active_reservations, count(a.subject_node_id)::integer AS active_admissions FROM peer_admission_capacity c LEFT JOIN peer_admissions a ON a.status = 'active' WHERE c.singleton = true GROUP BY c.active_reservations",
+    );
+    assert.equal(Number(revokedCapacity[0].active_reservations), 0);
+    assert.equal(revokedCapacity[0].active_admissions, 0);
+
+    const cannotReadmitRevoked = await revocationStore.commitAdmission(
+      admissionInput('9', ['1', '2'], ['b', 'c']),
+    );
+    assert.deepEqual(cannotReadmitRevoked, {
+      ok: false, reason: 'subject-already-admitted',
+    });
+
+    // Scenario 1c: an in-flight authorized dispatch holds a shared advisory
+    // fence. Revocation must wait for it, then future dispatches must see revoked.
+    const fencedAdmission = await revocationStore.commitAdmission(
+      admissionInput('8', ['3', '4'], ['e', 'f']),
+    );
+    assert.equal(fencedAdmission.ok, true);
+    let releaseGateOpen;
+    let markDispatchStarted;
+    const dispatchStarted = new Promise(resolve => { markDispatchStarted = resolve; });
+    const dispatchGate = new Promise(resolve => { releaseGateOpen = resolve; });
+    const inFlightDispatch = revocationStore.withAdmissionFence(id('8'), async () => {
+      markDispatchStarted();
+      await dispatchGate;
+      return 'frame-dispatched';
+    });
+    await dispatchStarted;
+    let revocationFinished = false;
+    const waitingRevocation = revocationStore.revokeAdmission(id('8')).then(result => {
+      revocationFinished = true;
+      return result;
+    });
+    let revocationWaitingOnAdvisoryLock = false;
+    const waitDeadline = Date.now() + 2000;
+    while (!revocationWaitingOnAdvisoryLock && Date.now() < waitDeadline) {
+      const { rows: waiters } = await pool.query(
+        "SELECT count(*)::integer AS count FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE 'SELECT pg_advisory_xact_lock(hashtextextended%'",
+      );
+      revocationWaitingOnAdvisoryLock = Number(waiters[0]?.count ?? 0) > 0;
+      if (!revocationWaitingOnAdvisoryLock) await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    const revocationWaitedForDispatch = revocationWaitingOnAdvisoryLock && !revocationFinished;
+    releaseGateOpen();
+    assert.deepEqual(await inFlightDispatch, {
+      ok: true, admitted: true, status: 'active', value: 'frame-dispatched',
+    });
+    assert.equal(revocationWaitedForDispatch, true,
+      'revocation cannot commit while an authorized application dispatch is in flight');
+    assert.equal((await waitingRevocation).status, 'revoked');
+    const postRevocationDispatch = await revocationStore.withAdmissionFence(id('8'), async () => {
+      throw new Error('revoked peer must not dispatch');
+    });
+    assert.deepEqual(postRevocationDispatch, {
+      ok: true, admitted: false, status: 'revoked',
+    });
+
+    // Scenario 1d: administrative release uses the same exclusive fence as revoke.
+    const releasable = await revocationStore.commitAdmission(
+      admissionInput('7', ['3', '4'], ['7', '8']),
+    );
+    assert.equal(releasable.ok, true);
+    let releaseAdmissionGateOpen;
+    let markReleaseDispatchStarted;
+    const releaseDispatchStarted = new Promise(resolve => { markReleaseDispatchStarted = resolve; });
+    const releaseDispatchGate = new Promise(resolve => { releaseAdmissionGateOpen = resolve; });
+    const releaseInFlightDispatch = revocationStore.withAdmissionFence(id('7'), async () => {
+      markReleaseDispatchStarted();
+      await releaseDispatchGate;
+      return 'release-race-frame-dispatched';
+    });
+    await releaseDispatchStarted;
+    let releaseFinished = false;
+    const waitingRelease = revocationStore.releaseAdmission(id('7'), 'released').then(result => {
+      releaseFinished = true;
+      return result;
+    });
+    let releaseWaitingOnAdvisoryLock = false;
+    const releaseWaitDeadline = Date.now() + 2000;
+    while (!releaseWaitingOnAdvisoryLock && Date.now() < releaseWaitDeadline) {
+      const { rows: waiters } = await pool.query(
+        "SELECT count(*)::integer AS count FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE 'SELECT pg_advisory_xact_lock(hashtextextended%'",
+      );
+      releaseWaitingOnAdvisoryLock = Number(waiters[0]?.count ?? 0) > 0;
+      if (!releaseWaitingOnAdvisoryLock) await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    const releaseWaitedForDispatch = releaseWaitingOnAdvisoryLock && !releaseFinished;
+    releaseAdmissionGateOpen();
+    assert.deepEqual(await releaseInFlightDispatch, {
+      ok: true, admitted: true, status: 'active', value: 'release-race-frame-dispatched',
+    });
+    assert.equal(releaseWaitedForDispatch, true,
+      'release cannot commit while an authorized application dispatch is in flight');
+    assert.equal((await waitingRelease).status, 'released');
+    assert.deepEqual(await revocationStore.withAdmissionFence(id('7'), async () => {
+      throw new Error('released peer must not dispatch');
+    }), { ok: true, admitted: false, status: 'released' });
+
     // Scenario 2: the same invitation nonces cannot be consumed by two subjects.
     await clearAdmissions(pool);
     await pool.query(

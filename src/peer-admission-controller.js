@@ -149,6 +149,21 @@ export class PeerAdmissionController {
     return ID.test(subjectNodeId ?? '') && this.state.admissions.some(record => record.subjectNodeId === subjectNodeId);
   }
 
+  /**
+   * Compatibility fence for the single-process file-backed controller.
+   * This preserves local admission checks, but intentionally does not claim
+   * cross-process serialization or durable revocation; use the PostgreSQL
+   * controller for those guarantees.
+   */
+  async withAdmissionFence(subjectNodeId, work) {
+    if (typeof work !== 'function') return { ok: false, reason: 'invalid-input' };
+    if (!this.isAdmitted(subjectNodeId)) {
+      return { ok: true, admitted: false, status: null };
+    }
+    const value = await work();
+    return { ok: true, admitted: true, status: 'active', value };
+  }
+
   snapshot() {
     return Object.freeze({
       consumedInvitations: this.state.consumed.length,

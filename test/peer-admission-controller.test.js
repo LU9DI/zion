@@ -132,3 +132,17 @@ test('fails closed after uncertain persistence and requires restart to reconcile
   );
   assert.equal(saveCalls, 1);
 });
+
+
+test('file-backed controller exposes a compatibility admission fence without claiming distributed locking', async () => {
+  const x = setup();
+  assert.deepEqual(await x.controller.withAdmissionFence(x.subject.nodeId, async () => 'handled'), {
+    ok: true, admitted: false, status: null,
+  });
+  assert.equal((await x.controller.admit({
+    subjectNodeId: x.subject.nodeId, vouchers: x.vouchers,
+  })).ok, true);
+  assert.deepEqual(await x.controller.withAdmissionFence(x.subject.nodeId, async () => 'handled'), {
+    ok: true, admitted: true, status: 'active', value: 'handled',
+  });
+});

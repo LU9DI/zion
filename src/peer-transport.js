@@ -39,7 +39,7 @@ export class PeerTransport {
     socketRateLimiter = new PeerRateLimiter({ capacity: 256, refillPerSecond: 200 }),
     // Global pre-verification budget caps CPU across rapid reconnects that obtain fresh socket IDs.
     globalRateLimiter = new PeerRateLimiter({ capacity: 4096, refillPerSecond: 2000, maxPeers: 1 }), transferScheduler = null,
-    protocolGenesis = null, networkMode = 'legacy', integrityGuard = null, admissionController = null, admissionVouchers = [], tlsOptions = null, tlsHandshakeTimeoutMs = 10_000, now = () => Date.now() } = {}) {
+    protocolGenesis = null, networkMode = 'legacy', integrityGuard = null, admissionController = null, revocationListener = null, admissionVouchers = [], tlsOptions = null, tlsHandshakeTimeoutMs = 10_000, now = () => Date.now() } = {}) {
     if (!identity?.privateKey || typeof identity.nodeId !== 'string') throw new TypeError('A node identity is required');
     if (typeof host !== 'string' || !host || !Number.isInteger(port) || port < 0 || port > 65535) throw new RangeError('Invalid bind address');
     if (!Number.isSafeInteger(maxConnections) || maxConnections < 1 || !Number.isSafeInteger(maxFrameBytes) || maxFrameBytes < 256) throw new RangeError('Invalid transport limits');
@@ -68,8 +68,14 @@ export class PeerTransport {
     if (admissionVouchers.length && (networkMode !== 'official' || !protocolGenesis)) throw new Error('Admission vouchers require an official network with a protocol genesis');
     this.integrityGuard = integrityGuard;
     this.admissionController = admissionController;
+    if (revocationListener !== null && (typeof revocationListener.start !== 'function' || typeof revocationListener.stop !== 'function')) throw new TypeError('revocationListener must provide start() and stop()');
+    if (revocationListener && !admissionController) throw new Error('A revocation listener requires an admission controller');
+    this.revocationListener = revocationListener;
+    this.revocationListenerStarted = false;
     this.admissionVouchers = Object.freeze([...admissionVouchers]);
     this.admittedPeerIds = new Set();
+    this.revokedPeerIds = new Set();
+    this.peerAdmissionEpochs = new Map();
     this.maxFrameBytes = maxFrameBytes; this.maxMessageBytes = this.genesis?.limits.maxMessageBytes ?? maxFrameBytes; this.allowedTypes = new Set(allowedTypes); this.trustedPeerIds = trustedPeerIds === null ? null : new Set(trustedPeerIds); this.onMessage = onMessage;
     this.replayGuard = replayGuard; this.rateLimiter = rateLimiter; this.unauthenticatedRateLimiter = unauthenticatedRateLimiter; this.socketRateLimiter = socketRateLimiter; this.globalRateLimiter = globalRateLimiter; this.transferScheduler = transferScheduler; this.now = now;
     this.networkId = this.genesis ? calculateNetworkId(this.genesis) : null;
@@ -100,6 +106,10 @@ export class PeerTransport {
     this.listenCompletion = new Promise(resolve => { settleListen = resolve; });
     try {
       if (this.networkMode === 'official') await this.integrityGuard.checkHealthy();
+      if (this.revocationListener && !this.revocationListenerStarted) {
+        await this.revocationListener.start(nodeId => this.#fencePeer(nodeId));
+        this.revocationListenerStarted = true;
+      }
       // Health checks may be asynchronous. If close() ran while one was pending,
       // do not create a server after shutdown has already been requested.
       if (this.closing || this.quarantined) throw new Error(this.quarantined ? 'Transport quarantined before listen completed' : 'Transport closed before listen completed');
@@ -168,6 +178,10 @@ export class PeerTransport {
       const address = server.address();
       return Object.freeze({ host: address.address, port: address.port });
     } catch (error) {
+      if (this.revocationListenerStarted) {
+        await this.revocationListener.stop().catch(() => {});
+        this.revocationListenerStarted = false;
+      }
       if (!this.started && this.server && !this.server.listening) this.server = null;
       throw error;
     } finally {
@@ -190,7 +204,7 @@ export class PeerTransport {
 
   #attach(socket) {
     this.connections.add(socket);
-    const session = { id: randomBytes(16).toString('hex'), localNonce: randomBytes(32).toString('hex'), remoteNonce: null, authenticated: !this.genesis };
+    const session = { id: randomBytes(16).toString('hex'), localNonce: randomBytes(32).toString('hex'), remoteNonce: null, authenticated: !this.genesis, admissionRequired: false };
     socket.__zionSession = session;
     socket.setTimeout(15_000, () => socket.destroy());
     socket.setNoDelay(true);
@@ -371,6 +385,20 @@ export class PeerTransport {
     const checked = verifyPeerMessage(message, { now: this.now(), maxBytes: this.maxFrameBytes });
     if (!checked.ok) { socket.destroy(); return; }
     if (socket.__zionSession) socket.__zionSession.peerNodeId = checked.nodeId;
+    if (this.revokedPeerIds.has(checked.nodeId)) { socket.destroy(); return; }
+    const admissionEpoch = this.peerAdmissionEpochs.get(checked.nodeId) ?? 0;
+    // A process-local socket may outlive a revocation performed by another instance.
+    // Re-check the shared authoritative store before accepting every application frame.
+    if (socket.__zionSession?.authenticated && socket.__zionSession.admissionRequired) {
+      let stillAdmitted;
+      try { stillAdmitted = await this.admissionController.isAdmitted(checked.nodeId); }
+      catch { socket.destroy(); return; }
+      if (!stillAdmitted || socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
+          (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) {
+        socket.destroy();
+        return;
+      }
+    }
     const trustedByAllowlist = !this.trustedPeerIds || this.trustedPeerIds.has(checked.nodeId);
     if (!trustedByAllowlist && !this.admissionController) { socket.destroy(); return; }
     // Reject an already-seen envelope before the identity tier is charged. Replayed frames
@@ -416,8 +444,7 @@ export class PeerTransport {
 
           let previouslyAdmitted;
           try {
-            previouslyAdmitted = this.admittedPeerIds.has(checked.nodeId) ||
-              await this.admissionController.isAdmitted(checked.nodeId) === true;
+            previouslyAdmitted = await this.admissionController.isAdmitted(checked.nodeId) === true;
           } catch {
             // Admission storage is part of the authorization decision. Fail closed,
             // but restore the tier token because no replay entry or handler work follows.
@@ -425,8 +452,10 @@ export class PeerTransport {
             socket.destroy();
             return;
           }
-          if (socket.destroyed) {
+          if (socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
+              (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) {
             tierLimiter.refund?.(checked.nodeId);
+            socket.destroy();
             return;
           }
           if (!previouslyAdmitted) {
@@ -441,8 +470,10 @@ export class PeerTransport {
               socket.destroy();
               return;
             }
-            if (socket.destroyed) {
+            if (socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
+                (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) {
               tierLimiter.refund?.(checked.nodeId);
+              socket.destroy();
               return;
             }
             let admittedAfterAttempt;
@@ -453,8 +484,10 @@ export class PeerTransport {
               socket.destroy();
               return;
             }
-            if (socket.destroyed) {
+            if (socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
+                (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) {
               tierLimiter.refund?.(checked.nodeId);
+              socket.destroy();
               return;
             }
             if (!admission?.ok && !admittedAfterAttempt) { socket.destroy(); return; }
@@ -493,19 +526,25 @@ export class PeerTransport {
           payload.nonce !== session.localNonce && (!session.remoteNonce || session.remoteNonce === payload.nonce)) {
         // Admission state is only needed for a new handshake. Avoid a remote/transactional
         // store read for every authenticated application frame from an already connected peer.
-        const previouslyAdmitted = this.admittedPeerIds.has(checked.nodeId) ||
-          (this.admissionController ? await this.admissionController.isAdmitted(checked.nodeId) === true : false);
-        if (socket.destroyed) return;
+        const previouslyAdmitted = this.admissionController ?
+          await this.admissionController.isAdmitted(checked.nodeId) === true : false;
+        if (socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
+            (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) { socket.destroy(); return; }
         if (!trustedByAllowlist && !previouslyAdmitted) {
           let admission;
           try { admission = await this.admissionController.admit({ subjectNodeId: checked.nodeId, vouchers: payload.vouchers }); }
           catch { socket.destroy(); return; }
-          if (socket.destroyed) return;
+          if (socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
+              (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) { socket.destroy(); return; }
           const admittedAfterAttempt = await this.admissionController.isAdmitted(checked.nodeId);
-          if (socket.destroyed) return;
+          if (socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
+              (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) { socket.destroy(); return; }
           if (!admission?.ok && !admittedAfterAttempt) { socket.destroy(); return; }
           this.admittedPeerIds.add(checked.nodeId);
         }
+        // Persist the authorization mode on the session so subsequent application
+        // frames cannot rely on a stale process-local admission cache.
+        session.admissionRequired = !trustedByAllowlist && Boolean(this.admissionController);
         session.remoteNonce = payload.nonce;
         this.#sendHandshake(socket, { type: 'ZION_HANDSHAKE_ACK', networkId: this.networkId, protocolMajor: this.genesis.protocolMajor, nonce: session.localNonce, echo: session.remoteNonce });
         return;
@@ -525,7 +564,37 @@ export class PeerTransport {
       if (!operation.ok) { socket.destroy(); return; }
     }
     try {
-      await this.onMessage(Object.freeze({ nodeId: checked.nodeId, payload: checked.payload, envelope: message }), socket);
+      if (this.revokedPeerIds.has(checked.nodeId) ||
+          (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch || socket.destroyed) {
+        socket.destroy();
+        return;
+      }
+      const dispatch = () => this.onMessage(
+        Object.freeze({ nodeId: checked.nodeId, payload: checked.payload, envelope: message }), socket,
+      );
+      if (socket.__zionSession?.admissionRequired) {
+        if (typeof this.admissionController?.withAdmissionFence !== 'function') {
+          socket.destroy();
+          return;
+        }
+        const fenced = await this.admissionController.withAdmissionFence(checked.nodeId, async () => {
+          // The PostgreSQL shared advisory lock is held across this callback.
+          // Revocation takes the exclusive lock, so it cannot commit between
+          // this final local fence check and completion of application dispatch.
+          if (socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
+              (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) {
+            return { dispatched: false };
+          }
+          await dispatch();
+          return { dispatched: true };
+        });
+        if (!fenced?.ok || !fenced.admitted || !fenced.value?.dispatched) {
+          socket.destroy();
+          return;
+        }
+      } else {
+        await dispatch();
+      }
     } catch {
       // Fail closed on handler errors; do not leak internal error details to peers.
       socket.destroy();
@@ -574,6 +643,38 @@ export class PeerTransport {
     return false;
   }
 
+  #fencePeer(subjectNodeId) {
+    if (!/^[a-f0-9]{64}$/.test(subjectNodeId ?? '')) return false;
+    this.revokedPeerIds.add(subjectNodeId);
+    this.peerAdmissionEpochs.set(subjectNodeId,
+      (this.peerAdmissionEpochs.get(subjectNodeId) ?? 0) + 1);
+    this.admittedPeerIds.delete(subjectNodeId);
+    for (const socket of this.connections) {
+      if (socket.__zionSession?.peerNodeId === subjectNodeId) socket.destroy();
+    }
+    return true;
+  }
+
+  /**
+   * Revoke one admitted peer. The local fence is raised synchronously before the
+   * persistent operation, so pending handshakes/frames cannot outlive this call.
+   * A failed persistence operation leaves the local fence in place (fail closed).
+   * PostgreSQL-backed controllers serialize in-flight frame dispatch and publish
+   * cross-process notifications; the listener is an acceleration path for teardown.
+   */
+  async revokePeer(subjectNodeId) {
+    if (!/^[a-f0-9]{64}$/.test(subjectNodeId ?? '') ||
+        !this.admissionController || typeof this.admissionController.revoke !== 'function') {
+      return { ok: false, reason: 'revocation-unavailable' };
+    }
+    this.#fencePeer(subjectNodeId);
+    let result;
+    try { result = await this.admissionController.revoke(subjectNodeId); }
+    catch { return { ok: false, reason: 'admission-state-unavailable' }; }
+    if (!result?.ok) return result ?? { ok: false, reason: 'admission-state-unavailable' };
+    return { ...result, locallyFenced: true };
+  }
+
   send(socket, payload) {
     if (this.networkMode === 'official') this.integrityGuard.assertHealthy();
     if (!socket || socket.destroyed || !socket.writable) throw new Error('Peer socket is not writable');
@@ -595,6 +696,10 @@ export class PeerTransport {
     // Quarantine is terminal for this transport instance. Persist the state so a
     // concurrent listen() cannot start a server after an awaited health check returns.
     this.quarantined = true;
+    if (this.revocationListenerStarted) {
+      this.revocationListenerStarted = false;
+      Promise.resolve(this.revocationListener.stop()).catch(() => {});
+    }
     // Stop accepting peers first, then terminate established sessions. Do not rely on
     // the next send/receive operation to notice quarantine.
     for (const socket of this.connections) socket.destroy();
@@ -619,6 +724,10 @@ export class PeerTransport {
       try {
         this.removeQuarantineListener?.();
         this.removeQuarantineListener = null;
+        if (this.revocationListenerStarted) {
+          await this.revocationListener.stop();
+          this.revocationListenerStarted = false;
+        }
         for (const socket of this.connections) socket.destroy();
         // Pending outbound sockets are not yet in connections: destroy them explicitly
         // so close() cancels TLS negotiation rather than leaving it alive until timeout.
