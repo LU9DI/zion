@@ -569,7 +569,32 @@ export class PeerTransport {
         socket.destroy();
         return;
       }
-      await this.onMessage(Object.freeze({ nodeId: checked.nodeId, payload: checked.payload, envelope: message }), socket);
+      const dispatch = () => this.onMessage(
+        Object.freeze({ nodeId: checked.nodeId, payload: checked.payload, envelope: message }), socket,
+      );
+      if (socket.__zionSession?.admissionRequired) {
+        if (typeof this.admissionController?.withAdmissionFence !== 'function') {
+          socket.destroy();
+          return;
+        }
+        const fenced = await this.admissionController.withAdmissionFence(checked.nodeId, async () => {
+          // The PostgreSQL shared advisory lock is held across this callback.
+          // Revocation takes the exclusive lock, so it cannot commit between
+          // this final local fence check and completion of application dispatch.
+          if (socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
+              (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) {
+            return { dispatched: false };
+          }
+          await dispatch();
+          return { dispatched: true };
+        });
+        if (!fenced?.ok || !fenced.admitted || !fenced.value?.dispatched) {
+          socket.destroy();
+          return;
+        }
+      } else {
+        await dispatch();
+      }
     } catch {
       // Fail closed on handler errors; do not leak internal error details to peers.
       socket.destroy();
