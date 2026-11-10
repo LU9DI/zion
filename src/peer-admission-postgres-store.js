@@ -40,13 +40,14 @@ export class PostgresPeerAdmissionStore {
     this.commitOutcomeUnknown = false;
   }
 
-  async #transaction(work) {
+  async #transaction(work, { isolation = 'SERIALIZABLE' } = {}) {
+    if (!['SERIALIZABLE', 'READ COMMITTED'].includes(isolation)) throw new TypeError('Unsupported transaction isolation level');
     for (let attempt = 0; ; attempt++) {
       const client = await this.pool.connect();
       let began = false;
       let commitStarted = false;
       try {
-        await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+        await client.query(`BEGIN ISOLATION LEVEL ${isolation}`);
         began = true;
         const result = await work(client);
         commitStarted = true;
@@ -184,6 +185,8 @@ export class PostgresPeerAdmissionStore {
       return { ok: false, reason: 'invalid-input' };
     }
     try {
+      // READ COMMITTED is required here: after a transaction-level advisory lock
+      // waits, the following statement must see the transaction that released it.
       return await this.#transaction(async client => {
         await client.query(
           'SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))',
@@ -197,7 +200,7 @@ export class PostgresPeerAdmissionStore {
         if (status !== 'active') return { ok: true, admitted: false, status };
         const value = await work();
         return { ok: true, admitted: true, status: 'active', value };
-      });
+      }, { isolation: 'READ COMMITTED' });
     } catch {
       return { ok: false, reason: 'admission-state-unavailable' };
     }
@@ -206,6 +209,8 @@ export class PostgresPeerAdmissionStore {
   async revokeAdmission(subjectNodeId) {
     if (this.commitOutcomeUnknown) return { ok: false, reason: 'admission-state-unavailable' };
     if (!NODE_ID.test(subjectNodeId ?? '')) return { ok: false, reason: 'invalid-input' };
+    // READ COMMITTED ensures the status read after waiting for the exclusive
+    // advisory lock observes any dispatch transaction that just committed.
     return this.#transaction(async client => {
       // Exclusive lock waits for already-authorized dispatches to finish and
       // prevents new dispatches from passing their authoritative status read.
@@ -241,7 +246,7 @@ export class PostgresPeerAdmissionStore {
       // contains only the validated node ID; consumers still re-check durable state.
       await client.query("SELECT pg_notify('zion_peer_revocations', $1)", [subjectNodeId]);
       return { ok: true, changed: true, subjectNodeId, status: 'revoked' };
-    }).catch(error => {
+    }, { isolation: 'READ COMMITTED' }).catch(error => {
       if (error?.code === 'ZION_ADMISSION_CONFIG_MISSING' ||
         error?.code === 'ZION_ADMISSION_COMMIT_OUTCOME_UNKNOWN') {
         return { ok: false, reason: 'admission-state-unavailable' };
