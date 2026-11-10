@@ -145,6 +145,8 @@ test('revocation commits once, is idempotent, and never reactivates released adm
   });
   assert.equal(pool.calls.filter(x => x.sql.includes("SET status = 'revoked'")).length, 1);
   assert.equal(pool.calls.filter(x => x.sql.includes('GREATEST(0, active_reservations - 1)')).length, 1);
+  assert.equal(pool.calls.filter(x => x.sql.includes("pg_notify('zion_peer_revocations'")).length, 1,
+    'only the active-to-revoked transition publishes a notification');
 
   const released = new PostgresPeerAdmissionStore({ pool: fakePool({ admissionStatus: 'released' }) });
   assert.deepEqual(await released.revokeAdmission(id('b')), {
