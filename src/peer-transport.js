@@ -69,7 +69,9 @@ export class PeerTransport {
     this.integrityGuard = integrityGuard;
     this.admissionController = admissionController;
     this.admissionVouchers = Object.freeze([...admissionVouchers]);
-    this.admittedPeerIds = new Set();\n    this.revokedPeerIds = new Set();\n    this.peerAdmissionEpochs = new Map();
+    this.admittedPeerIds = new Set();
+    this.revokedPeerIds = new Set();
+    this.peerAdmissionEpochs = new Map();
     this.maxFrameBytes = maxFrameBytes; this.maxMessageBytes = this.genesis?.limits.maxMessageBytes ?? maxFrameBytes; this.allowedTypes = new Set(allowedTypes); this.trustedPeerIds = trustedPeerIds === null ? null : new Set(trustedPeerIds); this.onMessage = onMessage;
     this.replayGuard = replayGuard; this.rateLimiter = rateLimiter; this.unauthenticatedRateLimiter = unauthenticatedRateLimiter; this.socketRateLimiter = socketRateLimiter; this.globalRateLimiter = globalRateLimiter; this.transferScheduler = transferScheduler; this.now = now;
     this.networkId = this.genesis ? calculateNetworkId(this.genesis) : null;
@@ -370,7 +372,9 @@ export class PeerTransport {
     catch { socket.destroy(); return; }
     const checked = verifyPeerMessage(message, { now: this.now(), maxBytes: this.maxFrameBytes });
     if (!checked.ok) { socket.destroy(); return; }
-    if (socket.__zionSession) socket.__zionSession.peerNodeId = checked.nodeId;\n    if (this.revokedPeerIds.has(checked.nodeId)) { socket.destroy(); return; }\n    const admissionEpoch = this.peerAdmissionEpochs.get(checked.nodeId) ?? 0;
+    if (socket.__zionSession) socket.__zionSession.peerNodeId = checked.nodeId;
+    if (this.revokedPeerIds.has(checked.nodeId)) { socket.destroy(); return; }
+    const admissionEpoch = this.peerAdmissionEpochs.get(checked.nodeId) ?? 0;
     const trustedByAllowlist = !this.trustedPeerIds || this.trustedPeerIds.has(checked.nodeId);
     if (!trustedByAllowlist && !this.admissionController) { socket.destroy(); return; }
     // Reject an already-seen envelope before the identity tier is charged. Replayed frames
@@ -416,8 +420,7 @@ export class PeerTransport {
 
           let previouslyAdmitted;
           try {
-            previouslyAdmitted = this.admittedPeerIds.has(checked.nodeId) ||
-              await this.admissionController.isAdmitted(checked.nodeId) === true;
+            previouslyAdmitted = await this.admissionController.isAdmitted(checked.nodeId) === true;
           } catch {
             // Admission storage is part of the authorization decision. Fail closed,
             // but restore the tier token because no replay entry or handler work follows.
@@ -493,8 +496,8 @@ export class PeerTransport {
           payload.nonce !== session.localNonce && (!session.remoteNonce || session.remoteNonce === payload.nonce)) {
         // Admission state is only needed for a new handshake. Avoid a remote/transactional
         // store read for every authenticated application frame from an already connected peer.
-        const previouslyAdmitted = this.admittedPeerIds.has(checked.nodeId) ||
-          (this.admissionController ? await this.admissionController.isAdmitted(checked.nodeId) === true : false);
+        const previouslyAdmitted = this.admissionController ?
+          await this.admissionController.isAdmitted(checked.nodeId) === true : false;
         if (socket.destroyed) return;
         if (!trustedByAllowlist && !previouslyAdmitted) {
           let admission;
