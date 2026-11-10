@@ -153,6 +153,63 @@ export class PostgresPeerAdmissionStore {
     }
   }
 
+
+  async getAdmissionStatus(subjectNodeId) {
+    if (this.commitOutcomeUnknown) return { ok: false, reason: 'admission-state-unavailable' };
+    if (!NODE_ID.test(subjectNodeId ?? '')) return { ok: false, reason: 'invalid-input' };
+    try {
+      const result = await this.pool.query(
+        'SELECT status FROM peer_admissions WHERE subject_node_id = $1',
+        [subjectNodeId],
+      );
+      const status = result.rows?.[0]?.status ?? null;
+      if (status !== null && !['active', 'released', 'revoked'].includes(status)) {
+        return { ok: false, reason: 'admission-state-unavailable' };
+      }
+      return { ok: true, subjectNodeId, status };
+    } catch {
+      return { ok: false, reason: 'admission-state-unavailable' };
+    }
+  }
+
+  async revokeAdmission(subjectNodeId) {
+    if (this.commitOutcomeUnknown) return { ok: false, reason: 'admission-state-unavailable' };
+    if (!NODE_ID.test(subjectNodeId ?? '')) return { ok: false, reason: 'invalid-input' };
+    return this.#transaction(async client => {
+      const capacityResult = await client.query(
+        'SELECT active_reservations FROM peer_admission_capacity WHERE singleton = true FOR UPDATE',
+      );
+      if (!capacityResult.rows?.[0]) {
+        throw Object.assign(new Error('Admission capacity row missing'), { code: 'ZION_ADMISSION_CONFIG_MISSING' });
+      }
+      const current = await client.query(
+        'SELECT status FROM peer_admissions WHERE subject_node_id = $1 FOR UPDATE',
+        [subjectNodeId],
+      );
+      const status = current.rows?.[0]?.status;
+      if (status === undefined) return { ok: false, reason: 'admission-not-found', subjectNodeId };
+      if (status === 'revoked') return { ok: true, changed: false, subjectNodeId, status: 'revoked' };
+      if (status === 'released') return { ok: false, reason: 'admission-already-released', subjectNodeId, status: 'released' };
+      if (status !== 'active') {
+        throw Object.assign(new Error('Unknown peer admission status'), { code: 'ZION_ADMISSION_CONFIG_MISSING' });
+      }
+      await client.query(
+        "UPDATE peer_admissions SET status = 'revoked', updated_at = now() WHERE subject_node_id = $1 AND status = 'active'",
+        [subjectNodeId],
+      );
+      await client.query(
+        'UPDATE peer_admission_capacity SET active_reservations = GREATEST(0, active_reservations - 1), updated_at = now() WHERE singleton = true',
+      );
+      return { ok: true, changed: true, subjectNodeId, status: 'revoked' };
+    }).catch(error => {
+      if (error?.code === 'ZION_ADMISSION_CONFIG_MISSING' ||
+        error?.code === 'ZION_ADMISSION_COMMIT_OUTCOME_UNKNOWN') {
+        return { ok: false, reason: 'admission-state-unavailable' };
+      }
+      throw error;
+    });
+  }
+
   async releaseAdmission(subjectNodeId, status = 'released') {
     if (this.commitOutcomeUnknown) return { ok: false, reason: 'admission-state-unavailable' };
     if (!NODE_ID.test(subjectNodeId ?? '') || !['released', 'revoked'].includes(status)) {
