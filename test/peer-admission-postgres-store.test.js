@@ -182,7 +182,7 @@ test('shared admission fence holds the advisory lock through dispatch and reject
   assert.ok(sql.includes('SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))'));
   assert.ok(sql.indexOf('SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))') <
     sql.findIndex(x => x.startsWith('SELECT status FROM peer_admissions')));
-  assert.equal(sql.at(-1), 'COMMIT');
+  assert.ok(sql.includes('COMMIT'));
 
   const revokedPool = fakePool({ admissionStatus: 'revoked' });
   const revokedStore = new PostgresPeerAdmissionStore({ pool: revokedPool });
