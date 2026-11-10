@@ -196,8 +196,16 @@ test('PostgreSQL migration and independent-process admission races enforce capac
       revocationFinished = true;
       return result;
     });
-    await new Promise(resolve => setTimeout(resolve, 50));
-    const revocationWaitedForDispatch = !revocationFinished;
+    let revocationWaitingOnAdvisoryLock = false;
+    const waitDeadline = Date.now() + 2000;
+    while (!revocationWaitingOnAdvisoryLock && Date.now() < waitDeadline) {
+      const { rows: waiters } = await pool.query(
+        "SELECT count(*)::integer AS count FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE 'SELECT pg_advisory_xact_lock(hashtextextended%'",
+      );
+      revocationWaitingOnAdvisoryLock = Number(waiters[0]?.count ?? 0) > 0;
+      if (!revocationWaitingOnAdvisoryLock) await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    const revocationWaitedForDispatch = revocationWaitingOnAdvisoryLock && !revocationFinished;
     releaseDispatch();
     assert.deepEqual(await inFlightDispatch, {
       ok: true, admitted: true, status: 'active', value: 'frame-dispatched',
