@@ -192,7 +192,7 @@ export class PeerTransport {
 
   #attach(socket) {
     this.connections.add(socket);
-    const session = { id: randomBytes(16).toString('hex'), localNonce: randomBytes(32).toString('hex'), remoteNonce: null, authenticated: !this.genesis };
+    const session = { id: randomBytes(16).toString('hex'), localNonce: randomBytes(32).toString('hex'), remoteNonce: null, authenticated: !this.genesis, admissionRequired: false };
     socket.__zionSession = session;
     socket.setTimeout(15_000, () => socket.destroy());
     socket.setNoDelay(true);
@@ -375,6 +375,18 @@ export class PeerTransport {
     if (socket.__zionSession) socket.__zionSession.peerNodeId = checked.nodeId;
     if (this.revokedPeerIds.has(checked.nodeId)) { socket.destroy(); return; }
     const admissionEpoch = this.peerAdmissionEpochs.get(checked.nodeId) ?? 0;
+    // A process-local socket may outlive a revocation performed by another instance.
+    // Re-check the shared authoritative store before accepting every application frame.
+    if (socket.__zionSession?.authenticated && socket.__zionSession.admissionRequired) {
+      let stillAdmitted;
+      try { stillAdmitted = await this.admissionController.isAdmitted(checked.nodeId); }
+      catch { socket.destroy(); return; }
+      if (!stillAdmitted || socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
+          (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) {
+        socket.destroy();
+        return;
+      }
+    }
     const trustedByAllowlist = !this.trustedPeerIds || this.trustedPeerIds.has(checked.nodeId);
     if (!trustedByAllowlist && !this.admissionController) { socket.destroy(); return; }
     // Reject an already-seen envelope before the identity tier is charged. Replayed frames
@@ -518,6 +530,9 @@ export class PeerTransport {
           if (!admission?.ok && !admittedAfterAttempt) { socket.destroy(); return; }
           this.admittedPeerIds.add(checked.nodeId);
         }
+        // Persist the authorization mode on the session so subsequent application
+        // frames cannot rely on a stale process-local admission cache.
+        session.admissionRequired = !trustedByAllowlist && Boolean(this.admissionController);
         session.remoteNonce = payload.nonce;
         this.#sendHandshake(socket, { type: 'ZION_HANDSHAKE_ACK', networkId: this.networkId, protocolMajor: this.genesis.protocolMajor, nonce: session.localNonce, echo: session.remoteNonce });
         return;
