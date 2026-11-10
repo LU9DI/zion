@@ -117,6 +117,46 @@ test('PostgreSQL migration and independent-process admission races enforce capac
     assert.equal(Number(after[0].active_reservations), 0);
     assert.equal(after[0].active_admissions, 0);
 
+    // Scenario 1b: revocation is durable, idempotent, and decrements capacity once.
+    await clearAdmissions(pool);
+    await pool.query(
+      'UPDATE peer_admission_policy SET max_active_peers = 10, max_admissions_per_issuer = 5, policy_version = policy_version + 1 WHERE singleton = true',
+    );
+    const revocationStore = new PostgresPeerAdmissionStore({ pool, maxTransactionRetries: 5 });
+    const admitted = await revocationStore.commitAdmission(
+      admissionInput('9', ['1', '2'], ['9', 'a']),
+    );
+    assert.equal(admitted.ok, true);
+    assert.deepEqual(await revocationStore.getAdmissionStatus(id('9')), {
+      ok: true, subjectNodeId: id('9'), status: 'active',
+    });
+
+    const revoked = await revocationStore.revokeAdmission(id('9'));
+    assert.deepEqual(
+      { ok: revoked.ok, changed: revoked.changed, status: revoked.status },
+      { ok: true, changed: true, status: 'revoked' },
+    );
+    const repeatedRevocation = await revocationStore.revokeAdmission(id('9'));
+    assert.deepEqual(
+      { ok: repeatedRevocation.ok, changed: repeatedRevocation.changed, status: repeatedRevocation.status },
+      { ok: true, changed: false, status: 'revoked' },
+    );
+    assert.deepEqual(await revocationStore.getAdmissionStatus(id('9')), {
+      ok: true, subjectNodeId: id('9'), status: 'revoked',
+    });
+    const { rows: revokedCapacity } = await pool.query(
+      "SELECT c.active_reservations, count(a.subject_node_id)::integer AS active_admissions FROM peer_admission_capacity c LEFT JOIN peer_admissions a ON a.status = 'active' WHERE c.singleton = true GROUP BY c.active_reservations",
+    );
+    assert.equal(Number(revokedCapacity[0].active_reservations), 0);
+    assert.equal(revokedCapacity[0].active_admissions, 0);
+
+    const cannotReadmitRevoked = await revocationStore.commitAdmission(
+      admissionInput('9', ['1', '2'], ['b', 'c']),
+    );
+    assert.deepEqual(cannotReadmitRevoked, {
+      ok: false, reason: 'subject-already-admitted',
+    });
+
     // Scenario 2: the same invitation nonces cannot be consumed by two subjects.
     await clearAdmissions(pool);
     await pool.query(
