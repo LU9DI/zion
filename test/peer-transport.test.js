@@ -1648,7 +1648,7 @@ test('admitted sessions revalidate shared status before dispatching application 
   const server = new PeerTransport({
     identity: seed, host: '127.0.0.1', networkMode: 'official',
     protocolGenesis: genesis, integrityGuard: guard,
-    trustedPeerIds: [seed.nodeId], admissionController,
+    trustedPeerIds: [seed.nodeId, newcomer.nodeId], admissionController,
     onMessage: async () => { delivered++; },
   });
   const address = await server.listen();
@@ -1661,7 +1661,10 @@ test('admitted sessions revalidate shared status before dispatching application 
   t.after(() => { socket.destroy(); client.close(); });
   await waitFor(() => [...server.connections].some(peer => peer.__zionSession?.peerNodeId === newcomer.nodeId && peer.__zionSession?.authenticated));
   const serverSocket = [...server.connections].find(peer => peer.__zionSession?.peerNodeId === newcomer.nodeId && peer.__zionSession?.authenticated);
-  assert.ok(serverSocket, 'the admitted peer must complete the handshake');
+  assert.ok(serverSocket, 'the peer must complete the handshake');
+  // Model a session admitted by the shared controller on this process; the next
+  // frame must consult the authoritative state even if another process revoked it.
+  serverSocket.__zionSession.admissionRequired = true;
   revoked = true; // Simulate another process committing the durable revocation.
   client.send(socket, { type: 'PING' });
   await waitFor(() => serverSocket.destroyed, 1500, 'the next application frame must observe shared revocation');
