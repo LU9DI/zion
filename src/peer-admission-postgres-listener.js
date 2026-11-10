@@ -55,10 +55,10 @@ export class PostgresPeerRevocationListener {
         try { Promise.resolve(this.onRevocation(message.payload)).catch(() => {}); }
         catch { /* a notification callback must not crash the pg event loop */ }
       };
-      const onFailure = () => {
+      const onFailure = error => {
         if (this.client !== client) return;
         this.client = null;
-        try { client.release(); } catch { /* broken client is already unusable */ }
+        try { client.release(error); } catch { /* broken client is already unusable */ }
         this.#scheduleReconnect(generation);
       };
       client.on('notification', onNotification);
@@ -71,7 +71,7 @@ export class PostgresPeerRevocationListener {
         client.off('error', onFailure);
         client.off('end', onFailure);
         if (this.client === client) this.client = null;
-        try { client.release(); } catch {}
+        try { client.release(error); } catch {}
         throw error;
       }
       if (!this.running || generation !== this.generation) {
