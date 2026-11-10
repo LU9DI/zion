@@ -197,12 +197,13 @@ test('PostgreSQL migration and independent-process admission races enforce capac
       return result;
     });
     await new Promise(resolve => setTimeout(resolve, 50));
-    assert.equal(revocationFinished, false,
-      'revocation cannot commit while an authorized application dispatch is in flight');
+    const revocationWaitedForDispatch = !revocationFinished;
     releaseDispatch();
     assert.deepEqual(await inFlightDispatch, {
       ok: true, admitted: true, status: 'active', value: 'frame-dispatched',
     });
+    assert.equal(revocationWaitedForDispatch, true,
+      'revocation cannot commit while an authorized application dispatch is in flight');
     assert.equal((await waitingRevocation).status, 'revoked');
     const postRevocationDispatch = await revocationStore.withAdmissionFence(id('8'), async () => {
       throw new Error('revoked peer must not dispatch');
