@@ -398,6 +398,53 @@ export class PeerTransport {
         tierLimiter.refund?.(checked.nodeId);
         return;
       }
+      // An unknown identity in invite-admission mode is not yet authorized to
+      // consume the process-wide replay cache. Otherwise arbitrary self-generated
+      // identities can fill the cache before failing the voucher check and deny
+      // service to already-authorized peers.
+      if (this.genesis && !socket.__zionSession?.authenticated && !trustedByAllowlist) {
+        const session = socket.__zionSession;
+        const payload = checked.payload;
+        const validHandshake = payload?.type === 'ZION_HANDSHAKE' &&
+          payload.networkId === this.networkId &&
+          payload.channelBinding === this.#channelBinding(socket) &&
+          payload.protocolMajor === this.genesis.protocolMajor &&
+          typeof payload.nonce === 'string' && /^[a-f0-9]{64}$/.test(payload.nonce) &&
+          payload.nonce !== session.localNonce &&
+          (!session.remoteNonce || session.remoteNonce === payload.nonce);
+        if (!validHandshake) { socket.destroy(); return; }
+
+        const previouslyAdmitted = this.admittedPeerIds.has(checked.nodeId) ||
+          await this.admissionController.isAdmitted(checked.nodeId) === true;
+        if (socket.destroyed) {
+          tierLimiter.refund?.(checked.nodeId);
+          return;
+        }
+        if (!previouslyAdmitted) {
+          let admission;
+          try {
+            admission = await this.admissionController.admit({
+              subjectNodeId: checked.nodeId,
+              vouchers: payload.vouchers,
+            });
+          } catch {
+            socket.destroy();
+            return;
+          }
+          if (socket.destroyed) {
+            tierLimiter.refund?.(checked.nodeId);
+            return;
+          }
+          const admittedAfterAttempt = await this.admissionController.isAdmitted(checked.nodeId);
+          if (socket.destroyed) {
+            tierLimiter.refund?.(checked.nodeId);
+            return;
+          }
+          if (!admission?.ok && !admittedAfterAttempt) { socket.destroy(); return; }
+        }
+        this.admittedPeerIds.add(checked.nodeId);
+      }
+      // Only authorized/trusted identities can now consume replay-cache capacity.
       if (!this.replayGuard.accept(message, this.now())) { socket.destroy(); return; }
     } finally {
       this.inFlightMessages.delete(inFlightKey);
