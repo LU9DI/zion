@@ -40,7 +40,12 @@ export class PostgresPeerAdmissionController {
 
   async isAdmitted(subjectNodeId) {
     const result = await this.store.getAdmissionStatus(subjectNodeId);
-    return result?.ok === true && result.status === 'active';
+    if (!result?.ok) {
+      throw Object.assign(new Error('Authoritative peer admission status is unavailable'), {
+        code: 'ZION_ADMISSION_STATE_UNAVAILABLE',
+      });
+    }
+    return result.status === 'active';
   }
 
   async admit({ subjectNodeId, vouchers } = {}) {
