@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { EventEmitter } from 'node:events';
 import assert from 'node:assert/strict';
 import { createNodeIdentity } from '../src/peer-security.js';
 import { createPostgresPeerAdmissionRuntime } from '../src/postgres-peer-admission-runtime.js';
