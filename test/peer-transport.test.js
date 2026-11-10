@@ -1642,6 +1642,10 @@ test('admitted sessions revalidate shared status before dispatching application 
   let delivered = 0;
   const admissionController = {
     async isAdmitted() { return !revoked; },
+    async withAdmissionFence(_nodeId, work) {
+      if (revoked) return { ok: true, admitted: false, status: 'revoked' };
+      return { ok: true, admitted: true, status: 'active', value: await work() };
+    },
     async admit() { return { ok: true }; },
     async revoke() { revoked = true; return { ok: true, changed: true, status: 'revoked' }; },
   };
