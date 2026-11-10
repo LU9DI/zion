@@ -625,6 +625,95 @@ test('admission-store failure refunds the unauthenticated tier token and closes 
   assert.equal(server.replayGuard.seen.size, 0, 'storage failure must not consume replay-cache capacity');
 });
 
+test('concurrent handshakes for one identity persist invitation admission only once', async t => {
+  const { createPeerIntroductionVoucher } = await import('../src/peer-introduction-vouchers.js');
+  const { PeerAdmissionController } = await import('../src/peer-admission-controller.js');
+  const genesis = testGenesis('Zion concurrent admission');
+  const issuerA = createNodeIdentity();
+  const issuerB = createNodeIdentity();
+  const newcomer = createNodeIdentity();
+  const seed = createNodeIdentity();
+  const vouchers = [
+    createPeerIntroductionVoucher({ issuerIdentity: issuerA, subjectNodeId: newcomer.nodeId }),
+    createPeerIntroductionVoucher({ issuerIdentity: issuerB, subjectNodeId: newcomer.nodeId }),
+  ];
+
+  let persistedState = null;
+  let saveCalls = 0;
+  let releaseSave;
+  let notifySaveStarted;
+  const saveGate = new Promise(resolve => { releaseSave = resolve; });
+  const saveStarted = new Promise(resolve => { notifySaveStarted = resolve; });
+  const controller = new PeerAdmissionController({
+    trustedIssuerNodeIds: [issuerA.nodeId, issuerB.nodeId],
+    threshold: 2,
+    stateStore: {
+      load: () => persistedState,
+      async save(next) {
+        saveCalls++;
+        notifySaveStarted();
+        await saveGate;
+        persistedState = structuredClone(next);
+      },
+    },
+    capacityProvider: async () => ({ activePeers: 0, maxPeers: 10, storageHeadroomRatio: 0.5 }),
+  });
+
+  let initialReads = 0;
+  let releaseInitialReads;
+  const initialReadsGate = new Promise(resolve => { releaseInitialReads = resolve; });
+  let admitCalls = 0;
+  const admissionController = {
+    async isAdmitted(nodeId) {
+      if (initialReads < 2) {
+        initialReads++;
+        if (initialReads === 2) releaseInitialReads();
+        await initialReadsGate;
+      }
+      return controller.isAdmitted(nodeId);
+    },
+    admit(input) {
+      admitCalls++;
+      return controller.admit(input);
+    },
+  };
+  const integrityGuard = { async checkHealthy() {}, assertHealthy() {} };
+  const server = new PeerTransport({
+    identity: seed,
+    networkMode: 'official',
+    protocolGenesis: genesis,
+    integrityGuard,
+    trustedPeerIds: [issuerA.nodeId, issuerB.nodeId],
+    admissionController,
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({
+    identity: newcomer,
+    networkMode: 'official',
+    protocolGenesis: genesis,
+    integrityGuard,
+    trustedPeerIds: [seed.nodeId],
+    admissionVouchers: vouchers,
+  });
+  const sockets = await Promise.all([
+    client.connect('127.0.0.1', address.port),
+    client.connect('127.0.0.1', address.port),
+  ]);
+  t.after(() => { for (const socket of sockets) socket.destroy(); client.close(); });
+
+  await saveStarted;
+  await waitFor(() => admitCalls === 2);
+  releaseSave();
+  releaseInitialReads();
+
+  await waitFor(() => sockets.every(socket => socket.__zionSession?.authenticated === true));
+  assert.equal(saveCalls, 1, 'the same subject must consume invitation vouchers in one persisted admission');
+  assert.equal(controller.snapshot().admittedPeers, 1);
+  assert.equal(controller.snapshot().consumedInvitations, 2);
+  assert.equal(server.admittedPeerIds.has(newcomer.nodeId), true);
+});
+
 test('official transport rejects an unknown peer with no valid invite vouchers', async t => {
   const { PeerAdmissionController } = await import('../src/peer-admission-controller.js');
   const genesis = {
