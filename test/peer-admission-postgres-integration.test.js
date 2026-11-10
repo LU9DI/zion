@@ -225,10 +225,10 @@ test('PostgreSQL migration and independent-process admission races enforce capac
       admissionInput('7', ['3', '4'], ['7', '8']),
     );
     assert.equal(releasable.ok, true);
-    let releaseGateOpen;
+    let releaseAdmissionGateOpen;
     let markReleaseDispatchStarted;
     const releaseDispatchStarted = new Promise(resolve => { markReleaseDispatchStarted = resolve; });
-    const releaseDispatchGate = new Promise(resolve => { releaseGateOpen = resolve; });
+    const releaseDispatchGate = new Promise(resolve => { releaseAdmissionGateOpen = resolve; });
     const releaseInFlightDispatch = revocationStore.withAdmissionFence(id('7'), async () => {
       markReleaseDispatchStarted();
       await releaseDispatchGate;
@@ -250,7 +250,7 @@ test('PostgreSQL migration and independent-process admission races enforce capac
       if (!releaseWaitingOnAdvisoryLock) await new Promise(resolve => setTimeout(resolve, 10));
     }
     const releaseWaitedForDispatch = releaseWaitingOnAdvisoryLock && !releaseFinished;
-    releaseGateOpen();
+    releaseAdmissionGateOpen();
     assert.deepEqual(await releaseInFlightDispatch, {
       ok: true, admitted: true, status: 'active', value: 'release-race-frame-dispatched',
     });
