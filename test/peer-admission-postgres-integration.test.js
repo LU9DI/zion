@@ -175,6 +175,42 @@ test('PostgreSQL migration and independent-process admission races enforce capac
       ok: false, reason: 'subject-already-admitted',
     });
 
+    // Scenario 1c: an in-flight authorized dispatch holds a shared advisory
+    // fence. Revocation must wait for it, then future dispatches must see revoked.
+    const fencedAdmission = await revocationStore.commitAdmission(
+      admissionInput('8', ['3', '4'], ['e', 'f']),
+    );
+    assert.equal(fencedAdmission.ok, true);
+    let releaseDispatch;
+    let markDispatchStarted;
+    const dispatchStarted = new Promise(resolve => { markDispatchStarted = resolve; });
+    const dispatchGate = new Promise(resolve => { releaseDispatch = resolve; });
+    const inFlightDispatch = revocationStore.withAdmissionFence(id('8'), async () => {
+      markDispatchStarted();
+      await dispatchGate;
+      return 'frame-dispatched';
+    });
+    await dispatchStarted;
+    let revocationFinished = false;
+    const waitingRevocation = revocationStore.revokeAdmission(id('8')).then(result => {
+      revocationFinished = true;
+      return result;
+    });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(revocationFinished, false,
+      'revocation cannot commit while an authorized application dispatch is in flight');
+    releaseDispatch();
+    assert.deepEqual(await inFlightDispatch, {
+      ok: true, admitted: true, status: 'active', value: 'frame-dispatched',
+    });
+    assert.equal((await waitingRevocation).status, 'revoked');
+    const postRevocationDispatch = await revocationStore.withAdmissionFence(id('8'), async () => {
+      throw new Error('revoked peer must not dispatch');
+    });
+    assert.deepEqual(postRevocationDispatch, {
+      ok: true, admitted: false, status: 'revoked',
+    });
+
     // Scenario 2: the same invitation nonces cannot be consumed by two subjects.
     await clearAdmissions(pool);
     await pool.query(
