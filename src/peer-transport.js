@@ -69,7 +69,7 @@ export class PeerTransport {
     this.integrityGuard = integrityGuard;
     this.admissionController = admissionController;
     this.admissionVouchers = Object.freeze([...admissionVouchers]);
-    this.admittedPeerIds = new Set();
+    this.admittedPeerIds = new Set();\n    this.revokedPeerIds = new Set();\n    this.peerAdmissionEpochs = new Map();
     this.maxFrameBytes = maxFrameBytes; this.maxMessageBytes = this.genesis?.limits.maxMessageBytes ?? maxFrameBytes; this.allowedTypes = new Set(allowedTypes); this.trustedPeerIds = trustedPeerIds === null ? null : new Set(trustedPeerIds); this.onMessage = onMessage;
     this.replayGuard = replayGuard; this.rateLimiter = rateLimiter; this.unauthenticatedRateLimiter = unauthenticatedRateLimiter; this.socketRateLimiter = socketRateLimiter; this.globalRateLimiter = globalRateLimiter; this.transferScheduler = transferScheduler; this.now = now;
     this.networkId = this.genesis ? calculateNetworkId(this.genesis) : null;
@@ -370,7 +370,7 @@ export class PeerTransport {
     catch { socket.destroy(); return; }
     const checked = verifyPeerMessage(message, { now: this.now(), maxBytes: this.maxFrameBytes });
     if (!checked.ok) { socket.destroy(); return; }
-    if (socket.__zionSession) socket.__zionSession.peerNodeId = checked.nodeId;
+    if (socket.__zionSession) socket.__zionSession.peerNodeId = checked.nodeId;\n    if (this.revokedPeerIds.has(checked.nodeId)) { socket.destroy(); return; }\n    const admissionEpoch = this.peerAdmissionEpochs.get(checked.nodeId) ?? 0;
     const trustedByAllowlist = !this.trustedPeerIds || this.trustedPeerIds.has(checked.nodeId);
     if (!trustedByAllowlist && !this.admissionController) { socket.destroy(); return; }
     // Reject an already-seen envelope before the identity tier is charged. Replayed frames
@@ -525,7 +525,7 @@ export class PeerTransport {
       if (!operation.ok) { socket.destroy(); return; }
     }
     try {
-      await this.onMessage(Object.freeze({ nodeId: checked.nodeId, payload: checked.payload, envelope: message }), socket);
+      if (this.revokedPeerIds.has(checked.nodeId) ||\n          (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch || socket.destroyed) {\n        socket.destroy();\n        return;\n      }\n      await this.onMessage(Object.freeze({ nodeId: checked.nodeId, payload: checked.payload, envelope: message }), socket);
     } catch {
       // Fail closed on handler errors; do not leak internal error details to peers.
       socket.destroy();
@@ -572,6 +572,31 @@ export class PeerTransport {
       if (limiter.allow(nodeId)) return true;
     }
     return false;
+  }
+
+  /**
+   * Revoke one admitted peer. The local fence is raised synchronously before the
+   * persistent operation, so pending handshakes/frames cannot outlive this call.
+   * A failed persistence operation leaves the local fence in place (fail closed).
+   * Cross-process session invalidation requires a shared notification mechanism.
+   */
+  async revokePeer(subjectNodeId) {
+    if (!/^[a-f0-9]{64}$/.test(subjectNodeId ?? '') ||
+        !this.admissionController || typeof this.admissionController.revoke !== 'function') {
+      return { ok: false, reason: 'revocation-unavailable' };
+    }
+    this.revokedPeerIds.add(subjectNodeId);
+    this.peerAdmissionEpochs.set(subjectNodeId,
+      (this.peerAdmissionEpochs.get(subjectNodeId) ?? 0) + 1);
+    this.admittedPeerIds.delete(subjectNodeId);
+    for (const socket of this.connections) {
+      if (socket.__zionSession?.peerNodeId === subjectNodeId) socket.destroy();
+    }
+    let result;
+    try { result = await this.admissionController.revoke(subjectNodeId); }
+    catch { return { ok: false, reason: 'admission-state-unavailable' }; }
+    if (!result?.ok) return result ?? { ok: false, reason: 'admission-state-unavailable' };
+    return { ...result, locallyFenced: true };
   }
 
   send(socket, payload) {
