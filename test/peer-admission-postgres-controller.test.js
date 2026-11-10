@@ -24,6 +24,11 @@ function fixture() {
       state.set(input.subjectNodeId, 'active');
       return { ok: true, subjectNodeId: input.subjectNodeId };
     },
+    async withAdmissionFence(nodeId, work) {
+      calls.push(['fence', nodeId]);
+      if (state.get(nodeId) !== 'active') return { ok: true, admitted: false, status: state.get(nodeId) ?? null };
+      return { ok: true, admitted: true, status: 'active', value: await work() };
+    },
     async revokeAdmission(nodeId) {
       calls.push(['revoke', nodeId]);
       if (state.get(nodeId) !== 'active') return { ok: false, reason: 'admission-not-found' };
@@ -69,4 +74,19 @@ test('Postgres controller rejects malformed subject IDs before database writes',
     ok: false, reason: 'invalid-input',
   });
   assert.equal(x.store.calls.length, 0);
+});
+
+
+test('Postgres controller delegates the final application dispatch fence to its store', async () => {
+  const x = fixture();
+  await x.controller.admit({ subjectNodeId: x.subject.nodeId, vouchers: x.vouchers });
+  const result = await x.controller.withAdmissionFence(x.subject.nodeId, async () => 'dispatched');
+  assert.deepEqual(result, {
+    ok: true, admitted: true, status: 'active', value: 'dispatched',
+  });
+  assert.equal(x.store.calls.some(call => call[0] === 'fence'), true);
+  await x.controller.revoke(x.subject.nodeId);
+  assert.deepEqual(await x.controller.withAdmissionFence(x.subject.nodeId, async () => {
+    throw new Error('revoked peer cannot dispatch');
+  }), { ok: true, admitted: false, status: 'revoked' });
 });
