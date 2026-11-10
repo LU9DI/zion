@@ -659,7 +659,8 @@ export class PeerTransport {
    * Revoke one admitted peer. The local fence is raised synchronously before the
    * persistent operation, so pending handshakes/frames cannot outlive this call.
    * A failed persistence operation leaves the local fence in place (fail closed).
-   * Cross-process session invalidation requires a shared notification mechanism.
+   * PostgreSQL-backed controllers serialize in-flight frame dispatch and publish
+   * cross-process notifications; the listener is an acceleration path for teardown.
    */
   async revokePeer(subjectNodeId) {
     if (!/^[a-f0-9]{64}$/.test(subjectNodeId ?? '') ||
