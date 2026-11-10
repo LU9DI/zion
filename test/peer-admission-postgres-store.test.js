@@ -23,7 +23,11 @@ function fakePool({ failInvitationInsert = false, retryOnce = false, failCommit 
   let currentAdmissionStatus = admissionStatus;
   return {
     calls,
-    async query(sql, params = []) {\n      const client = await this.connect();\n      try { return await client.query(sql, params); } finally { client.release(); }\n    },\n    async connect() {
+    async query(sql, params = []) {
+      const client = await this.connect();
+      try { return await client.query(sql, params); } finally { client.release(); }
+    },
+    async connect() {
       return {
         async query(sql, params = []) {
           calls.push({ sql: sql.replace(/\s+/g, ' ').trim(), params });
