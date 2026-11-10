@@ -19,10 +19,11 @@ const input = () => ({
 function fakePool({ failInvitationInsert = false, retryOnce = false, failCommit = false, admissionStatus = 'active' } = {}) {
   const calls = [];
   let retryPending = retryOnce;
-  let commitPending = failCommit;\n  let currentAdmissionStatus = admissionStatus;
+  let commitPending = failCommit;
+  let currentAdmissionStatus = admissionStatus;
   return {
     calls,
-    async connect() {
+    async query(sql, params = []) {\n      const client = await this.connect();\n      try { return await client.query(sql, params); } finally { client.release(); }\n    },\n    async connect() {
       return {
         async query(sql, params = []) {
           calls.push({ sql: sql.replace(/\s+/g, ' ').trim(), params });
@@ -34,7 +35,9 @@ function fakePool({ failInvitationInsert = false, retryOnce = false, failCommit 
             return { rows: [{ max_active_peers: 100, max_admissions_per_issuer: 5,
               min_storage_headroom_ratio: 0.1, policy_version: 7 }] };
           }
-          if (sql.startsWith('SELECT active_reservations')) return { rows: [{ active_reservations: 0 }] };\n          if (sql.startsWith('SELECT status FROM peer_admissions')) return { rows: currentAdmissionStatus ? [{ status: currentAdmissionStatus }] : [] };\n          if (sql.includes(\"SET status = 'revoked'\")) { currentAdmissionStatus = 'revoked'; return { rows: [] }; }
+          if (sql.startsWith('SELECT active_reservations')) return { rows: [{ active_reservations: 0 }] };
+          if (sql.startsWith('SELECT status FROM peer_admissions')) return { rows: currentAdmissionStatus ? [{ status: currentAdmissionStatus }] : [] };
+          if (sql.includes(\"SET status = 'revoked'\")) { currentAdmissionStatus = 'revoked'; return { rows: [] }; }
           if (sql.includes('count(*)::integer')) return { rows: [{ count: 0 }] };
           if (sql.startsWith('INSERT INTO consumed_peer_invitations') && failInvitationInsert) {
             throw Object.assign(new Error('duplicate invitation'), {
