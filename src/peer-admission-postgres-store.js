@@ -172,10 +172,47 @@ export class PostgresPeerAdmissionStore {
     }
   }
 
+  /**
+   * Linearizes one application-frame dispatch against revocation.
+   * The shared transaction advisory lock remains held until work completes;
+   * revokeAdmission takes the matching exclusive lock before changing status.
+   * Keep work bounded: it runs while one PostgreSQL connection and lock are held.
+   */
+  async withAdmissionFence(subjectNodeId, work) {
+    if (this.commitOutcomeUnknown) return { ok: false, reason: 'admission-state-unavailable' };
+    if (!NODE_ID.test(subjectNodeId ?? '') || typeof work !== 'function') {
+      return { ok: false, reason: 'invalid-input' };
+    }
+    try {
+      return await this.#transaction(async client => {
+        await client.query(
+          'SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))',
+          [subjectNodeId],
+        );
+        const current = await client.query(
+          'SELECT status FROM peer_admissions WHERE subject_node_id = $1',
+          [subjectNodeId],
+        );
+        const status = current.rows?.[0]?.status ?? null;
+        if (status !== 'active') return { ok: true, admitted: false, status };
+        const value = await work();
+        return { ok: true, admitted: true, status: 'active', value };
+      });
+    } catch {
+      return { ok: false, reason: 'admission-state-unavailable' };
+    }
+  }
+
   async revokeAdmission(subjectNodeId) {
     if (this.commitOutcomeUnknown) return { ok: false, reason: 'admission-state-unavailable' };
     if (!NODE_ID.test(subjectNodeId ?? '')) return { ok: false, reason: 'invalid-input' };
     return this.#transaction(async client => {
+      // Exclusive lock waits for already-authorized dispatches to finish and
+      // prevents new dispatches from passing their authoritative status read.
+      await client.query(
+        'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+        [subjectNodeId],
+      );
       const capacityResult = await client.query(
         'SELECT active_reservations FROM peer_admission_capacity WHERE singleton = true FOR UPDATE',
       );
