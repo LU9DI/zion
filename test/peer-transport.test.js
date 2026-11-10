@@ -1631,3 +1631,38 @@ test('peer revocation fences an admission handshake that is awaiting its backend
   assert.equal(outcome.socket.__zionSession?.authenticated, false);
   assert.equal(server.admittedPeerIds.has(newcomer.nodeId), false);
 });
+
+
+test('admitted sessions revalidate shared status before dispatching application frames', async t => {
+  const genesis = testGenesis('Zion cross-process revocation frame fence');
+  const seed = createNodeIdentity();
+  const newcomer = createNodeIdentity();
+  const guard = { status: { quarantined: false }, async checkHealthy() {}, assertHealthy() {}, addQuarantineListener: () => () => {} };
+  let revoked = false;
+  let delivered = 0;
+  const admissionController = {
+    async isAdmitted() { return !revoked; },
+    async admit() { return { ok: true }; },
+    async revoke() { revoked = true; return { ok: true, changed: true, status: 'revoked' }; },
+  };
+  const server = new PeerTransport({
+    identity: seed, host: '127.0.0.1', networkMode: 'official',
+    protocolGenesis: genesis, integrityGuard: guard,
+    trustedPeerIds: [seed.nodeId], admissionController,
+    onMessage: async () => { delivered++; },
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({
+    identity: newcomer, host: '127.0.0.1', networkMode: 'official',
+    protocolGenesis: genesis, integrityGuard: guard, trustedPeerIds: [seed.nodeId],
+  });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(() => { socket.destroy(); client.close(); });
+  const serverSocket = await waitFor(() => [...server.connections].find(peer => peer.__zionSession?.peerNodeId === newcomer.nodeId && peer.__zionSession?.authenticated));
+  assert.ok(serverSocket, 'the admitted peer must complete the handshake');
+  revoked = true; // Simulate another process committing the durable revocation.
+  client.send(socket, { type: 'PING' });
+  await waitFor(() => serverSocket.destroyed, 1500, 'the next application frame must observe shared revocation');
+  assert.equal(delivered, 0, 'revoked peer frames must never reach onMessage');
+});
