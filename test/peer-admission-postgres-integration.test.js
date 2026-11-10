@@ -181,10 +181,10 @@ test('PostgreSQL migration and independent-process admission races enforce capac
       admissionInput('8', ['3', '4'], ['e', 'f']),
     );
     assert.equal(fencedAdmission.ok, true);
-    let releaseDispatch;
+    let releaseGateOpen;
     let markDispatchStarted;
     const dispatchStarted = new Promise(resolve => { markDispatchStarted = resolve; });
-    const dispatchGate = new Promise(resolve => { releaseDispatch = resolve; });
+    const dispatchGate = new Promise(resolve => { releaseGateOpen = resolve; });
     const inFlightDispatch = revocationStore.withAdmissionFence(id('8'), async () => {
       markDispatchStarted();
       await dispatchGate;
@@ -206,7 +206,7 @@ test('PostgreSQL migration and independent-process admission races enforce capac
       if (!revocationWaitingOnAdvisoryLock) await new Promise(resolve => setTimeout(resolve, 10));
     }
     const revocationWaitedForDispatch = revocationWaitingOnAdvisoryLock && !revocationFinished;
-    releaseDispatch();
+    releaseGateOpen();
     assert.deepEqual(await inFlightDispatch, {
       ok: true, admitted: true, status: 'active', value: 'frame-dispatched',
     });
@@ -225,10 +225,10 @@ test('PostgreSQL migration and independent-process admission races enforce capac
       admissionInput('7', ['3', '4'], ['7', '8']),
     );
     assert.equal(releasable.ok, true);
-    let releaseDispatch;
+    let releaseGateOpen;
     let markReleaseDispatchStarted;
     const releaseDispatchStarted = new Promise(resolve => { markReleaseDispatchStarted = resolve; });
-    const releaseDispatchGate = new Promise(resolve => { releaseDispatch = resolve; });
+    const releaseDispatchGate = new Promise(resolve => { releaseGateOpen = resolve; });
     const releaseInFlightDispatch = revocationStore.withAdmissionFence(id('7'), async () => {
       markReleaseDispatchStarted();
       await releaseDispatchGate;
@@ -250,7 +250,7 @@ test('PostgreSQL migration and independent-process admission races enforce capac
       if (!releaseWaitingOnAdvisoryLock) await new Promise(resolve => setTimeout(resolve, 10));
     }
     const releaseWaitedForDispatch = releaseWaitingOnAdvisoryLock && !releaseFinished;
-    releaseDispatch();
+    releaseGateOpen();
     assert.deepEqual(await releaseInFlightDispatch, {
       ok: true, admitted: true, status: 'active', value: 'release-race-frame-dispatched',
     });
