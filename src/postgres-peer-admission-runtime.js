@@ -20,12 +20,17 @@ export function createPostgresPeerAdmissionRuntime({
   if (!pool || typeof pool.connect !== 'function') {
     throw new TypeError('A node-postgres-compatible pool is required');
   }
-  if (!controllerOptions || typeof controllerOptions !== 'object' ||
-      Array.isArray(controllerOptions)) {
+  const isOptionsObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+  if (!isOptionsObject(storeOptions)) {
+    throw new TypeError('PostgreSQL store options must be an object');
+  }
+  if (!isOptionsObject(controllerOptions)) {
     throw new TypeError('PostgreSQL admission controller options are required');
   }
-  if (!transportOptions || typeof transportOptions !== 'object' ||
-      Array.isArray(transportOptions)) {
+  if (!isOptionsObject(listenerOptions)) {
+    throw new TypeError('PostgreSQL listener options must be an object');
+  }
+  if (!isOptionsObject(transportOptions)) {
     throw new TypeError('Official peer transport options are required');
   }
   if (transportOptions.networkMode !== undefined && transportOptions.networkMode !== 'official') {
