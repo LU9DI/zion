@@ -281,14 +281,11 @@ export class PostgresPeerAdmissionStore {
       if (currentStatus === undefined) {
         return { ok: false, reason: 'admission-not-found', subjectNodeId };
       }
+      if (currentStatus === status) {
+        return { ok: true, changed: false, subjectNodeId, status: currentStatus };
+      }
       if (currentStatus !== 'active') {
-        return {
-          ok: currentStatus === status,
-          changed: false,
-          reason: currentStatus === status ? undefined : 'admission-already-inactive',
-          subjectNodeId,
-          status: currentStatus,
-        };
+        return { ok: false, changed: false, reason: 'admission-already-inactive', subjectNodeId, status: currentStatus };
       }
       const updated = await client.query(
         "UPDATE peer_admissions SET status = $2, updated_at = now() WHERE subject_node_id = $1 AND status = 'active' RETURNING subject_node_id",
