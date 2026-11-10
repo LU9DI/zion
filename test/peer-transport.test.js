@@ -1666,7 +1666,7 @@ test('admitted sessions revalidate shared status before dispatching application 
   // frame must consult the authoritative state even if another process revoked it.
   serverSocket.__zionSession.admissionRequired = true;
   revoked = true; // Simulate another process committing the durable revocation.
-  client.send(socket, { type: 'PING' });
+  client.send(socket, { type: 'PING', nonce: 'a'.repeat(64) });
   await waitFor(() => serverSocket.destroyed, 1500, 'the next application frame must observe shared revocation');
   assert.equal(delivered, 0, 'revoked peer frames must never reach onMessage');
 });
