@@ -10,12 +10,12 @@ import { join } from 'node:path';
 import { createNodeIdentity, signPeerMessage, PeerRateLimiter } from '../src/peer-security.js';
 import { PeerTransport } from '../src/peer-transport.js';
 
-function waitFor(predicate, timeoutMs = 1500) {
+function waitFor(predicate, timeoutMs = 1500, message = 'Timed out waiting for peer message') {
   return new Promise((resolve, reject) => {
     const started = Date.now();
     const tick = () => {
       if (predicate()) return resolve();
-      if (Date.now() - started > timeoutMs) return reject(new Error('Timed out waiting for peer message'));
+      if (Date.now() - started > timeoutMs) return reject(new Error(message));
       setTimeout(tick, 5);
     };
     tick();
@@ -458,6 +458,14 @@ test('close aborts inbound TLS sockets that have not completed their handshake',
   await server.close();
   assert.equal(pendingServerSocket.destroyed, true, 'close() must destroy the server-side socket during TLS negotiation');
   await rawClosed;
+  // socket.destroy() is synchronous, but the 'close' event that releases the socket
+  // from serverSockets is delivered on a later tick. Wait for that bookkeeping to
+  // settle instead of asserting it synchronously after close() resolves.
+  await waitFor(
+    () => !server.serverSockets.has(pendingServerSocket) && server.serverSockets.size === 0,
+    1000,
+    'Timed out waiting for the closed inbound TLS socket to leave serverSockets',
+  );
   assert.equal(server.serverSockets.size, 0);
 });
 
