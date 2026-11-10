@@ -1622,6 +1622,12 @@ test('peer revocation fences an admission handshake that is awaiting its backend
   const revoked = await server.revokePeer(newcomer.nodeId);
   assert.equal(revoked.ok, true);
   finishRead(true);
-  await assert.rejects(connecting);
+  // connect() resolves at the TCP/TLS layer; the protocol handshake is asynchronous.
+  // Revocation must therefore close the established socket rather than necessarily
+  // rejecting the initial connect() promise.
+  const outcome = await connecting.then(socket => ({ socket }), error => ({ error }));
+  assert.equal(outcome.error, undefined, 'the TCP connection may already have completed');
+  await waitFor(() => outcome.socket.destroyed, 1500, 'revoked in-flight handshake must close its socket');
+  assert.equal(outcome.socket.__zionSession?.authenticated, false);
   assert.equal(server.admittedPeerIds.has(newcomer.nodeId), false);
 });
