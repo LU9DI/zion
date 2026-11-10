@@ -273,6 +273,23 @@ export class PostgresPeerAdmissionStore {
       if (!capacityResult.rows?.[0]) {
         throw Object.assign(new Error('Admission capacity row missing'), { code: 'ZION_ADMISSION_CONFIG_MISSING' });
       }
+      const current = await client.query(
+        'SELECT status FROM peer_admissions WHERE subject_node_id = $1 FOR UPDATE',
+        [subjectNodeId],
+      );
+      const currentStatus = current.rows?.[0]?.status;
+      if (currentStatus === undefined) {
+        return { ok: false, reason: 'admission-not-found', subjectNodeId };
+      }
+      if (currentStatus !== 'active') {
+        return {
+          ok: currentStatus === status,
+          changed: false,
+          reason: currentStatus === status ? undefined : 'admission-already-inactive',
+          subjectNodeId,
+          status: currentStatus,
+        };
+      }
       const updated = await client.query(
         "UPDATE peer_admissions SET status = $2, updated_at = now() WHERE subject_node_id = $1 AND status = 'active' RETURNING subject_node_id",
         [subjectNodeId, status],
