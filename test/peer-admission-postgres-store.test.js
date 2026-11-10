@@ -202,3 +202,22 @@ test('revocation acquires the exclusive advisory fence before changing durable a
   const statusWrite = sql.findIndex(x => x.includes("SET status = 'revoked'"));
   assert.ok(exclusive >= 0 && exclusive < statusRead && statusRead < statusWrite);
 });
+
+
+test('release serializes against dispatch and notifies peers when admission becomes inactive', async () => {
+  const pool = fakePool({ admissionStatus: 'active' });
+  const store = new PostgresPeerAdmissionStore({ pool });
+  const result = await store.releaseAdmission(id('a'), 'released');
+  assert.deepEqual(result, {
+    ok: true, changed: true, subjectNodeId: id('a'), status: 'released',
+  });
+  const sql = pool.calls.map(x => x.sql);
+  const exclusive = sql.indexOf('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))');
+  const statusWrite = sql.findIndex(x => x.includes("SET status = $2"));
+  const notification = sql.findIndex(x => x.includes("pg_notify('zion_peer_revocations'"));
+  assert.ok(exclusive >= 0 && exclusive < statusWrite,
+    'release must acquire the exclusive dispatch fence before changing status');
+  assert.ok(notification > statusWrite,
+    'release must notify listeners after the durable status transition is staged');
+  assert.ok(sql.includes('COMMIT'));
+});
