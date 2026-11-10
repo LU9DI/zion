@@ -493,7 +493,7 @@ export class PeerTransport {
           payload.nonce !== session.localNonce && (!session.remoteNonce || session.remoteNonce === payload.nonce)) {
         // Admission state is only needed for a new handshake. Avoid a remote/transactional
         // store read for every authenticated application frame from an already connected peer.
-        const previouslyAdmitted = this.admittedPeerIds.has(checked.nodeId) ||
+        const previouslyAdmitted = trustedByAllowlist || this.admittedPeerIds.has(checked.nodeId) ||
           (this.admissionController ? await this.admissionController.isAdmitted(checked.nodeId) === true : false);
         if (socket.destroyed) return;
         if (!trustedByAllowlist && !previouslyAdmitted) {
