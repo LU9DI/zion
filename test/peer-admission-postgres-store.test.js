@@ -16,10 +16,10 @@ const input = () => ({
   maxAdmissionsPerIssuer: 5,
 });
 
-function fakePool({ failInvitationInsert = false, retryOnce = false, failCommit = false } = {}) {
+function fakePool({ failInvitationInsert = false, retryOnce = false, failCommit = false, admissionStatus = 'active' } = {}) {
   const calls = [];
   let retryPending = retryOnce;
-  let commitPending = failCommit;
+  let commitPending = failCommit;\n  let currentAdmissionStatus = admissionStatus;
   return {
     calls,
     async connect() {
@@ -34,7 +34,7 @@ function fakePool({ failInvitationInsert = false, retryOnce = false, failCommit 
             return { rows: [{ max_active_peers: 100, max_admissions_per_issuer: 5,
               min_storage_headroom_ratio: 0.1, policy_version: 7 }] };
           }
-          if (sql.startsWith('SELECT active_reservations')) return { rows: [{ active_reservations: 0 }] };
+          if (sql.startsWith('SELECT active_reservations')) return { rows: [{ active_reservations: 0 }] };\n          if (sql.startsWith('SELECT status FROM peer_admissions')) return { rows: currentAdmissionStatus ? [{ status: currentAdmissionStatus }] : [] };\n          if (sql.includes(\"SET status = 'revoked'\")) { currentAdmissionStatus = 'revoked'; return { rows: [] }; }
           if (sql.includes('count(*)::integer')) return { rows: [{ count: 0 }] };
           if (sql.startsWith('INSERT INTO consumed_peer_invitations') && failInvitationInsert) {
             throw Object.assign(new Error('duplicate invitation'), {
@@ -110,6 +110,40 @@ test('release is idempotent and updates reservation count only when active row c
   assert.ok(pool.calls.some(x => x.sql === 'COMMIT'));
 });
 
+
+
+test('authoritative admission status distinguishes active, revoked, and missing identities', async () => {
+  const activePool = fakePool({ admissionStatus: 'active' });
+  const active = await new PostgresPeerAdmissionStore({ pool: activePool }).getAdmissionStatus(id('a'));
+  assert.deepEqual(active, { ok: true, subjectNodeId: id('a'), status: 'active' });
+
+  const missingPool = fakePool({ admissionStatus: null });
+  const missing = await new PostgresPeerAdmissionStore({ pool: missingPool }).getAdmissionStatus(id('b'));
+  assert.deepEqual(missing, { ok: true, subjectNodeId: id('b'), status: null });
+
+  const unavailablePool = { async query() { throw new Error('database unavailable'); }, async connect() { throw new Error('database unavailable'); } };
+  assert.deepEqual(await new PostgresPeerAdmissionStore({ pool: unavailablePool }).getAdmissionStatus(id('c')), {
+    ok: false, reason: 'admission-state-unavailable',
+  });
+});
+
+test('revocation commits once, is idempotent, and never reactivates released admissions', async () => {
+  const pool = fakePool({ admissionStatus: 'active' });
+  const store = new PostgresPeerAdmissionStore({ pool });
+  assert.deepEqual(await store.revokeAdmission(id('a')), {
+    ok: true, changed: true, subjectNodeId: id('a'), status: 'revoked',
+  });
+  assert.deepEqual(await store.revokeAdmission(id('a')), {
+    ok: true, changed: false, subjectNodeId: id('a'), status: 'revoked',
+  });
+  assert.equal(pool.calls.filter(x => x.sql.includes("SET status = 'revoked'")).length, 1);
+  assert.equal(pool.calls.filter(x => x.sql.includes('GREATEST(0, active_reservations - 1)')).length, 1);
+
+  const released = new PostgresPeerAdmissionStore({ pool: fakePool({ admissionStatus: 'released' }) });
+  assert.deepEqual(await released.revokeAdmission(id('b')), {
+    ok: false, reason: 'admission-already-released', subjectNodeId: id('b'), status: 'released',
+  });
+});
 
 test('ambiguous commit outcome fails closed and is never automatically retried', async () => {
   const pool = fakePool({ failCommit: true });
