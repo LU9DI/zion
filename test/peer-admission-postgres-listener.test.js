@@ -91,3 +91,42 @@ test('listener detaches failed-session handlers before reconnecting', async () =
   assert.equal(pool.clients.length, 2);
   await listener.stop();
 });
+
+
+test('listener UNLISTENs before releasing a client when stop races the pending LISTEN query', async () => {
+  const clients = [];
+  let finishListen;
+  const pool = {
+    async connect() {
+      const client = new EventEmitter();
+      client.queries = [];
+      client.releaseCount = 0;
+      client.query = async sql => {
+        client.queries.push(sql);
+        if (sql === 'LISTEN zion_peer_revocations') {
+          return new Promise(resolve => { finishListen = () => resolve({ rows: [] }); });
+        }
+        return { rows: [] };
+      };
+      client.release = () => { client.releaseCount++; };
+      clients.push(client);
+      return client;
+    },
+  };
+  const listener = new PostgresPeerRevocationListener({ pool, onRevocation: () => {} });
+  const startPromise = listener.start();
+  while (!finishListen) await new Promise(resolve => setImmediate(resolve));
+  const stopPromise = listener.stop();
+  finishListen();
+  await Promise.all([startPromise, stopPromise]);
+
+  assert.deepEqual(clients[0].queries, [
+    'LISTEN zion_peer_revocations',
+    'UNLISTEN zion_peer_revocations',
+  ]);
+  assert.equal(clients[0].releaseCount, 1);
+  assert.equal(clients[0].listenerCount('notification'), 0);
+  assert.equal(clients[0].listenerCount('error'), 0);
+  assert.equal(clients[0].listenerCount('end'), 0);
+  assert.equal(listener.running, false);
+});
