@@ -670,6 +670,10 @@ export class PeerTransport {
     // Quarantine is terminal for this transport instance. Persist the state so a
     // concurrent listen() cannot start a server after an awaited health check returns.
     this.quarantined = true;
+    if (this.revocationListenerStarted) {
+      this.revocationListenerStarted = false;
+      Promise.resolve(this.revocationListener.stop()).catch(() => {});
+    }
     // Stop accepting peers first, then terminate established sessions. Do not rely on
     // the next send/receive operation to notice quarantine.
     for (const socket of this.connections) socket.destroy();
