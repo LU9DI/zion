@@ -798,6 +798,35 @@ test('concurrent handshakes for one identity persist invitation admission only o
   assert.equal(server.admittedPeerIds.has(newcomer.nodeId), true);
 });
 
+test('trusted bootstrap peer handshake does not depend on invitation storage', async t => {
+  const genesis = testGenesis('Zion trusted bootstrap storage independence');
+  const serverIdentity = createNodeIdentity();
+  const newcomer = createNodeIdentity();
+  let admissionReads = 0;
+  const server = new PeerTransport({
+    identity: serverIdentity,
+    networkMode: 'official',
+    protocolGenesis: genesis,
+    integrityGuard: { async checkHealthy() {}, assertHealthy() {} },
+    trustedPeerIds: [newcomer.nodeId],
+    admissionController: {
+      async isAdmitted() { admissionReads++; throw new Error('invitation store unavailable'); },
+      async admit() { throw new Error('trusted bootstrap must not require invitation admission'); },
+    },
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({
+    identity: newcomer,
+    protocolGenesis: genesis,
+    trustedPeerIds: [serverIdentity.nodeId],
+  });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(() => { socket.destroy(); client.close(); });
+  await waitFor(() => socket.__zionSession?.authenticated === true);
+  assert.equal(admissionReads, 0, 'allowlisted bootstrap identity must bypass invitation storage');
+});
+
 test('official transport rejects an unknown peer with no valid invite vouchers', async t => {
   const { PeerAdmissionController } = await import('../src/peer-admission-controller.js');
   const genesis = {
