@@ -15,6 +15,7 @@ export class PostgresPeerAdmissionController {
   } = {}) {
     if (!store || typeof store.commitAdmission !== 'function' ||
       typeof store.getAdmissionStatus !== 'function' ||
+      typeof store.withAdmissionFence !== 'function' ||
       typeof store.revokeAdmission !== 'function' ||
       !Array.isArray(trustedIssuerNodeIds) ||
       trustedIssuerNodeIds.some(id => !ID.test(id)) ||
@@ -90,6 +91,10 @@ export class PostgresPeerAdmissionController {
       maxActivePeers: Math.min(capacity.maxPeers, this.maxActivePeers),
       maxAdmissionsPerIssuer: this.maxAdmissionsPerIssuer,
     });
+  }
+
+  withAdmissionFence(subjectNodeId, work) {
+    return this.store.withAdmissionFence(subjectNodeId, work);
   }
 
   revoke(subjectNodeId) {
