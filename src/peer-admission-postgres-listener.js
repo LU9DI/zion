@@ -18,6 +18,7 @@ export class PostgresPeerRevocationListener {
     this.minReconnectMs = minReconnectMs;
     this.maxReconnectMs = maxReconnectMs;
     this.client = null;
+    this.clientHandlers = null;
     this.running = false;
     this.connecting = null;
     this.reconnectTimer = null;
@@ -58,9 +59,14 @@ export class PostgresPeerRevocationListener {
       const onFailure = error => {
         if (this.client !== client) return;
         this.client = null;
+        this.clientHandlers = null;
+        client.off('notification', onNotification);
+        client.off('error', onFailure);
+        client.off('end', onFailure);
         try { client.release(error); } catch { /* broken client is already unusable */ }
         this.#scheduleReconnect(generation);
       };
+      this.clientHandlers = { client, onNotification, onFailure };
       client.on('notification', onNotification);
       client.on('error', onFailure);
       client.on('end', onFailure);
@@ -71,6 +77,7 @@ export class PostgresPeerRevocationListener {
         client.off('error', onFailure);
         client.off('end', onFailure);
         if (this.client === client) this.client = null;
+        if (this.clientHandlers?.client === client) this.clientHandlers = null;
         try { client.release(error); } catch {}
         throw error;
       }
@@ -100,8 +107,15 @@ export class PostgresPeerRevocationListener {
 
   async #releaseClient() {
     const client = this.client;
+    const handlers = this.clientHandlers;
     this.client = null;
+    this.clientHandlers = null;
     if (!client) return;
+    if (handlers?.client === client) {
+      client.off('notification', handlers.onNotification);
+      client.off('error', handlers.onFailure);
+      client.off('end', handlers.onFailure);
+    }
     try { await client.query(`UNLISTEN ${CHANNEL}`); } catch {}
     try { client.release(); } catch {}
   }
