@@ -130,3 +130,47 @@ test('listener UNLISTENs before releasing a client when stop races the pending L
   assert.equal(clients[0].listenerCount('end'), 0);
   assert.equal(listener.running, false);
 });
+
+
+test('listener does not double-release a session that fails while LISTEN is pending', async () => {
+  const clients = [];
+  let finishFirstListen;
+  const pool = {
+    async connect() {
+      const client = new EventEmitter();
+      client.queries = [];
+      client.releaseCount = 0;
+      client.query = async sql => {
+        client.queries.push(sql);
+        if (sql === 'LISTEN zion_peer_revocations' && clients.length === 1) {
+          return new Promise(resolve => { finishFirstListen = () => resolve({ rows: [] }); });
+        }
+        return { rows: [] };
+      };
+      client.release = () => { client.releaseCount++; };
+      clients.push(client);
+      return client;
+    },
+  };
+  const listener = new PostgresPeerRevocationListener({
+    pool, onRevocation: () => {}, minReconnectMs: 10, maxReconnectMs: 20,
+  });
+  const startPromise = listener.start();
+  while (!finishFirstListen) await new Promise(resolve => setImmediate(resolve));
+
+  const failedClient = clients[0];
+  failedClient.emit('error', new Error('connection lost during LISTEN'));
+  finishFirstListen();
+  await startPromise;
+  await new Promise(resolve => setTimeout(resolve, 30));
+
+  assert.equal(failedClient.releaseCount, 1);
+  assert.equal(failedClient.listenerCount('notification'), 0);
+  assert.equal(failedClient.listenerCount('error'), 0);
+  assert.equal(failedClient.listenerCount('end'), 0);
+  assert.equal(clients.length, 2);
+  assert.deepEqual(clients[1].queries, ['LISTEN zion_peer_revocations']);
+
+  await listener.stop();
+  assert.equal(clients[1].releaseCount, 1);
+});
