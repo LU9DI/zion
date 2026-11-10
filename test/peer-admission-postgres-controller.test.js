@@ -40,7 +40,7 @@ function fixture() {
 
 test('Postgres controller checks authoritative status and denies revoked peers', async () => {
   const x = fixture();
-  assert.equal(await x.controller.isAdmitted(x.subject.nodeId), false);
+  await assert.rejects(x.controller.isAdmitted(x.subject.nodeId), { code: 'ZION_ADMISSION_STATE_UNAVAILABLE' });
   assert.equal((await x.controller.admit({ subjectNodeId: x.subject.nodeId, vouchers: x.vouchers })).ok, true);
   assert.equal(await x.controller.isAdmitted(x.subject.nodeId), true);
   assert.equal((await x.controller.revoke(x.subject.nodeId)).changed, true);
