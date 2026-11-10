@@ -53,6 +53,7 @@ function fakePool({ failInvitationInsert = false, retryOnce = false, failCommit 
             throw Object.assign(new Error('serialization failure'), { code: '40001' });
           }
           if (sql.startsWith('UPDATE peer_admissions') && sql.includes('RETURNING')) {
+            currentAdmissionStatus = params[1];
             return { rows: [{ subject_node_id: params[0] }] };
           }
           return { rows: [] };
@@ -203,6 +204,32 @@ test('revocation acquires the exclusive advisory fence before changing durable a
   assert.ok(exclusive >= 0 && exclusive < statusRead && statusRead < statusWrite);
 });
 
+
+
+
+test('release reports missing and already-inactive admission states without changing capacity', async () => {
+  const missingPool = fakePool({ admissionStatus: null });
+  const missing = await new PostgresPeerAdmissionStore({ pool: missingPool }).releaseAdmission(id('a'));
+  assert.deepEqual(missing, {
+    ok: false, reason: 'admission-not-found', subjectNodeId: id('a'),
+  });
+  assert.equal(missingPool.calls.some(x => x.sql.startsWith('UPDATE peer_admissions')), false);
+
+  const revokedPool = fakePool({ admissionStatus: 'revoked' });
+  const revoked = await new PostgresPeerAdmissionStore({ pool: revokedPool }).releaseAdmission(id('a'));
+  assert.deepEqual(revoked, {
+    ok: false, changed: false, reason: 'admission-already-inactive',
+    subjectNodeId: id('a'), status: 'revoked',
+  });
+  assert.equal(revokedPool.calls.some(x => x.sql.startsWith('UPDATE peer_admissions')), false);
+
+  const releasedPool = fakePool({ admissionStatus: 'released' });
+  const released = await new PostgresPeerAdmissionStore({ pool: releasedPool }).releaseAdmission(id('a'));
+  assert.deepEqual(released, {
+    ok: true, changed: false, subjectNodeId: id('a'), status: 'released',
+  });
+  assert.equal(releasedPool.calls.some(x => x.sql.startsWith('UPDATE peer_admissions')), false);
+});
 
 test('release serializes against dispatch and notifies peers when admission becomes inactive', async () => {
   const pool = fakePool({ admissionStatus: 'active' });
