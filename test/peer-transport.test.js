@@ -1552,3 +1552,76 @@ test('mutual TLS rejects a captured signed handshake payload replayed on a diffe
     'the original TLS session must retain the accepted handshake',
   );
 });
+
+
+test('peer revocation fences and closes every active local session', async t => {
+  const genesis = testGenesis('Zion peer revocation');
+  const seed = createNodeIdentity();
+  const newcomer = createNodeIdentity();
+  const guard = { status: { quarantined: false }, async checkHealthy() {}, assertHealthy() {}, addQuarantineListener: () => () => {} };
+  let revoked = false;
+  const admissionController = {
+    async isAdmitted() { return !revoked; },
+    async admit() { return { ok: true }; },
+    async revoke(nodeId) {
+      assert.equal(nodeId, newcomer.nodeId);
+      revoked = true;
+      return { ok: true, changed: true, status: 'revoked' };
+    },
+  };
+  const server = new PeerTransport({
+    identity: seed, host: '127.0.0.1', networkMode: 'official',
+    protocolGenesis: genesis, integrityGuard: guard,
+    trustedPeerIds: [seed.nodeId], admissionController,
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({
+    identity: newcomer, host: '127.0.0.1', networkMode: 'official',
+    protocolGenesis: genesis, integrityGuard: guard, trustedPeerIds: [seed.nodeId],
+  });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(() => { socket.destroy(); client.close(); });
+  await waitFor(() => [...server.connections].some(peer => peer.__zionSession?.peerNodeId === newcomer.nodeId));
+  const result = await server.revokePeer(newcomer.nodeId);
+  assert.equal(result.ok, true);
+  assert.equal(result.locallyFenced, true);
+  await waitFor(() => socket.destroyed || ![...server.connections].some(peer => peer.__zionSession?.peerNodeId === newcomer.nodeId));
+  assert.equal(server.admittedPeerIds.has(newcomer.nodeId), false);
+  assert.equal(await admissionController.isAdmitted(newcomer.nodeId), false);
+});
+
+test('peer revocation fences an admission handshake that is awaiting its backend', async t => {
+  const genesis = testGenesis('Zion peer revocation race');
+  const seed = createNodeIdentity();
+  const newcomer = createNodeIdentity();
+  const guard = { status: { quarantined: false }, async checkHealthy() {}, assertHealthy() {}, addQuarantineListener: () => () => {} };
+  let markReadStarted;
+  let finishRead;
+  const readStarted = new Promise(resolve => { markReadStarted = resolve; });
+  const pendingRead = new Promise(resolve => { finishRead = resolve; });
+  const admissionController = {
+    async isAdmitted() { markReadStarted(); return pendingRead; },
+    async admit() { return { ok: true }; },
+    async revoke() { return { ok: true, changed: true, status: 'revoked' }; },
+  };
+  const server = new PeerTransport({
+    identity: seed, host: '127.0.0.1', networkMode: 'official',
+    protocolGenesis: genesis, integrityGuard: guard,
+    trustedPeerIds: [seed.nodeId], admissionController,
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({
+    identity: newcomer, host: '127.0.0.1', networkMode: 'official',
+    protocolGenesis: genesis, integrityGuard: guard, trustedPeerIds: [seed.nodeId],
+  });
+  t.after(() => client.close());
+  const connecting = client.connect('127.0.0.1', address.port);
+  await readStarted;
+  const revoked = await server.revokePeer(newcomer.nodeId);
+  assert.equal(revoked.ok, true);
+  finishRead(true);
+  await assert.rejects(connecting);
+  assert.equal(server.admittedPeerIds.has(newcomer.nodeId), false);
+});
