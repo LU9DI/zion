@@ -41,7 +41,7 @@ function fakePool({ failInvitationInsert = false, retryOnce = false, failCommit 
           }
           if (sql.startsWith('SELECT active_reservations')) return { rows: [{ active_reservations: 0 }] };
           if (sql.startsWith('SELECT status FROM peer_admissions')) return { rows: currentAdmissionStatus ? [{ status: currentAdmissionStatus }] : [] };
-          if (sql.includes(\"SET status = 'revoked'\")) { currentAdmissionStatus = 'revoked'; return { rows: [] }; }
+          if (sql.includes("SET status = 'revoked'")) { currentAdmissionStatus = 'revoked'; return { rows: [] }; }
           if (sql.includes('count(*)::integer')) return { rows: [{ count: 0 }] };
           if (sql.startsWith('INSERT INTO consumed_peer_invitations') && failInvitationInsert) {
             throw Object.assign(new Error('duplicate invitation'), {
