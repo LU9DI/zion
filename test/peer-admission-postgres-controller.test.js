@@ -51,7 +51,7 @@ test('Postgres controller checks authoritative status and denies revoked peers',
 test('Postgres controller fails closed when authoritative status is unavailable', async () => {
   const x = fixture();
   x.store.getAdmissionStatus = async () => ({ ok: false, reason: 'admission-state-unavailable' });
-  assert.equal(await x.controller.isAdmitted(x.subject.nodeId), false);
+  await assert.rejects(x.controller.isAdmitted(x.subject.nodeId), { code: 'ZION_ADMISSION_STATE_UNAVAILABLE' });
 });
 
 test('Postgres controller rejects duplicate issuer vouchers and does not persist insufficient introductions', async () => {
