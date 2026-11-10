@@ -16,6 +16,7 @@ function validRequest(r, now, limits) {
 
 /** Protocol-level shape checks. Domain handlers must still verify authorization, state and persistence. */
 export function validateProtocolOperation(payload, { genesis, now = Date.now() } = {}) {
+  if (!Number.isFinite(now)) return { ok: false, reason: 'invalid-clock' };
   if (!genesis || !payload || typeof payload !== 'object' || Array.isArray(payload) || !TYPES.has(payload.type)) return { ok: false, reason: 'unsupported-operation' };
   const limits = { ...genesis.limits, maxClockSkewMs: genesis.replay.maxClockSkewMs };
   const fail = reason => ({ ok: false, reason });

@@ -13,6 +13,14 @@ test('official operation validator accepts a well-formed ping and rejects unknow
   assert.equal(validateProtocolOperation({ type: 'RUN_CODE', code: 'x' }, { genesis }).reason, 'unsupported-operation');
 });
 
+test('official operation validator rejects an invalid clock before timestamp comparisons', () => {
+  const request = { type: 'STORE_REQUEST', requestId: 'a'.repeat(32), chunkId: 'b'.repeat(64), targetNodeId: 'c'.repeat(64), bytes: 1024, createdAt: 1, expiresAt: 1000 };
+  for (const now of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+    assert.equal(validateProtocolOperation({ type: 'PING', nonce: 'n1' }, { genesis, now }).reason, 'invalid-clock');
+    assert.equal(validateProtocolOperation(request, { genesis, now }).reason, 'invalid-clock');
+  }
+});
+
 test('official operation validator rejects malformed chunk segments before handlers see them', () => {
   const bad = { type: 'CHUNK_DATA', transferId: 'a'.repeat(32), requestId: 'b'.repeat(32), chunkId: 'c'.repeat(64), totalBytes: 33, partIndex: 0, partCount: 1, data: 'YQ==' };
   assert.equal(validateProtocolOperation(bad, { genesis }).ok, true, 'canonical base64 is structurally valid; final digest is checked by storage');
