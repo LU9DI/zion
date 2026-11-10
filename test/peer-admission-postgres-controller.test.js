@@ -35,6 +35,12 @@ function fixture() {
       state.set(nodeId, 'revoked');
       return { ok: true, changed: true, status: 'revoked' };
     },
+    async releaseAdmission(nodeId, status = 'released') {
+      calls.push(['release', nodeId, status]);
+      if (state.get(nodeId) !== 'active') return { ok: true, changed: false, status: state.get(nodeId) ?? null };
+      state.set(nodeId, status);
+      return { ok: true, changed: true, subjectNodeId: nodeId, status };
+    },
   };
   const controller = new PostgresPeerAdmissionController({
     store, trustedIssuerNodeIds: issuers.map(x => x.nodeId), threshold: 2,
@@ -89,4 +95,19 @@ test('Postgres controller delegates the final application dispatch fence to its 
   assert.deepEqual(await x.controller.withAdmissionFence(x.subject.nodeId, async () => {
     throw new Error('revoked peer cannot dispatch');
   }), { ok: true, admitted: false, status: 'revoked' });
+});
+
+
+test('Postgres controller exposes administrative release through the store fence', async () => {
+  const x = fixture();
+  await x.controller.admit({ subjectNodeId: x.subject.nodeId, vouchers: x.vouchers });
+  const result = await x.controller.release(x.subject.nodeId);
+  assert.deepEqual(result, {
+    ok: true, changed: true, subjectNodeId: x.subject.nodeId, status: 'released',
+  });
+  assert.equal(await x.controller.isAdmitted(x.subject.nodeId), false);
+  assert.deepEqual(await x.controller.withAdmissionFence(x.subject.nodeId, async () => {
+    throw new Error('released peer cannot dispatch');
+  }), { ok: true, admitted: false, status: 'released' });
+  assert.equal(x.store.calls.some(call => call[0] === 'release' && call[2] === 'released'), true);
 });
