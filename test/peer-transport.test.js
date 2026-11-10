@@ -1670,3 +1670,48 @@ test('admitted sessions revalidate shared status before dispatching application 
   await waitFor(() => serverSocket.destroyed, 1500, 'the next application frame must observe shared revocation');
   assert.equal(delivered, 0, 'revoked peer frames must never reach onMessage');
 });
+
+
+test('transport applies a cross-process revocation notification to active sessions', async t => {
+  const genesis = testGenesis('Zion notification-driven peer revocation');
+  const seed = createNodeIdentity();
+  const newcomer = createNodeIdentity();
+  const guard = { status: { quarantined: false }, async checkHealthy() {}, assertHealthy() {}, addQuarantineListener: () => () => {} };
+  let deliverRevocation;
+  let listenerStopped = false;
+  const revocationListener = {
+    async start(callback) { deliverRevocation = callback; },
+    async stop() { listenerStopped = true; },
+  };
+  const admissionController = {
+    async isAdmitted() { return true; },
+    async admit() { return { ok: true }; },
+    async revoke() { return { ok: true, changed: true, status: 'revoked' }; },
+  };
+  const server = new PeerTransport({
+    identity: seed, host: '127.0.0.1', networkMode: 'official',
+    protocolGenesis: genesis, integrityGuard: guard,
+    trustedPeerIds: [seed.nodeId, newcomer.nodeId], admissionController,
+    revocationListener,
+  });
+  const address = await server.listen();
+  t.after(async () => { await server.close(); });
+  const client = new PeerTransport({
+    identity: newcomer, host: '127.0.0.1', networkMode: 'official',
+    protocolGenesis: genesis, integrityGuard: guard, trustedPeerIds: [seed.nodeId],
+  });
+  t.after(async () => { await client.close(); });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(() => socket.destroy());
+  await waitFor(() => [...server.connections].some(peer =>
+    peer.__zionSession?.peerNodeId === newcomer.nodeId && peer.__zionSession?.authenticated));
+  const serverSocket = [...server.connections].find(peer =>
+    peer.__zionSession?.peerNodeId === newcomer.nodeId && peer.__zionSession?.authenticated);
+  assert.ok(serverSocket, 'the peer must complete the handshake');
+  assert.equal(typeof deliverRevocation, 'function');
+  deliverRevocation(newcomer.nodeId);
+  await waitFor(() => serverSocket.destroyed, 1500,
+    'a cross-process notification must close the matching local session');
+  await server.close();
+  assert.equal(listenerStopped, true, 'transport shutdown must stop the listener');
+});
