@@ -100,4 +100,11 @@ export class PostgresPeerAdmissionController {
   revoke(subjectNodeId) {
     return this.store.revokeAdmission(subjectNodeId);
   }
+
+  release(subjectNodeId) {
+    if (typeof this.store.releaseAdmission !== 'function') {
+      return Promise.resolve({ ok: false, reason: 'admission-state-unavailable' });
+    }
+    return this.store.releaseAdmission(subjectNodeId, 'released');
+  }
 }
