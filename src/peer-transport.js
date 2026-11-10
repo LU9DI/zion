@@ -39,7 +39,7 @@ export class PeerTransport {
     socketRateLimiter = new PeerRateLimiter({ capacity: 256, refillPerSecond: 200 }),
     // Global pre-verification budget caps CPU across rapid reconnects that obtain fresh socket IDs.
     globalRateLimiter = new PeerRateLimiter({ capacity: 4096, refillPerSecond: 2000, maxPeers: 1 }), transferScheduler = null,
-    protocolGenesis = null, networkMode = 'legacy', integrityGuard = null, admissionController = null, admissionVouchers = [], tlsOptions = null, tlsHandshakeTimeoutMs = 10_000, now = () => Date.now() } = {}) {
+    protocolGenesis = null, networkMode = 'legacy', integrityGuard = null, admissionController = null, revocationListener = null, admissionVouchers = [], tlsOptions = null, tlsHandshakeTimeoutMs = 10_000, now = () => Date.now() } = {}) {
     if (!identity?.privateKey || typeof identity.nodeId !== 'string') throw new TypeError('A node identity is required');
     if (typeof host !== 'string' || !host || !Number.isInteger(port) || port < 0 || port > 65535) throw new RangeError('Invalid bind address');
     if (!Number.isSafeInteger(maxConnections) || maxConnections < 1 || !Number.isSafeInteger(maxFrameBytes) || maxFrameBytes < 256) throw new RangeError('Invalid transport limits');
@@ -68,6 +68,10 @@ export class PeerTransport {
     if (admissionVouchers.length && (networkMode !== 'official' || !protocolGenesis)) throw new Error('Admission vouchers require an official network with a protocol genesis');
     this.integrityGuard = integrityGuard;
     this.admissionController = admissionController;
+    if (revocationListener !== null && (typeof revocationListener.start !== 'function' || typeof revocationListener.stop !== 'function')) throw new TypeError('revocationListener must provide start() and stop()');
+    if (revocationListener && !admissionController) throw new Error('A revocation listener requires an admission controller');
+    this.revocationListener = revocationListener;
+    this.revocationListenerStarted = false;
     this.admissionVouchers = Object.freeze([...admissionVouchers]);
     this.admittedPeerIds = new Set();
     this.revokedPeerIds = new Set();
@@ -102,6 +106,10 @@ export class PeerTransport {
     this.listenCompletion = new Promise(resolve => { settleListen = resolve; });
     try {
       if (this.networkMode === 'official') await this.integrityGuard.checkHealthy();
+      if (this.revocationListener && !this.revocationListenerStarted) {
+        await this.revocationListener.start(nodeId => this.#fencePeer(nodeId));
+        this.revocationListenerStarted = true;
+      }
       // Health checks may be asynchronous. If close() ran while one was pending,
       // do not create a server after shutdown has already been requested.
       if (this.closing || this.quarantined) throw new Error(this.quarantined ? 'Transport quarantined before listen completed' : 'Transport closed before listen completed');
@@ -170,6 +178,10 @@ export class PeerTransport {
       const address = server.address();
       return Object.freeze({ host: address.address, port: address.port });
     } catch (error) {
+      if (this.revocationListenerStarted) {
+        await this.revocationListener.stop().catch(() => {});
+        this.revocationListenerStarted = false;
+      }
       if (!this.started && this.server && !this.server.listening) this.server = null;
       throw error;
     } finally {
@@ -606,6 +618,18 @@ export class PeerTransport {
     return false;
   }
 
+  #fencePeer(subjectNodeId) {
+    if (!/^[a-f0-9]{64}$/.test(subjectNodeId ?? '')) return false;
+    this.revokedPeerIds.add(subjectNodeId);
+    this.peerAdmissionEpochs.set(subjectNodeId,
+      (this.peerAdmissionEpochs.get(subjectNodeId) ?? 0) + 1);
+    this.admittedPeerIds.delete(subjectNodeId);
+    for (const socket of this.connections) {
+      if (socket.__zionSession?.peerNodeId === subjectNodeId) socket.destroy();
+    }
+    return true;
+  }
+
   /**
    * Revoke one admitted peer. The local fence is raised synchronously before the
    * persistent operation, so pending handshakes/frames cannot outlive this call.
@@ -617,13 +641,7 @@ export class PeerTransport {
         !this.admissionController || typeof this.admissionController.revoke !== 'function') {
       return { ok: false, reason: 'revocation-unavailable' };
     }
-    this.revokedPeerIds.add(subjectNodeId);
-    this.peerAdmissionEpochs.set(subjectNodeId,
-      (this.peerAdmissionEpochs.get(subjectNodeId) ?? 0) + 1);
-    this.admittedPeerIds.delete(subjectNodeId);
-    for (const socket of this.connections) {
-      if (socket.__zionSession?.peerNodeId === subjectNodeId) socket.destroy();
-    }
+    this.#fencePeer(subjectNodeId);
     let result;
     try { result = await this.admissionController.revoke(subjectNodeId); }
     catch { return { ok: false, reason: 'admission-state-unavailable' }; }
@@ -676,6 +694,10 @@ export class PeerTransport {
       try {
         this.removeQuarantineListener?.();
         this.removeQuarantineListener = null;
+        if (this.revocationListenerStarted) {
+          await this.revocationListener.stop();
+          this.revocationListenerStarted = false;
+        }
         for (const socket of this.connections) socket.destroy();
         // Pending outbound sockets are not yet in connections: destroy them explicitly
         // so close() cancels TLS negotiation rather than leaving it alive until timeout.
