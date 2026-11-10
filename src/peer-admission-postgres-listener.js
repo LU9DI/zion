@@ -76,16 +76,29 @@ export class PostgresPeerRevocationListener {
         client.off('notification', onNotification);
         client.off('error', onFailure);
         client.off('end', onFailure);
-        if (this.client === client) this.client = null;
+        const stillOwned = this.client === client;
+        if (stillOwned) this.client = null;
         if (this.clientHandlers?.client === client) this.clientHandlers = null;
-        try { client.release(error); } catch {}
+        // onFailure may already have released this client while LISTEN was pending.
+        if (stillOwned) {
+          try { client.release(error); } catch {}
+        }
         throw error;
       }
+      // A socket error/end can arrive while the LISTEN query is still settling.
+      // onFailure owns release and reconnect in that case; do not report a dead
+      // session as connected or release it a second time.
+      if (this.client !== client) return;
       if (!this.running || generation !== this.generation) {
         client.off('notification', onNotification);
         client.off('error', onFailure);
         client.off('end', onFailure);
         if (this.client === client) this.client = null;
+        if (this.clientHandlers?.client === client) this.clientHandlers = null;
+        // stop() can race with LISTEN. Clear the session subscription before
+        // returning the connection to the pool, otherwise the next borrower
+        // inherits a live LISTEN registration.
+        try { await client.query(`UNLISTEN ${CHANNEL}`); } catch {}
         try { client.release(); } catch {}
         return;
       }
