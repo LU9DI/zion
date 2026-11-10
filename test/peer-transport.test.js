@@ -631,6 +631,8 @@ test('official transport rejects an unknown peer with no valid invite vouchers',
   t.after(() => { socket.destroy(); client.close(); });
   await waitFor(() => socket.destroyed);
   assert.equal(admissionController.isAdmitted(newcomer.nodeId), false);
+  assert.equal(server.replayGuard.seen.size, 0,
+    'a peer without valid admission vouchers must not consume global replay-cache capacity');
 });
 
 test('rate limit applies backpressure and delivers every frame instead of dropping an honest burst', async t => {
