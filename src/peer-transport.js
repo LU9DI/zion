@@ -39,11 +39,12 @@ export class PeerTransport {
     socketRateLimiter = new PeerRateLimiter({ capacity: 256, refillPerSecond: 200 }),
     // Global pre-verification budget caps CPU across rapid reconnects that obtain fresh socket IDs.
     globalRateLimiter = new PeerRateLimiter({ capacity: 4096, refillPerSecond: 2000, maxPeers: 1 }), transferScheduler = null,
-    protocolGenesis = null, networkMode = 'legacy', integrityGuard = null, admissionController = null, revocationListener = null, admissionVouchers = [], tlsOptions = null, tlsHandshakeTimeoutMs = 10_000, now = () => Date.now() } = {}) {
+    protocolGenesis = null, networkMode = 'legacy', integrityGuard = null, admissionController = null, revocationListener = null, admissionVouchers = [], tlsOptions = null, tlsHandshakeTimeoutMs = 10_000, frameAssemblyTimeoutMs = 10_000, now = () => Date.now() } = {}) {
     if (!identity?.privateKey || typeof identity.nodeId !== 'string') throw new TypeError('A node identity is required');
     if (typeof host !== 'string' || !host || !Number.isInteger(port) || port < 0 || port > 65535) throw new RangeError('Invalid bind address');
     if (!Number.isSafeInteger(maxConnections) || maxConnections < 1 || !Number.isSafeInteger(maxFrameBytes) || maxFrameBytes < 256) throw new RangeError('Invalid transport limits');
     if (!Number.isSafeInteger(tlsHandshakeTimeoutMs) || tlsHandshakeTimeoutMs < 100 || tlsHandshakeTimeoutMs > 60_000) throw new RangeError('Invalid TLS handshake timeout');
+    if (!Number.isSafeInteger(frameAssemblyTimeoutMs) || frameAssemblyTimeoutMs < 100 || frameAssemblyTimeoutMs > 60_000) throw new RangeError('Invalid frame assembly timeout');
     if (typeof onMessage !== 'function') throw new TypeError('onMessage must be a function');
     if (!['legacy', 'official'].includes(networkMode)) throw new TypeError('networkMode must be legacy or official');
     if (networkMode === 'official' && protocolGenesis === null) throw new Error('Official Zion network mode requires a reviewed protocol genesis');
@@ -58,6 +59,7 @@ export class PeerTransport {
     if (tlsOptions !== null && !tlsReady) throw new TypeError('tlsOptions must provide key, cert, and CA material for mutual TLS');
     this.tlsOptions = tlsReady ? tlsOptions : null;
     this.tlsHandshakeTimeoutMs = tlsHandshakeTimeoutMs;
+    this.frameAssemblyTimeoutMs = frameAssemblyTimeoutMs;
     this.identity = identity; this.host = host; this.port = port; this.maxConnections = maxConnections;
     this.networkMode = networkMode;
     this.genesis = protocolGenesis === null ? null : validateGenesisDocument(protocolGenesis);
@@ -210,6 +212,16 @@ export class PeerTransport {
     socket.setNoDelay(true);
     let pendingSegments = [];
     let pendingBytes = 0;
+    let partialFrameTimer = null;
+    const clearPartialFrameTimer = () => {
+      if (partialFrameTimer) clearTimeout(partialFrameTimer);
+      partialFrameTimer = null;
+    };
+    const armPartialFrameTimer = () => {
+      if (partialFrameTimer) return;
+      partialFrameTimer = setTimeout(() => socket.destroy(), this.frameAssemblyTimeoutMs);
+      partialFrameTimer.unref?.();
+    };
     let queuedFrames = 0;
     let queuedFrameBytes = 0;
     let processing = Promise.resolve();
@@ -222,11 +234,13 @@ export class PeerTransport {
       while (remaining.length) {
         const newline = remaining.indexOf(0x0a);
         if (newline === -1) {
+          if (pendingBytes === 0) armPartialFrameTimer();
           pendingSegments.push(remaining);
           pendingBytes += remaining.length;
           if (pendingBytes > this.maxFrameBytes) socket.destroy();
           return;
         }
+        clearPartialFrameTimer();
         const frameLength = pendingBytes + newline;
         let frame;
         if (pendingSegments.length === 0) frame = remaining.subarray(0, newline);
@@ -257,6 +271,7 @@ export class PeerTransport {
     });
     socket.on('error', () => {});
     socket.on('close', () => {
+      clearPartialFrameTimer();
       this.connections.delete(socket);
       // Socket IDs are unique per connection; release their bucket immediately instead of
       // retaining churned connections until the limiter's idle TTL expires.
