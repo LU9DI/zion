@@ -44,7 +44,7 @@ export class PeerTransport {
     if (typeof host !== 'string' || !host || !Number.isInteger(port) || port < 0 || port > 65535) throw new RangeError('Invalid bind address');
     if (!Number.isSafeInteger(maxConnections) || maxConnections < 1 || !Number.isSafeInteger(maxFrameBytes) || maxFrameBytes < 256) throw new RangeError('Invalid transport limits');
     if (!Number.isSafeInteger(tlsHandshakeTimeoutMs) || tlsHandshakeTimeoutMs < 100 || tlsHandshakeTimeoutMs > 60_000) throw new RangeError('Invalid TLS handshake timeout');
-    if (!Number.isSafeInteger(frameAssemblyTimeoutMs) || frameAssemblyTimeoutMs < 100 || frameAssemblyTimeoutMs > 60_000) throw new RangeError('Invalid timeout validation');
+    if (!Number.isSafeInteger(frameAssemblyTimeoutMs) || frameAssemblyTimeoutMs < 100 || frameAssemblyTimeoutMs > 60_000) throw new RangeError('Invalid frame assembly timeout');
     if (typeof onMessage !== 'function') throw new TypeError('onMessage must be a function');
     if (!['legacy', 'official'].includes(networkMode)) throw new TypeError('networkMode must be legacy or official');
     if (networkMode === 'official' && protocolGenesis === null) throw new Error('Official Zion network mode requires a reviewed protocol genesis');
