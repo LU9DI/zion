@@ -1210,12 +1210,15 @@ test('authenticated application frames use the durable authorization fence', asy
   const socket = await client.connect('127.0.0.1', addr.port); t.after(() => { socket.destroy(); client.close(); });
   await waitFor(() => socket.__zionSession?.authenticated && [...server.connections][0]?.__zionSession?.authenticated);
   const readsAfterHandshake = admissionReads;
+  const fencesAfterHandshake = authorizationFences;
+  assert.equal(fencesAfterHandshake, 1, 'the trusted handshake is authorized against durable state');
   client.send(socket, { type: 'PING', nonce: 'durable-authorization-fence' });
   await waitFor(() => handled === 1);
-  assert.ok(readsAfterHandshake >= 1, 'the handshake checks the peer state');
+  assert.equal(readsAfterHandshake, 0, 'the durable fence replaces the non-atomic status read');
   assert.equal(admissionReads, readsAfterHandshake,
-    'the frame path must use one transactional authorization fence, not a separate status read');
-  assert.equal(authorizationFences, 2, 'each authenticated application frame is preflighted and fenced across dispatch');
+    'handshake and application authorization must not use a separate status read');
+  assert.equal(authorizationFences, fencesAfterHandshake + 2,
+    'each authenticated application frame is preflighted and fenced across dispatch');
 });
 
 
@@ -1757,19 +1760,21 @@ test('trusted allowlist sessions recheck durable revocation before every applica
   assert.ok(serverSocket);
   assert.equal(serverSocket.__zionSession.trustedByAllowlist, true);
   const acceptedAfterHandshake = replayGuard.accepted;
+  const fencesAfterHandshake = fenceCalls.length;
+  assert.equal(fencesAfterHandshake, 1, 'handshake must consult durable allowlist authorization');
 
   client.send(socket, { type: 'PING', nonce: 'first-trusted-frame' });
   await waitFor(() => delivered === 1);
   assert.deepEqual(fenceCalls.at(-1), { nodeId: trustedPeer.nodeId, allowUnadmitted: true });
   assert.equal(replayGuard.accepted, acceptedAfterHandshake + 1);
-  assert.equal(fenceCalls.length, 2, 'the first frame is preflighted and then fenced across dispatch');
+  assert.equal(fenceCalls.length, fencesAfterHandshake + 2, 'the first frame is preflighted and then fenced across dispatch');
 
   durableStatus = 'revoked'; // Simulate a durable transition while LISTEN is disconnected.
   client.send(socket, { type: 'PING', nonce: 'second-trusted-frame' });
   await waitFor(() => serverSocket.destroyed, 1500,
     'a trusted allowlist session must observe durable revocation without a notification');
   assert.equal(delivered, 1, 'the revoked frame must not reach the application handler');
-  assert.equal(fenceCalls.length, 3, 'the revoked frame is denied during preflight and never reaches dispatch fencing');
+  assert.equal(fenceCalls.length, fencesAfterHandshake + 3, 'the revoked frame is denied during preflight and never reaches dispatch fencing');
   assert.equal(replayGuard.accepted, acceptedAfterHandshake + 1,
     'a revoked peer must be rejected before consuming replay-cache capacity');
 });
