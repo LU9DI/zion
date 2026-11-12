@@ -244,8 +244,9 @@ export class OfficialNodeBootstrap {
       }
       // Start authenticated notification API only after integrity, storage, and transport are healthy.
       if (this.notificationApi) {
-        await this.notificationApi.listen();
+        // listen() can allocate its socket before rejecting; register cleanup first.
         this.notificationApiStarted = true;
+        await this.notificationApi.listen();
         this.#assertLifecycle(epoch);
         await this.integrityGuard.checkHealthy();
         this.#assertLifecycle(epoch);
