@@ -80,9 +80,9 @@ export class ZionClient {
 
   async upload(input, { blacklistSha256 = this.blacklistSha256 } = {}) {
     const content = Buffer.isBuffer(input) ? Buffer.from(input) : Buffer.from(input);
-    if (content.length > this.maxFileBytes) throw Object.assign(new RangeError('file-size-limit'), { code: 'ZION_FILE_SIZE_LIMIT' });
+    if (content.length > this.maxFileBytes) { content.fill(0); throw Object.assign(new RangeError('file-size-limit'), { code: 'ZION_FILE_SIZE_LIMIT' }); }
     const screening = screenContentHashLocally(content, { blacklistSha256, maxBytes: this.maxFileBytes });
-    if (!screening.accepted) throw Object.assign(new Error(`content-rejected:${screening.reason}`), { code: 'ZION_CONTENT_REJECTED', reason: screening.reason });
+    if (!screening.accepted) { content.fill(0); throw Object.assign(new Error(`content-rejected:${screening.reason}`), { code: 'ZION_CONTENT_REJECTED', reason: screening.reason }); }
 
     let malwareScan = 'not-configured';
     if (this.malwareScanner) {
@@ -110,6 +110,7 @@ export class ZionClient {
         });
         verdict = await Promise.race([scanPromise, timeoutPromise]);
       } catch (cause) {
+        content.fill(0);
         if (scanTimedOut || cause?.code === 'ZION_MALWARE_SCAN_TIMEOUT') throw Object.assign(new Error('local-malware-scan-timeout'), { code: 'ZION_MALWARE_SCAN_TIMEOUT' });
         throw Object.assign(new Error('local-malware-scan-failed', { cause }), { code: 'ZION_MALWARE_SCAN_FAILED' });
       } finally {
@@ -148,8 +149,11 @@ export class ZionClient {
         for (const id of written.reverse()) await this.storageAdapter.rollbackChunk(id).catch(() => {});
       }
       fileKey.fill(0);
+      content.fill(0);
       throw error;
     }
+    // The method owns this defensive copy; clear it once encrypted chunks are ready.
+    content.fill(0);
 
     const manifest = {
       schemaVersion: 1,
