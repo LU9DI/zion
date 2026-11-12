@@ -8,7 +8,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-function fixture({ verifyOk = true, failSecondCheck = false, listenFails = false, failCloseCount = 0, failStopStorageCount = 0, listenGate = null, storageGate = null, stopStorageGate = null, notificationDeliveryWorker = null, idleParticipationScheduler = null } = {}) {
+function fixture({ verifyOk = true, failSecondCheck = false, listenFails = false, failCloseCount = 0, failStopStorageCount = 0, failStartStorage = false, listenGate = null, storageGate = null, stopStorageGate = null, notificationDeliveryWorker = null, idleParticipationScheduler = null } = {}) {
   const events = [];
   let checks = 0;
   let closeFailuresRemaining = failCloseCount;
@@ -49,7 +49,7 @@ function fixture({ verifyOk = true, failSecondCheck = false, listenFails = false
   };
   const bootstrap = new OfficialNodeBootstrap({
     integrityGuard: guard, transport,
-    async startStorage() { events.push('startStorage'); if (storageGate) { storageGate.entered?.(); await storageGate.promise; } storageRunning = true; },
+    async startStorage() { events.push('startStorage'); if (storageGate) { storageGate.entered?.(); await storageGate.promise; } if (failStartStorage) throw new Error('storage adapter failed after partial allocation'); storageRunning = true; },
     async stopStorage() {
       events.push('stopStorage');
       activeStopStorage++; maxActiveStopStorage = Math.max(maxActiveStopStorage, activeStopStorage);
@@ -94,12 +94,7 @@ test('integrity change between storage startup and bind closes storage without o
 });
 
 test('storage startup failure attempts cleanup of partially allocated resources', async () => {
-  const { bootstrap, events } = fixture({
-    async startStorage() {
-      events.push('startStorage');
-      throw new Error('storage adapter failed after partial allocation');
-    },
-  });
+  const { bootstrap, events } = fixture({ failStartStorage: true });
   await assert.rejects(bootstrap.start(), /partial allocation/);
   assert.ok(events.includes('stopStorage'));
   assert.equal(bootstrap.storageStarted, false);
