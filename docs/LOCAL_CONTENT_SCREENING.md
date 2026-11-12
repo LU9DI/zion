@@ -12,7 +12,8 @@ The built-in check does not upload the plaintext or digest to a remote moderatio
 
 ```js
 const malwareScanner = {
-  async scan({ content, sha256, bytes, signal }) {\n    // Pass signal to the scanner process and terminate it when aborted.
+  async scan({ content, sha256, bytes, signal }) {
+    // Pass signal to the scanner process and terminate it when aborted.
     // Run a locally installed and maintained scanning engine here.
     // Return { verdict: 'clean' } only after a positive clean result.
     // Return malicious, suspicious, or unknown for every non-clean result.
@@ -29,6 +30,25 @@ const client = new ZionClient({
 The scanner runs on the client before any chunk is encrypted or passed to the storage adapter. It receives a copy of the plaintext buffer; mutating that copy cannot change the bytes Zion encrypts. Only the exact verdict `{ verdict: 'clean' }` allows upload. Malicious, suspicious, missing, unknown, and scanner-error outcomes fail closed and make no storage-adapter calls.
 
 Set `requireMalwareScan: true` in any application policy that must not upload without a scanner. Construction fails if no scanner is configured. Without that option and without an adapter, upload retains the legacy exact-hash-only behavior and reports `screening.malwareScan: 'not-configured'`; this is not a malware-safe mode.
+
+
+## ClamAV CLI adapter
+
+Zion includes an adapter for a locally installed ClamAV CLI. It starts the executable without a shell, streams file bytes through standard input (no temporary plaintext file), maps ClamAV's clean/infected exit results to explicit verdicts, and treats missing executables or indeterminate results as scanner errors.
+
+```js
+import { ZionClient } from './zion-client.js';
+import { createClamAVScanner } from './clamav-scanner.js';
+
+const client = new ZionClient({
+  storageAdapter,
+  malwareScanner: createClamAVScanner({ executable: 'clamscan' }),
+  requireMalwareScan: true,
+  malwareScanTimeoutMs: 30_000,
+});
+```
+
+The host must install ClamAV and keep its signature database updated (for example, using the platform's approved ClamAV package and `freshclam` update process). Zion does not install the engine, update signatures, or guarantee detection quality. The adapter is not a sandbox: archive bomb limits, scanner process isolation, CPU/memory quotas, and operational signature-update monitoring must be enforced by the host deployment. Test the exact ClamAV version and command behavior on each supported operating system before production use.
 
 ## Deployment requirements and limits
 
