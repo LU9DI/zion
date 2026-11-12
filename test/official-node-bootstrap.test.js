@@ -49,7 +49,7 @@ function fixture({ verifyOk = true, failSecondCheck = false, listenFails = false
   };
   const bootstrap = new OfficialNodeBootstrap({
     integrityGuard: guard, transport,
-    async startStorage() { events.push('startStorage'); if (storageGate) { storageGate.entered?.(); await storageGate.promise; } if (failStartStorage) throw new Error('storage adapter failed after partial allocation'); storageRunning = true; },
+    async startStorage() { events.push('startStorage'); if (storageGate) { storageGate.entered?.(); await storageGate.promise; } if (failStartStorage) { storageRunning = true; throw new Error('storage adapter failed after partial allocation'); } storageRunning = true; },
     async stopStorage() {
       events.push('stopStorage');
       activeStopStorage++; maxActiveStopStorage = Math.max(maxActiveStopStorage, activeStopStorage);
