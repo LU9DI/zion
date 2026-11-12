@@ -87,3 +87,10 @@ transitions. PostgreSQL errors and ambiguous admission state fail closed.
 `LISTEN/NOTIFY` remains an acceleration path for promptly closing sockets;
 it is not the authorization source and is not relied on to enforce the next
 application frame after a listener reconnect gap.
+
+Revoking an allowlisted identity that has never had an admission row creates a
+durable `revoked` tombstone in `peer_admissions`. The tombstone does not consume
+active capacity or issuer quota, but it overrides the bootstrap allowlist after
+process restart and prevents a later invitation admission from silently
+re-enabling that identity. Removing such a ban requires an explicit, reviewed
+administrative operation; do not delete tombstones as routine cleanup.
