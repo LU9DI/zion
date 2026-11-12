@@ -164,9 +164,8 @@ test('quarantine during asynchronous listen cannot mark the node started after b
   const { bootstrap, events, guard } = fixture({ listenGate: gate });
   const starting = bootstrap.start();
   await entered;
-  const quarantining = guard.quarantine();
+  await guard.quarantine();
   gate.resolve();
-  await quarantining;
   await assert.rejects(starting, /quarantined|not healthy|integrity/i);
   assert.equal(bootstrap.started, false);
   assert.equal(bootstrap.storageStarted, false);
@@ -181,8 +180,9 @@ test('quarantine during storage startup is reconciled after the adapter resolves
   const { bootstrap, events, guard } = fixture({ storageGate: gate });
   const starting = bootstrap.start();
   await entered;
-  await guard.quarantine();
+  const quarantining = guard.quarantine();
   gate.resolve();
+  await quarantining;
   await assert.rejects(starting, /quarantined|not healthy|integrity/i);
   assert.equal(bootstrap.started, false);
   assert.equal(bootstrap.storageStarted, false);
