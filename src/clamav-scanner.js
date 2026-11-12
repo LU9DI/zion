@@ -36,7 +36,8 @@ export function createClamAVScanner({ executable = 'clamscan', spawnProcess = sp
           if (settled) return;
           settled = true;
           signal?.removeEventListener('abort', onAbort);
-          if (error) reject(error); else resolve(value);
+          if (error) { try { child.kill('SIGKILL'); } catch {} reject(error); }
+          else resolve(value);
         };
         const onAbort = () => { child.kill('SIGKILL'); finish(Object.assign(new Error('ClamAV scan aborted'), { code: 'ZION_MALWARE_SCAN_ABORTED' })); };
         signal?.addEventListener('abort', onAbort, { once: true });
