@@ -8,7 +8,7 @@ const version = spawnSync('clamscan', ['--version'], { shell: false, windowsHide
 const clamavAvailable = !version.error && version.status === 0;
 
 test('real ClamAV detects EICAR and Zion refuses storage', { skip: !clamavAvailable }, async () => {
-  const eicar = Buffer.from('X5O!P%@AP[4\\\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*');
+  const eicar = Buffer.from('X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*');
   const scanner = createClamAVScanner();
   const verdict = await scanner.scan({ content: eicar });
   assert.equal(verdict.verdict, 'malicious');
