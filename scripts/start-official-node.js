@@ -53,7 +53,7 @@ function validateDependencies(value) {
  * reviewed trust material and storage/integrity adapters; it never supplies
  * the PostgreSQL admission controller or revocation listener.
  */
-export async function startOfficialNode({ env = process.env, loadAdapterModule = specifier => import(specifier), PoolClass } = {}) {
+export async function startOfficialNode({ env = process.env, loadAdapterModule = specifier => import(specifier) } = {}) {
   const adapterPath = env.ZION_OFFICIAL_ADAPTER_MODULE;
   if (typeof adapterPath !== 'string' || !adapterPath.trim() || !isAbsolute(adapterPath)) {
     throw new Error('Set ZION_OFFICIAL_ADAPTER_MODULE to an absolute path to a deployment-owned adapter module');
@@ -68,14 +68,16 @@ export async function startOfficialNode({ env = process.env, loadAdapterModule =
   }
 
   const adapterModule = await loadAdapterModule(pathToFileURL(resolve(adapterPath)).href);
+  requireFunction(adapterModule?.createPool, 'createPool');
   requireFunction(adapterModule?.createOfficialNodeDependencies, 'createOfficialNodeDependencies');
-  let ActualPoolClass = PoolClass;
-  if (!ActualPoolClass) ({ Pool: ActualPoolClass } = await import('pg'));
 
-  const pool = new ActualPoolClass({
+  const pool = await adapterModule.createPool({
     connectionString, max: Number(poolMaxRaw), connectionTimeoutMillis: 5000,
-    application_name: 'zion-official-node',
+    application_name: 'zion-official-node', env,
   });
+  if (!pool || typeof pool.connect !== 'function' || typeof pool.end !== 'function') {
+    throw new TypeError('Deployment adapter createPool() must return a pg-compatible pool with connect() and end()');
+  }
   let bootstrap;
   let runtime;
   try {
