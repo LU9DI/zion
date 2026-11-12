@@ -403,6 +403,27 @@ export class PeerTransport {
     if (this.revokedPeerIds.has(checked.nodeId)) { socket.destroy(); return; }
     const admissionEpoch = this.peerAdmissionEpochs.get(checked.nodeId) ?? 0;
     const trustedByAllowlist = !this.trustedPeerIds || this.trustedPeerIds.has(checked.nodeId);
+    // Reject a durably revoked peer before it can consume replay-cache capacity.
+    // The later fence still encloses dispatch and closes the preflight/dispatch race.
+    if (socket.__zionSession?.authenticated && this.admissionController) {
+      let authorized;
+      try {
+        const preflight = await this.admissionController.withPeerAuthorizationFence(
+          checked.nodeId,
+          { allowUnadmitted: trustedByAllowlist },
+          async () => true,
+        );
+        authorized = preflight?.ok === true && preflight.admitted === true && preflight.value === true;
+      } catch {
+        socket.destroy();
+        return;
+      }
+      if (!authorized || socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
+          (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) {
+        socket.destroy();
+        return;
+      }
+    }
     if (!trustedByAllowlist && !this.admissionController) { socket.destroy(); return; }
     // Reject an already-seen envelope before the identity tier is charged. Replayed frames
     // are signed by a third party, so charging them would let an attacker replay one captured
