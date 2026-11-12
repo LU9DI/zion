@@ -43,7 +43,7 @@ function fakeChild({ output = '', errorOutput = '', code = 0 } = {}) {
 }
 
 test('ClamAV adapter maps an explicit clean result and never invokes a shell', async () => {
-  const child = fakeChild({ output: 'stdin: OK\\n' });
+  const child = fakeChild({ output: 'stdin: OK\n' });
   let invocation;
   const scanner = createClamAVScanner({ spawnProcess: (...args) => { invocation = args; return child; } });
   const result = await scanner.scan({ content: Buffer.from('safe fixture') });
@@ -58,13 +58,13 @@ test('ClamAV adapter maps an explicit clean result and never invokes a shell', a
 });
 
 test('ClamAV adapter maps an explicit infected result to malicious', async () => {
-  const child = fakeChild({ output: 'stdin: Eicar-Test-Signature FOUND\\n', code: 1 });
+  const child = fakeChild({ output: 'stdin: Eicar-Test-Signature FOUND\n', code: 1 });
   const scanner = createClamAVScanner({ spawnProcess: () => child });
   assert.deepEqual(await scanner.scan({ content: Buffer.from('test fixture') }), { verdict: 'malicious', engine: 'ClamAV', output: 'stdin: Eicar-Test-Signature FOUND' });
 });
 
 test('ClamAV adapter fails closed on indeterminate exit codes', async () => {
-  const child = fakeChild({ output: 'stdin: ERROR\\n', errorOutput: 'database unavailable', code: 2 });
+  const child = fakeChild({ output: 'stdin: ERROR\n', errorOutput: 'database unavailable', code: 2 });
   const scanner = createClamAVScanner({ spawnProcess: () => child });
   await assert.rejects(scanner.scan({ content: Buffer.from('fixture') }), error => error.code === 'ZION_MALWARE_SCANNER_ERROR');
 });
@@ -78,4 +78,16 @@ test('ClamAV adapter kills the child process when its signal aborts', async () =
   controller.abort();
   await assert.rejects(pending, error => error.code === 'ZION_MALWARE_SCAN_ABORTED');
   assert.equal(child.killed, true);
+});
+
+test('ClamAV adapter classifies encrypted and exceeded-limit alerts as suspicious', async () => {
+  const child = fakeChild({ output: 'stdin: Heuristics.Limits.Exceeded FOUND\\n', code: 1 });
+  const scanner = createClamAVScanner({ spawnProcess: () => child });
+  const result = await scanner.scan({ content: Buffer.from('bounded fixture') });
+  assert.equal(result.verdict, 'suspicious');
+});
+
+test('ClamAV adapter normalizes synchronous process-launch failures', async () => {
+  const scanner = createClamAVScanner({ spawnProcess() { throw new Error('spawn denied'); } });
+  await assert.rejects(scanner.scan({ content: Buffer.from('fixture') }), error => error.code === 'ZION_MALWARE_SCANNER_UNAVAILABLE');
 });
