@@ -90,11 +90,13 @@ export class ZionClient {
       const scanController = new AbortController();
       let timeoutHandle;
       let scanTimedOut = false;
+      let scanContent;
       try {
         // Give the scanner its own copy so a plugin cannot mutate the bytes that Zion encrypts.
         // The signal is cooperative: adapters must honor it to stop underlying scanner work.
+        scanContent = Buffer.from(content);
         const scanPromise = Promise.resolve().then(() => this.malwareScanner.scan({
-          content: Buffer.from(content),
+          content: scanContent,
           sha256: screening.sha256,
           bytes: content.length,
           signal: scanController.signal,
@@ -113,6 +115,9 @@ export class ZionClient {
       } finally {
         if (timeoutHandle) clearTimeout(timeoutHandle);
         if (!scanController.signal.aborted) scanController.abort();
+        // Best-effort zeroization of the extra plaintext copy handed to the scanner.
+        // The original input remains owned by the caller and is not modified.
+        scanContent?.fill(0);
       }
       if (!verdict || verdict.verdict !== 'clean') {
         const reason = verdict?.verdict === 'malicious' ? 'malicious' : verdict?.verdict === 'suspicious' ? 'suspicious' : 'unknown';
