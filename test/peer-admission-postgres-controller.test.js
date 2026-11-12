@@ -29,6 +29,14 @@ function fixture() {
       if (state.get(nodeId) !== 'active') return { ok: true, admitted: false, status: state.get(nodeId) ?? null };
       return { ok: true, admitted: true, status: 'active', value: await work() };
     },
+    async withPeerAuthorizationFence(nodeId, { allowUnadmitted = false } = {}, work) {
+      calls.push(['peer-fence', nodeId, allowUnadmitted]);
+      const status = state.get(nodeId) ?? null;
+      if (status !== 'active' && !(status === null && allowUnadmitted)) {
+        return { ok: true, admitted: false, status };
+      }
+      return { ok: true, admitted: true, status: status ?? 'trusted-allowlist', value: await work() };
+    },
     async revokeAdmission(nodeId) {
       calls.push(['revoke', nodeId]);
       if (state.get(nodeId) !== 'active') return { ok: false, reason: 'admission-not-found' };
@@ -97,6 +105,15 @@ test('Postgres controller delegates the final application dispatch fence to its 
   }), { ok: true, admitted: false, status: 'revoked' });
 });
 
+
+test('Postgres controller delegates trusted allowlist authorization with explicit no-row policy', async () => {
+  const x = fixture();
+  const result = await x.controller.withPeerAuthorizationFence(id('f'), { allowUnadmitted: true }, async () => 'trusted');
+  assert.deepEqual(result, {
+    ok: true, admitted: true, status: 'trusted-allowlist', value: 'trusted',
+  });
+  assert.ok(x.store.calls.some(call => call[0] === 'peer-fence' && call[1] === id('f') && call[2] === true));
+});
 
 test('Postgres controller exposes administrative release through the store fence', async () => {
   const x = fixture();
