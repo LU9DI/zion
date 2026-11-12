@@ -32,6 +32,78 @@ test('client rejects blacklist match before making any adapter calls', async () 
   assert.equal(calls, 0);
 });
 
+test('required local malware scanner runs before encryption and storage', async () => {
+  let scanned = 0;
+  let stored = 0;
+  const adapter = {
+    async putChunk({ ciphertext }) { stored++; assert.equal(ciphertext.includes(Buffer.from('known-clean-fixture')), false); return { created: true }; },
+    async getChunk() { throw new Error('not-used'); },
+  };
+  const client = new ZionClient({
+    storageAdapter: adapter,
+    requireMalwareScan: true,
+    malwareScanner: {
+      async scan({ content, sha256: contentHash, bytes }) {
+        scanned++;
+        assert.deepEqual(content, Buffer.from('known-clean-fixture'));
+        assert.equal(contentHash, digest(content));
+        assert.equal(bytes, content.length);
+        return { verdict: 'clean' };
+      },
+    },
+  });
+  const result = await client.upload(Buffer.from('known-clean-fixture'));
+  assert.equal(scanned, 1);
+  assert.equal(stored, 1);
+  assert.equal(result.screening.malwareScan, 'clean');
+});
+
+test('malware scanner rejects malicious, suspicious, and unknown verdicts before storage', async t => {
+  for (const verdict of ['malicious', 'suspicious', 'unknown', undefined]) {
+    await t.test(String(verdict), async () => {
+      let calls = 0;
+      const client = new ZionClient({
+        storageAdapter: { async putChunk() { calls++; }, async getChunk() { calls++; } },
+        malwareScanner: { async scan() { return verdict === undefined ? null : { verdict }; } },
+      });
+      await assert.rejects(client.upload(Buffer.from('blocked fixture')), error =>
+        error.code === 'ZION_CONTENT_REJECTED' && error.reason.startsWith('malware-'));
+      assert.equal(calls, 0);
+    });
+  }
+});
+
+test('malware scanner errors fail closed before storage', async () => {
+  let calls = 0;
+  const client = new ZionClient({
+    storageAdapter: { async putChunk() { calls++; }, async getChunk() { calls++; } },
+    malwareScanner: { async scan() { throw new Error('scanner unavailable'); } },
+  });
+  await assert.rejects(client.upload('fixture'), error => error.code === 'ZION_MALWARE_SCAN_FAILED');
+  assert.equal(calls, 0);
+});
+
+test('production policy can require a local malware scanner at construction', () => {
+  assert.throws(
+    () => new ZionClient({ storageAdapter: new MemoryCiphertextAdapter(), requireMalwareScan: true }),
+    error => error.code === 'ZION_MALWARE_SCANNER_REQUIRED',
+  );
+});
+
+test('scanner receives a copy and cannot mutate the plaintext that Zion encrypts', async () => {
+  const adapter = new MemoryCiphertextAdapter();
+  const client = new ZionClient({
+    storageAdapter: adapter,
+    requireMalwareScan: true,
+    malwareScanner: {
+      async scan({ content }) { content.fill(0); return { verdict: 'clean' }; },
+    },
+  });
+  const input = Buffer.from('original plaintext');
+  const result = await client.upload(input);
+  assert.deepEqual(await client.download({ manifest: result.manifest, fileKey: result.fileKey }), input);
+});
+
 test('manifest CID commits to nested chunk metadata and rejects tampering', async () => {
   const client = new ZionClient({ storageAdapter: new MemoryCiphertextAdapter(), chunkBytes: 3 });
   const result = await client.upload('abcdef');
