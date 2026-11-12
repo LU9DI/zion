@@ -25,6 +25,7 @@
     "anchor:verify-external-trust-receipt": "node scripts/verify-external-trust-receipt.js",
     "content:screen-local": "node scripts/screen-content-local.js",
     "content:verify-uploader": "node scripts/verify-uploader-attribution.js",
-    "client:demo": "node scripts/demo-consumer-client.js"
+    "client:demo": "node scripts/demo-consumer-client.js",
+    "start:official": "node scripts/start-official-node.js"
   }
 }
