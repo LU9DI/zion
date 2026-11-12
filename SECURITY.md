@@ -26,7 +26,7 @@ A useful report includes the affected commit/version, impacted component, prereq
 
 ### File content screening
 
-The built-in pre-encryption blacklist check is exact SHA-256 matching only; it is not antivirus and cannot detect unknown or modified malware. `ZionClient` now supports an injected local malware scanner and a fail-closed `requireMalwareScan` option. No antivirus engine or signature database is bundled. Applications that require malware screening must configure and maintain a local scanner and set `requireMalwareScan: true`; otherwise uploads may proceed with exact-hash screening only. See [docs/LOCAL_CONTENT_SCREENING.md](docs/LOCAL_CONTENT_SCREENING.md). Do not describe the scanner interface itself as malware protection until a concrete engine is integrated and validated.
+The built-in pre-encryption blacklist check is exact SHA-256 matching only; it is not antivirus and cannot detect unknown or modified malware. `ZionClient` now supports an injected local malware scanner and a fail-closed `requireMalwareScan` option. A ClamAV CLI adapter is provided, but no antivirus engine or signature database is bundled. Applications that require malware screening must configure and maintain a local scanner and set `requireMalwareScan: true`; otherwise uploads may proceed with exact-hash screening only. See [docs/LOCAL_CONTENT_SCREENING.md](docs/LOCAL_CONTENT_SCREENING.md). Do not describe the scanner interface itself as malware protection until a concrete engine is integrated and validated.
 
 ### Peer transport
 
