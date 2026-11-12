@@ -554,33 +554,21 @@ export class PeerTransport {
       if (payload?.type === 'ZION_HANDSHAKE' && payload.networkId === this.networkId &&
           payload.channelBinding === this.#channelBinding(socket) && payload.protocolMajor === this.genesis.protocolMajor && typeof payload.nonce === 'string' && /^[a-f0-9]{64}$/.test(payload.nonce) &&
           payload.nonce !== session.localNonce && (!session.remoteNonce || session.remoteNonce === payload.nonce)) {
-        // Use the same durable policy for handshakes: a trusted allowlist identity
-        // may have no admission row, but a revoked/released tombstone overrides trust.
-        let previouslyAuthorized = trustedByAllowlist && !this.admissionController;
-        if (this.admissionController) {
-          try {
-            const authorization = typeof this.admissionController.withPeerAuthorizationFence === 'function'
-              ? await this.admissionController.withPeerAuthorizationFence(
-                checked.nodeId,
-                { allowUnadmitted: trustedByAllowlist },
-                async () => true,
-              )
-              : {
-                ok: true,
-                admitted: await this.admissionController.isAdmitted(checked.nodeId) === true,
-                value: true,
-              };
-            previouslyAuthorized = authorization?.ok === true &&
-              authorization.admitted === true && authorization.value === true;
-          } catch {
-            socket.destroy();
-            return;
-          }
+        // Admission state is checked before completing an invited handshake.
+        // Trusted bootstrap identities retain their handshake exemption; every
+        // authenticated application frame is still preflighted and dispatch-fenced.
+        let previouslyAdmitted = false;
+        try {
+          previouslyAdmitted = this.admissionController
+            ? await this.admissionController.isAdmitted(checked.nodeId) === true
+            : false;
+        } catch {
+          socket.destroy();
+          return;
         }
         if (socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
-            (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch ||
-            (trustedByAllowlist && !previouslyAuthorized)) { socket.destroy(); return; }
-        if (!trustedByAllowlist && !previouslyAuthorized) {
+            (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) { socket.destroy(); return; }
+        if (!trustedByAllowlist && !previouslyAdmitted) {
           let admission;
           try { admission = await this.admissionController.admit({ subjectNodeId: checked.nodeId, vouchers: payload.vouchers }); }
           catch { socket.destroy(); return; }
