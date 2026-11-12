@@ -8,8 +8,9 @@ const MAX_DIAGNOSTIC_BYTES = 64 * 1024;
  * database. Content is streamed over stdin; no temporary file or shell is used.
  * The caller (ZionClient) owns the scan timeout.
  */
-export function createClamAVScanner({ executable = 'clamscan' } = {}) {
+export function createClamAVScanner({ executable = 'clamscan', spawnProcess = spawn } = {}) {
   if (typeof executable !== 'string' || !executable.trim()) throw new TypeError('ClamAV executable must be a non-empty path or command name');
+  if (typeof spawnProcess !== 'function') throw new TypeError('spawnProcess must be a function');
   return Object.freeze({
     async scan({ content, signal } = {}) {
       if (!Buffer.isBuffer(content)) throw new TypeError('ClamAV scanner content must be a Buffer');
@@ -18,7 +19,7 @@ export function createClamAVScanner({ executable = 'clamscan' } = {}) {
         let settled = false;
         let stdout = '';
         let stderr = '';
-        const child = spawn(executable, ['--no-summary', '--stdout', '-'], { shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+        const child = spawnProcess(executable, ['--no-summary', '--stdout', '-'], { shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
         const finish = (error, value) => {
           if (settled) return;
           settled = true;
