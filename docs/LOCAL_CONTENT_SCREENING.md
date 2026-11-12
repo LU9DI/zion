@@ -8,11 +8,11 @@ The built-in check does not upload the plaintext or digest to a remote moderatio
 
 ## Scanner adapter contract
 
-`ZionClient` accepts an injected `malwareScanner` with this contract:
+`ZionClient` accepts an injected `malwareScanner` with this contract. The scanner receives an `AbortSignal` and is bounded by `malwareScanTimeoutMs` (default 30 seconds; allowed range 1 ms to 5 minutes):
 
 ```js
 const malwareScanner = {
-  async scan({ content, sha256, bytes }) {
+  async scan({ content, sha256, bytes, signal }) {\n    // Pass signal to the scanner process and terminate it when aborted.
     // Run a locally installed and maintained scanning engine here.
     // Return { verdict: 'clean' } only after a positive clean result.
     // Return malicious, suspicious, or unknown for every non-clean result.
@@ -34,7 +34,7 @@ Set `requireMalwareScan: true` in any application policy that must not upload wi
 
 - Zion does not bundle or claim to provide an antivirus engine. The host application must integrate, update, and operate a reputable local scanner and its signature database.
 - The adapter should scan archives safely with decompression limits, nested archive limits, timeouts, and protections against parser exploits. Do not execute uploaded files to inspect them.
-- Scanner engine errors, timeouts, unsupported formats, encrypted archives, and indeterminate verdicts should be treated as non-clean.
+- Scanner engine errors, timeouts, unsupported formats, encrypted archives, and indeterminate verdicts should be treated as non-clean. The Zion timeout aborts the supplied signal and rejects the upload; the scanner adapter must honor the signal and terminate its underlying process. JavaScript cannot forcibly stop a non-cooperative scanner implementation.
 - Keep scanning before client-side encryption so storage peers never need plaintext or file keys. Do not send private keys to scanners or storage nodes.
 - The adapter is an integration boundary, not proof of scanner correctness, malware detection coverage, or production readiness. Independently test the selected engine and the complete client upload path.
 - Hash blacklists are supplemental indicators only. They are not a substitute for signature-based or behavior-based malware scanning.
