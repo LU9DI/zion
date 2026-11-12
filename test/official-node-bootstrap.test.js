@@ -467,6 +467,38 @@ test('notification API startup failure closes partially allocated listener', asy
   assert.equal(bootstrap.notificationApiStarted, false);
 });
 
+test('quarantine waits for pending notification listener startup before closing it', async () => {
+  const state = fixture();
+  const gate = deferred();
+  let signalEntered;
+  const entered = new Promise(resolve => { signalEntered = resolve; });
+  const lifecycle = [];
+  const api = {
+    async listen() {
+      lifecycle.push('listen-start');
+      signalEntered();
+      await gate.promise;
+      lifecycle.push('listen-finished');
+    },
+    async close() { lifecycle.push('close'); },
+  };
+  const bootstrap = new OfficialNodeBootstrap({
+    integrityGuard: state.guard,
+    transport: state.transport,
+    async startStorage() {},
+    async stopStorage() {},
+    notificationApi: api,
+  });
+  const starting = bootstrap.start();
+  await entered;
+  const quarantining = state.guard.quarantine();
+  gate.resolve();
+  await quarantining;
+  await assert.rejects(starting, /cancelled|quarantined|healthy/i);
+  assert.deepEqual(lifecycle, ['listen-start', 'listen-finished', 'close']);
+  assert.equal(bootstrap.notificationApiStarted, false);
+});
+
 test('official bootstrap rejects malformed notification API lifecycle adapter', () => {
   const state = fixture();
   assert.throws(() => new OfficialNodeBootstrap({ integrityGuard: state.guard, transport: state.transport,
