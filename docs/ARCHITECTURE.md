@@ -10,7 +10,7 @@
 
 ## Client-side content admission
 
-`ZionClient` performs an exact SHA-256 blacklist check before encryption. It also supports an injected local malware-scanner adapter; when `requireMalwareScan: true`, upload fails closed unless the scanner returns the exact `clean` verdict. The scanner runs before encryption and storage, and receives a copy of the plaintext. Zion does not bundle an antivirus engine: production applications must supply and independently validate a maintained local scanner. Hash matching alone is not malware detection. See `docs/LOCAL_CONTENT_SCREENING.md`.
+`ZionClient` performs an exact SHA-256 blacklist check before encryption. It also supports an injected local malware-scanner adapter; when `requireMalwareScan: true`, upload fails closed unless the scanner returns the exact `clean` verdict. The ClamAV CLI adapter streams plaintext locally before encryption, uses bounded archive-scan settings, and does not invoke a shell. The scanner copy and the client's internal plaintext copy are best-effort zeroized. Zion does not bundle the ClamAV executable or signature database: production applications must install and maintain the engine and pass the real-engine integration test on the target deployment. Hash matching alone is not malware detection. See `docs/LOCAL_CONTENT_SCREENING.md`.
 
 ## Not implemented yet
 
