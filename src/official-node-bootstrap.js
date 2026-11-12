@@ -57,6 +57,8 @@ export class OfficialNodeBootstrap {
     this.containmentPromise = null;
     // Serialize adapter shutdown calls across quarantine, rollback, retry, and close.
     this.adapterCleanupQueue = Promise.resolve();
+    // Cleanup waits for asynchronous adapter starts to settle before stopping them.
+    this.pendingAdapterStarts = new Set();
     this.closePromise = null;
     // Explicit close is terminal for this instance; create a new bootstrap to restart.
     this.closed = false;
@@ -126,6 +128,8 @@ export class OfficialNodeBootstrap {
     // Each caller gets a turn; adapter shutdown methods never overlap even if
     // close(), quarantine containment, rollback, and retry are requested together.
     const operation = this.adapterCleanupQueue.then(async () => {
+      const pendingStarts = [...this.pendingAdapterStarts];
+      if (pendingStarts.length) await Promise.allSettled(pendingStarts);
       const errors = [];
       if (this.idleParticipationSchedulerStarted && this.idleParticipationScheduler) {
         try { await this.idleParticipationScheduler.stop(); this.idleParticipationSchedulerStarted = false; }
@@ -224,7 +228,10 @@ export class OfficialNodeBootstrap {
       // may allocate resources and then reject before it can report success.
       this.storageStarted = true;
       this.storageState = 'starting';
-      await this.startStorage();
+      const storageStart = Promise.resolve().then(() => this.startStorage());
+      this.pendingAdapterStarts.add(storageStart);
+      try { await storageStart; }
+      finally { this.pendingAdapterStarts.delete(storageStart); }
       this.storageState = 'running';
       this.#assertLifecycle(epoch);
       // Recheck immediately before opening the network listener.
@@ -246,7 +253,10 @@ export class OfficialNodeBootstrap {
       if (this.notificationApi) {
         // listen() can allocate its socket before rejecting; register cleanup first.
         this.notificationApiStarted = true;
-        await this.notificationApi.listen();
+        const notificationApiStart = Promise.resolve().then(() => this.notificationApi.listen());
+        this.pendingAdapterStarts.add(notificationApiStart);
+        try { await notificationApiStart; }
+        finally { this.pendingAdapterStarts.delete(notificationApiStart); }
         this.#assertLifecycle(epoch);
         await this.integrityGuard.checkHealthy();
         this.#assertLifecycle(epoch);
