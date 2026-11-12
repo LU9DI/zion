@@ -76,16 +76,17 @@ export async function startOfficialNode({ env = process.env, loadAdapterModule =
   requireFunction(adapterModule?.createPool, 'createPool');
   requireFunction(adapterModule?.createOfficialNodeDependencies, 'createOfficialNodeDependencies');
 
-  const pool = await adapterModule.createPool({
-    connectionString, max: Number(poolMaxRaw), connectionTimeoutMillis: 5000,
-    application_name: 'zion-official-node', env,
-  });
-  if (!pool || typeof pool.connect !== 'function' || typeof pool.end !== 'function') {
-    throw new TypeError('Deployment adapter createPool() must return a pg-compatible pool with connect() and end()');
-  }
+  let pool;
   let bootstrap;
   let runtime;
   try {
+    pool = await adapterModule.createPool({
+      connectionString, max: Number(poolMaxRaw), connectionTimeoutMillis: 5000,
+      application_name: 'zion-official-node', env,
+    });
+    if (!pool || typeof pool.connect !== 'function' || typeof pool.end !== 'function') {
+      throw new TypeError('Deployment adapter createPool() must return a pg-compatible pool with connect() and end()');
+    }
     const dependencies = await adapterModule.createOfficialNodeDependencies({ env, pool });
     validateDependencies(dependencies);
     runtime = createPostgresPeerAdmissionRuntime({
@@ -132,7 +133,7 @@ export async function startOfficialNode({ env = process.env, loadAdapterModule =
       try { await runtime.transport.close(); } catch { cleanupConfirmed = false; }
     }
     if (cleanupConfirmed) {
-      try { await pool.end(); } catch { /* preserve the startup error */ }
+      try { await pool?.end?.(); } catch { /* preserve the startup error */ }
     }
     throw error;
   }
