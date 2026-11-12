@@ -43,6 +43,22 @@ test('official launcher rejects invalid pool bounds before loading deployment co
 });
 
 
+test('official launcher rejects a pool too small for the dedicated revocation listener', async () => {
+  let loaded = false;
+  await assert.rejects(
+    startOfficialNode({
+      env: {
+        ZION_OFFICIAL_ADAPTER_MODULE: '/opt/zion/adapter.mjs',
+        ZION_POSTGRES_URL: 'postgres://unused',
+        ZION_POSTGRES_POOL_MAX: '1',
+      },
+      loadAdapterModule: async () => { loaded = true; return {}; },
+    }),
+    /between 2 and 100.*revocation listener/,
+  );
+  assert.equal(loaded, false);
+});
+
 test('official launcher closes the PostgreSQL pool when adapter validation fails', async () => {
   let poolClosed = false;
   await assert.rejects(
