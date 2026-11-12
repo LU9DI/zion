@@ -391,6 +391,38 @@ test('inactivity scheduler starts only after healthy node startup and stops befo
   assert.ok(events.indexOf('inactivity-stop') < events.indexOf('stopStorage'));
 });
 
+test('inactivity scheduler async shutdown completes before transport and storage cleanup', async () => {
+  const state = fixture();
+  const lifecycle = [];
+  let releaseStop;
+  const stopGate = new Promise(resolve => { releaseStop = resolve; });
+  let signalStopStarted;
+  const stopStarted = new Promise(resolve => { signalStopStarted = resolve; });
+  const bootstrap = new OfficialNodeBootstrap({
+    integrityGuard: state.guard,
+    transport: state.transport,
+    async startStorage() { lifecycle.push('storage-start'); },
+    async stopStorage() { lifecycle.push('storage-stop'); },
+    inactivityScheduler: {
+      start() { lifecycle.push('scheduler-start'); },
+      async stop() {
+        signalStopStarted();
+        await stopGate;
+        lifecycle.push('scheduler-stop-finished');
+      },
+    },
+  });
+  await bootstrap.start();
+  const closing = bootstrap.close();
+  await stopStarted;
+  assert.equal(state.events.includes('close'), false);
+  assert.equal(lifecycle.includes('storage-stop'), false);
+  releaseStop();
+  await closing;
+  assert.ok(lifecycle.indexOf('scheduler-stop-finished') < state.events.indexOf('close'));
+  assert.ok(state.events.indexOf('close') < lifecycle.indexOf('storage-stop'));
+});
+
 test('inactivity scheduler is not started when integrity verification fails', async () => {
   const state = fixture({ verifyOk: false });
   let starts = 0;
