@@ -1719,6 +1719,11 @@ test('trusted allowlist sessions recheck durable revocation before every applica
   let durableStatus = null;
   const fenceCalls = [];
   let delivered = 0;
+  const replayGuard = {
+    accepted: 0,
+    has() { return false; },
+    accept() { this.accepted++; return true; },
+  };
   const admissionController = {
     async isAdmitted() { return durableStatus === 'active'; },
     async withPeerAuthorizationFence(nodeId, { allowUnadmitted = false } = {}, work) {
@@ -1734,7 +1739,7 @@ test('trusted allowlist sessions recheck durable revocation before every applica
   const server = new PeerTransport({
     identity: seed, host: '127.0.0.1', networkMode: 'official',
     protocolGenesis: genesis, integrityGuard: guard,
-    trustedPeerIds: [seed.nodeId, trustedPeer.nodeId], admissionController,
+    trustedPeerIds: [seed.nodeId, trustedPeer.nodeId], admissionController, replayGuard,
     onMessage: async () => { delivered++; },
   });
   const address = await server.listen();
@@ -1751,17 +1756,21 @@ test('trusted allowlist sessions recheck durable revocation before every applica
     peer.__zionSession?.peerNodeId === trustedPeer.nodeId && peer.__zionSession?.authenticated);
   assert.ok(serverSocket);
   assert.equal(serverSocket.__zionSession.trustedByAllowlist, true);
+  const acceptedAfterHandshake = replayGuard.accepted;
 
   client.send(socket, { type: 'PING', nonce: 'first-trusted-frame' });
   await waitFor(() => delivered === 1);
   assert.deepEqual(fenceCalls.at(-1), { nodeId: trustedPeer.nodeId, allowUnadmitted: true });
+  assert.equal(replayGuard.accepted, acceptedAfterHandshake + 1);
 
   durableStatus = 'revoked'; // Simulate a durable transition while LISTEN is disconnected.
   client.send(socket, { type: 'PING', nonce: 'second-trusted-frame' });
   await waitFor(() => serverSocket.destroyed, 1500,
     'a trusted allowlist session must observe durable revocation without a notification');
   assert.equal(delivered, 1, 'the revoked frame must not reach the application handler');
-  assert.equal(fenceCalls.length, 2);
+  assert.equal(fenceCalls.length, 2, 'the revoked frame is denied during preflight and never reaches dispatch fencing');
+  assert.equal(replayGuard.accepted, acceptedAfterHandshake + 1,
+    'a revoked peer must be rejected before consuming replay-cache capacity');
 });
 
 test('transport applies a cross-process revocation notification to active sessions', async t => {
