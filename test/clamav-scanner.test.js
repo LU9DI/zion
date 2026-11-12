@@ -91,3 +91,35 @@ test('ClamAV adapter normalizes synchronous process-launch failures', async () =
   const scanner = createClamAVScanner({ spawnProcess() { throw new Error('spawn denied'); } });
   await assert.rejects(scanner.scan({ content: Buffer.from('fixture') }), error => error.code === 'ZION_MALWARE_SCANNER_UNAVAILABLE');
 });
+
+test('ClamAV adapter normalizes synchronous stdin failures and terminates the process', async () => {
+  const child = fakeChild();
+  child.stdin.end = () => { throw new Error('stdin unavailable'); };
+  const scanner = createClamAVScanner({ spawnProcess: () => child });
+  await assert.rejects(
+    scanner.scan({ content: Buffer.from('fixture') }),
+    error => error.code === 'ZION_MALWARE_SCANNER_INPUT_ERROR',
+  );
+  assert.equal(child.killed, true);
+});
+
+test('ClamAV adapter still rejects an aborted scan when process termination throws', async () => {
+  const child = fakeChild();
+  child.stdin.end = () => {};
+  child.kill = () => { throw new Error('process already exited'); };
+  const scanner = createClamAVScanner({ spawnProcess: () => child });
+  const controller = new AbortController();
+  const pending = scanner.scan({ content: Buffer.from('fixture'), signal: controller.signal });
+  controller.abort();
+  await assert.rejects(pending, error => error.code === 'ZION_MALWARE_SCAN_ABORTED');
+});
+
+test('ClamAV adapter terminates the process when diagnostic output exceeds its cap', async () => {
+  const child = fakeChild({ output: 'x'.repeat(65 * 1024) });
+  const scanner = createClamAVScanner({ spawnProcess: () => child });
+  await assert.rejects(
+    scanner.scan({ content: Buffer.from('fixture') }),
+    error => error.code === 'ZION_MALWARE_SCAN_OUTPUT_LIMIT',
+  );
+  assert.equal(child.killed, true);
+});
