@@ -277,7 +277,7 @@ test('PostgreSQL migration and independent-process admission races enforce capac
     assert.deepEqual(untrustedWithoutRow, { ok: true, admitted: false, status: null });
 
     const trustedAdmission = await revocationStore.commitAdmission(
-      admissionInput('6', ['5', '6'], ['a', 'b']),
+      admissionInput('6', ['5', '4'], ['a', 'b']),
     );
     assert.equal(trustedAdmission.ok, true);
     let trustedDispatchGateOpen;
