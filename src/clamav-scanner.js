@@ -40,8 +40,8 @@ export function createClamAVScanner({ executable = 'clamscan' } = {}) {
         child.once('error', error => finish(Object.assign(new Error('Unable to start local ClamAV scanner', { cause: error }), { code: 'ZION_MALWARE_SCANNER_UNAVAILABLE' })));
         child.once('close', (code, signalName) => {
           if (settled) return;
-          if (code === 0 && /(?:stdin|stream): OK\\b/i.test(stdout)) finish(null, { verdict: 'clean', engine: 'ClamAV', output: stdout.trim() });
-          else if (code === 1 && /FOUND\\b/i.test(stdout)) finish(null, { verdict: 'malicious', engine: 'ClamAV', output: stdout.trim() });
+          if (code === 0 && /(?:stdin|stream): OK\b/i.test(stdout)) finish(null, { verdict: 'clean', engine: 'ClamAV', output: stdout.trim() });
+          else if (code === 1 && /FOUND\b/i.test(stdout)) finish(null, { verdict: 'malicious', engine: 'ClamAV', output: stdout.trim() });
           else finish(Object.assign(new Error('ClamAV returned an indeterminate scan result'), { code: 'ZION_MALWARE_SCANNER_ERROR', exitCode: code, signal: signalName, diagnostic: stderr.slice(0, MAX_DIAGNOSTIC_BYTES) }));
         });
         child.stdin.once('error', error => { if (error.code !== 'EPIPE') finish(Object.assign(new Error('Failed to stream content to ClamAV', { cause: error }), { code: 'ZION_MALWARE_SCANNER_INPUT_ERROR' })); });
