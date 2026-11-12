@@ -36,10 +36,12 @@ export function createClamAVScanner({ executable = 'clamscan', spawnProcess = sp
           if (settled) return;
           settled = true;
           signal?.removeEventListener('abort', onAbort);
-          if (error) { try { child.kill('SIGKILL'); } catch {} reject(error); }
-          else resolve(value);
+          if (error) {
+            try { child.kill('SIGKILL'); } catch {}
+            reject(error);
+          } else resolve(value);
         };
-        const onAbort = () => { child.kill('SIGKILL'); finish(Object.assign(new Error('ClamAV scan aborted'), { code: 'ZION_MALWARE_SCAN_ABORTED' })); };
+        const onAbort = () => finish(Object.assign(new Error('ClamAV scan aborted'), { code: 'ZION_MALWARE_SCAN_ABORTED' }));
         signal?.addEventListener('abort', onAbort, { once: true });
         child.stdout.setEncoding('utf8');
         child.stdout.on('error', error => finish(Object.assign(new Error('ClamAV stdout stream failed', { cause: error }), { code: 'ZION_MALWARE_SCANNER_OUTPUT_ERROR' })));
@@ -47,11 +49,11 @@ export function createClamAVScanner({ executable = 'clamscan', spawnProcess = sp
         child.stderr.setEncoding('utf8');
         child.stdout.on('data', chunk => {
           stdout += chunk;
-          if (Buffer.byteLength(stdout) > MAX_DIAGNOSTIC_BYTES) { child.kill('SIGKILL'); finish(Object.assign(new Error('ClamAV output exceeded safety limit'), { code: 'ZION_MALWARE_SCAN_OUTPUT_LIMIT' })); }
+          if (Buffer.byteLength(stdout) > MAX_DIAGNOSTIC_BYTES) finish(Object.assign(new Error('ClamAV output exceeded safety limit'), { code: 'ZION_MALWARE_SCAN_OUTPUT_LIMIT' }));
         });
         child.stderr.on('data', chunk => {
           stderr += chunk;
-          if (Buffer.byteLength(stderr) > MAX_DIAGNOSTIC_BYTES) { child.kill('SIGKILL'); finish(Object.assign(new Error('ClamAV diagnostics exceeded safety limit'), { code: 'ZION_MALWARE_SCAN_OUTPUT_LIMIT' })); }
+          if (Buffer.byteLength(stderr) > MAX_DIAGNOSTIC_BYTES) finish(Object.assign(new Error('ClamAV diagnostics exceeded safety limit'), { code: 'ZION_MALWARE_SCAN_OUTPUT_LIMIT' }));
         });
         child.once('error', error => finish(Object.assign(new Error('Unable to start local ClamAV scanner', { cause: error }), { code: 'ZION_MALWARE_SCANNER_UNAVAILABLE' })));
         child.once('close', (code, signalName) => {
@@ -65,7 +67,11 @@ export function createClamAVScanner({ executable = 'clamscan', spawnProcess = sp
         });
         child.stdin.once('error', error => { if (error.code !== 'EPIPE') finish(Object.assign(new Error('Failed to stream content to ClamAV', { cause: error }), { code: 'ZION_MALWARE_SCANNER_INPUT_ERROR' })); });
         if (signal?.aborted) { onAbort(); return; }
-        child.stdin.end(content);
+        try {
+          child.stdin.end(content);
+        } catch (cause) {
+          finish(Object.assign(new Error('Failed to stream content to ClamAV', { cause }), { code: 'ZION_MALWARE_SCANNER_INPUT_ERROR' }));
+        }
       });
     },
   });
