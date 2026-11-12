@@ -34,7 +34,7 @@ Set `requireMalwareScan: true` in any application policy that must not upload wi
 
 ## ClamAV CLI adapter
 
-Zion includes an adapter for a locally installed ClamAV CLI. It starts the executable without a shell, streams file bytes through standard input (no temporary plaintext file), maps ClamAV's clean/infected exit results to explicit verdicts, and treats missing executables or indeterminate results as scanner errors.
+Zion includes an adapter for a locally installed ClamAV CLI. It starts the executable without a shell, streams file bytes through standard input (no temporary plaintext file), maps ClamAV's clean/infected exit results to explicit verdicts, and treats missing executables or indeterminate results as scanner errors. The adapter sets bounded scan defaults: 25 seconds of engine scan time, 100 MiB per extracted file, 200 MiB total scan size, 10,000 extracted files, and archive recursion depth 10. Encrypted content and exceeded scan limits are configured to raise ClamAV alerts, which Zion rejects.
 
 ```js
 import { ZionClient } from './zion-client.js';
@@ -48,7 +48,7 @@ const client = new ZionClient({
 });
 ```
 
-The host must install ClamAV and keep its signature database updated (for example, using the platform's approved ClamAV package and `freshclam` update process). Zion does not install the engine, update signatures, or guarantee detection quality. The adapter is not a sandbox: archive bomb limits, scanner process isolation, CPU/memory quotas, and operational signature-update monitoring must be enforced by the host deployment. Test the exact ClamAV version and command behavior on each supported operating system before production use.
+The host must install ClamAV and keep its signature database updated (for example, using the platform's approved ClamAV package and `freshclam` update process). Zion does not install the engine, update signatures, or guarantee detection quality. The adapter applies ClamAV archive and scan limits, but it is not a sandbox: OS-level process isolation, CPU/memory quotas, filesystem restrictions, and operational signature-update monitoring must be enforced by the host deployment. Test the exact ClamAV version and command behavior on each supported operating system before production use.
 
 ## Deployment requirements and limits
 
