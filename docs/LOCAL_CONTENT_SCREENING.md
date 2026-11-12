@@ -58,3 +58,16 @@ The host must install ClamAV and keep its signature database updated (for exampl
 - Keep scanning before client-side encryption so storage peers never need plaintext or file keys. Do not send private keys to scanners or storage nodes.
 - The adapter is an integration boundary, not proof of scanner correctness, malware detection coverage, or production readiness. Independently test the selected engine and the complete client upload path.
 - Hash blacklists are supplemental indicators only. They are not a substitute for signature-based or behavior-based malware scanning.
+
+
+## Important trust boundary: client-side scanning is not network-wide enforcement
+
+The ClamAV adapter protects an honest client from accidentally uploading content that its local scanner identifies as non-clean. It is not a remotely enforceable guarantee that every peer in a decentralized network scanned its uploads. A modified or malicious client can bypass this SDK, call a storage node directly, or falsely claim that a scan passed. A client-generated signature or boolean attestation does not prove that a genuine scanner ran or that its signatures were current.
+
+This creates a deliberate privacy/security boundary:
+
+- With end-to-end encryption, ordinary storage peers receive ciphertext and cannot run conventional malware scanning on the original file.
+- Scanning plaintext at a central or peer-side gateway requires the plaintext or decryption capability to be disclosed to that gateway, weakening the end-to-end confidentiality model.
+- Client-side scanning preserves the plaintext boundary for honest clients, but cannot prevent a determined malicious uploader from bypassing it.
+
+Therefore, do not describe this client-side gate as a network-wide malware firewall. A production network still needs authenticated peer admission, strict quotas, abuse reporting, quarantine and revocation controls, and verified ciphertext integrity. If policy requires enforced malware inspection of every uploaded file, Zion must explicitly adopt a trusted inspection boundary (for example, a user-authorized scanning gateway or a separately threat-modeled confidential-computing design); that trade-off must be visible to users and must not silently expose private keys or plaintext to storage peers.
