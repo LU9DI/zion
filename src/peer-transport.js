@@ -408,18 +408,25 @@ export class PeerTransport {
     if (socket.__zionSession?.authenticated && this.admissionController) {
       let authorized;
       try {
-        const preflight = typeof this.admissionController.withPeerAuthorizationFence === 'function'
-          ? await this.admissionController.withPeerAuthorizationFence(
+        const preflight = typeof this.admissionController.isPeerAuthorized === 'function'
+          ? await this.admissionController.isPeerAuthorized(
             checked.nodeId,
             { allowUnadmitted: trustedByAllowlist },
-            async () => true,
           )
-          : {
-            ok: true,
-            admitted: await this.admissionController.isAdmitted(checked.nodeId) === true,
-            value: true,
-          };
-        authorized = preflight?.ok === true && preflight.admitted === true && preflight.value === true;
+          : typeof this.admissionController.withPeerAuthorizationFence === 'function'
+            ? await this.admissionController.withPeerAuthorizationFence(
+              checked.nodeId,
+              { allowUnadmitted: trustedByAllowlist },
+              async () => true,
+            )
+            : {
+              ok: true,
+              admitted: await this.admissionController.isAdmitted(checked.nodeId) === true,
+              value: true,
+            };
+        authorized = preflight?.ok === true &&
+          (preflight.authorized === true ||
+            (preflight.admitted === true && preflight.value === true));
       } catch {
         socket.destroy();
         return;
