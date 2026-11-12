@@ -220,9 +220,11 @@ export class OfficialNodeBootstrap {
       }
 
       // Storage may create/open persistent state, so it is not touched before verification.
+      // Mark cleanup as required before invoking the adapter: startStorage()
+      // may allocate resources and then reject before it can report success.
+      this.storageStarted = true;
       this.storageState = 'starting';
       await this.startStorage();
-      this.storageStarted = true;
       this.storageState = 'running';
       this.#assertLifecycle(epoch);
       // Recheck immediately before opening the network listener.
