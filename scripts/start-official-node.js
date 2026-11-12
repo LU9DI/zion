@@ -26,8 +26,10 @@ function validateDependencies(value) {
   }
   requireFunction(startStorage, 'startStorage');
   requireFunction(stopStorage, 'stopStorage');
-  if (!controllerOptions || typeof controllerOptions !== 'object' || Array.isArray(controllerOptions)) {
-    throw new TypeError('Deployment adapter must provide controllerOptions');
+  if (!controllerOptions || typeof controllerOptions !== 'object' || Array.isArray(controllerOptions) ||
+      !Array.isArray(controllerOptions.trustedIssuerNodeIds) || controllerOptions.trustedIssuerNodeIds.length === 0 ||
+      typeof controllerOptions.capacityProvider !== 'function') {
+    throw new TypeError('Deployment adapter must provide controllerOptions with trustedIssuerNodeIds and capacityProvider()');
   }
   if (!transportOptions || typeof transportOptions !== 'object' || Array.isArray(transportOptions)) {
     throw new TypeError('Deployment adapter must provide transportOptions');
@@ -90,6 +92,7 @@ export async function startOfficialNode({ env = process.env, loadAdapterModule =
       listenerOptions: dependencies.listenerOptions,
       transportOptions: {
         ...dependencies.transportOptions,
+        integrityGuard: dependencies.integrityGuard,
         identity: dependencies.identity,
         protocolGenesis: dependencies.protocolGenesis,
         trustedPeerIds: dependencies.trustedPeerIds,
