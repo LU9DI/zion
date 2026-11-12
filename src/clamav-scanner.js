@@ -19,7 +19,19 @@ export function createClamAVScanner({ executable = 'clamscan', spawnProcess = sp
         let settled = false;
         let stdout = '';
         let stderr = '';
-        const child = spawnProcess(executable, ['--no-summary', '--stdout', '-'], { shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+        let child;
+        try {
+          child = spawnProcess(executable, [
+            '--no-summary', '--stdout',
+            '--max-scantime=25000', '--max-filesize=100M', '--max-scansize=200M',
+            '--max-files=10000', '--max-recursion=10',
+            '--alert-encrypted=yes', '--alert-exceeds-max=yes',
+            '-',
+          ], { shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+        } catch (cause) {
+          reject(Object.assign(new Error('Unable to start local ClamAV scanner', { cause }), { code: 'ZION_MALWARE_SCANNER_UNAVAILABLE' }));
+          return;
+        }
         const finish = (error, value) => {
           if (settled) return;
           settled = true;
@@ -29,6 +41,8 @@ export function createClamAVScanner({ executable = 'clamscan', spawnProcess = sp
         const onAbort = () => { child.kill('SIGKILL'); finish(Object.assign(new Error('ClamAV scan aborted'), { code: 'ZION_MALWARE_SCAN_ABORTED' })); };
         signal?.addEventListener('abort', onAbort, { once: true });
         child.stdout.setEncoding('utf8');
+        child.stdout.on('error', error => finish(Object.assign(new Error('ClamAV stdout stream failed', { cause: error }), { code: 'ZION_MALWARE_SCANNER_OUTPUT_ERROR' })));
+        child.stderr.on('error', error => finish(Object.assign(new Error('ClamAV stderr stream failed', { cause: error }), { code: 'ZION_MALWARE_SCANNER_OUTPUT_ERROR' })));
         child.stderr.setEncoding('utf8');
         child.stdout.on('data', chunk => {
           stdout += chunk;
@@ -46,6 +60,7 @@ export function createClamAVScanner({ executable = 'clamscan', spawnProcess = sp
           else finish(Object.assign(new Error('ClamAV returned an indeterminate scan result'), { code: 'ZION_MALWARE_SCANNER_ERROR', exitCode: code, signal: signalName, diagnostic: stderr.slice(0, MAX_DIAGNOSTIC_BYTES) }));
         });
         child.stdin.once('error', error => { if (error.code !== 'EPIPE') finish(Object.assign(new Error('Failed to stream content to ClamAV', { cause: error }), { code: 'ZION_MALWARE_SCANNER_INPUT_ERROR' })); });
+        if (signal?.aborted) { onAbort(); return; }
         child.stdin.end(content);
       });
     },
