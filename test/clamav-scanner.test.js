@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createClamAVScanner } from '../src/clamav-scanner.js';
+import { EventEmitter } from 'node:events';
 
 test('ClamAV adapter rejects invalid input before spawning', async () => {
   const scanner = createClamAVScanner();
@@ -22,8 +23,6 @@ test('ClamAV adapter reports unavailable executable as a scanner error', async (
 test('ClamAV adapter validates executable configuration', () => {
   assert.throws(() => createClamAVScanner({ executable: '  ' }), /non-empty path/);
 });
-
-import { EventEmitter } from 'node:events';
 
 function fakeChild({ output = '', errorOutput = '', code = 0 } = {}) {
   const child = new EventEmitter();
