@@ -548,13 +548,27 @@ export class PeerTransport {
       if (payload?.type === 'ZION_HANDSHAKE' && payload.networkId === this.networkId &&
           payload.channelBinding === this.#channelBinding(socket) && payload.protocolMajor === this.genesis.protocolMajor && typeof payload.nonce === 'string' && /^[a-f0-9]{64}$/.test(payload.nonce) &&
           payload.nonce !== session.localNonce && (!session.remoteNonce || session.remoteNonce === payload.nonce)) {
-        // Admission state is only needed for a new handshake. Avoid a remote/transactional
-        // store read for every authenticated application frame from an already connected peer.
-        const previouslyAdmitted = this.admissionController ?
-          await this.admissionController.isAdmitted(checked.nodeId) === true : false;
+        // Use the same durable policy for handshakes: a trusted allowlist identity
+        // may have no admission row, but a revoked/released tombstone overrides trust.
+        let previouslyAuthorized = trustedByAllowlist && !this.admissionController;
+        if (this.admissionController) {
+          try {
+            const authorization = await this.admissionController.withPeerAuthorizationFence(
+              checked.nodeId,
+              { allowUnadmitted: trustedByAllowlist },
+              async () => true,
+            );
+            previouslyAuthorized = authorization?.ok === true &&
+              authorization.admitted === true && authorization.value === true;
+          } catch {
+            socket.destroy();
+            return;
+          }
+        }
         if (socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
-            (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) { socket.destroy(); return; }
-        if (!trustedByAllowlist && !previouslyAdmitted) {
+            (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch ||
+            (trustedByAllowlist && !previouslyAuthorized)) { socket.destroy(); return; }
+        if (!trustedByAllowlist && !previouslyAuthorized) {
           let admission;
           try { admission = await this.admissionController.admit({ subjectNodeId: checked.nodeId, vouchers: payload.vouchers }); }
           catch { socket.destroy(); return; }
