@@ -41,3 +41,25 @@ test('official launcher rejects invalid pool bounds before loading deployment co
   );
   assert.equal(loaded, false);
 });
+
+
+test('official launcher closes the PostgreSQL pool when adapter validation fails', async () => {
+  let poolClosed = false;
+  await assert.rejects(
+    startOfficialNode({
+      env: {
+        ZION_OFFICIAL_ADAPTER_MODULE: '/opt/zion/adapter.mjs',
+        ZION_POSTGRES_URL: 'postgres://unused',
+      },
+      loadAdapterModule: async () => ({
+        createPool: async () => ({
+          connect: async () => ({}),
+          end: async () => { poolClosed = true; },
+        }),
+        createOfficialNodeDependencies: async () => ({}),
+      }),
+    }),
+    /complete IntegrityGuard/,
+  );
+  assert.equal(poolClosed, true);
+});
