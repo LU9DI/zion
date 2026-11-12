@@ -39,8 +39,15 @@ function fakePool({ failInvitationInsert = false, retryOnce = false, failCommit 
             return { rows: [{ max_active_peers: 100, max_admissions_per_issuer: 5,
               min_storage_headroom_ratio: 0.1, policy_version: 7 }] };
           }
+          if (sql.startsWith('SELECT policy_version FROM peer_admission_policy')) {
+            return { rows: [{ policy_version: 7 }] };
+          }
           if (sql.startsWith('SELECT active_reservations')) return { rows: [{ active_reservations: 0 }] };
           if (sql.startsWith('SELECT status FROM peer_admissions')) return { rows: currentAdmissionStatus ? [{ status: currentAdmissionStatus }] : [] };
+          if (sql.startsWith('INSERT INTO peer_admissions') && params[1] === 'revoked') {
+            currentAdmissionStatus = 'revoked';
+            return { rows: [] };
+          }
           if (sql.includes(`SET status = 'revoked'`)) { currentAdmissionStatus = 'revoked'; return { rows: [] }; }
           if (sql.includes('count(*)::integer')) return { rows: [{ count: 0 }] };
           if (sql.startsWith('INSERT INTO consumed_peer_invitations') && failInvitationInsert) {
