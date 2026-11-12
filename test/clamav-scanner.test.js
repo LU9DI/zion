@@ -49,7 +49,11 @@ test('ClamAV adapter maps an explicit clean result and never invokes a shell', a
   const result = await scanner.scan({ content: Buffer.from('safe fixture') });
   assert.equal(result.verdict, 'clean');
   assert.equal(invocation[0], 'clamscan');
-  assert.deepEqual(invocation[1], ['--no-summary', '--stdout', '-']);
+  assert.deepEqual(invocation[1], [
+    '--no-summary', '--stdout', '--max-scantime=25000', '--max-filesize=100M',
+    '--max-scansize=200M', '--max-files=10000', '--max-recursion=10',
+    '--alert-encrypted=yes', '--alert-exceeds-max=yes', '-',
+  ]);
   assert.equal(invocation[2].shell, false);
 });
 
