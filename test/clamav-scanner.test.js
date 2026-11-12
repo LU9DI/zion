@@ -22,3 +22,57 @@ test('ClamAV adapter reports unavailable executable as a scanner error', async (
 test('ClamAV adapter validates executable configuration', () => {
   assert.throws(() => createClamAVScanner({ executable: '  ' }), /non-empty path/);
 });
+
+import { EventEmitter } from 'node:events';
+
+function fakeChild({ output = '', errorOutput = '', code = 0 } = {}) {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.stdout.setEncoding = () => {};
+  child.stderr.setEncoding = () => {};
+  child.stdin = new EventEmitter();
+  child.stdin.end = () => {
+    queueMicrotask(() => {
+      if (output) child.stdout.emit('data', output);
+      if (errorOutput) child.stderr.emit('data', errorOutput);
+      child.emit('close', code, null);
+    });
+  };
+  child.kill = () => { child.killed = true; return true; };
+  return child;
+}
+
+test('ClamAV adapter maps an explicit clean result and never invokes a shell', async () => {
+  const child = fakeChild({ output: 'stdin: OK\\n' });
+  let invocation;
+  const scanner = createClamAVScanner({ spawnProcess: (...args) => { invocation = args; return child; } });
+  const result = await scanner.scan({ content: Buffer.from('safe fixture') });
+  assert.equal(result.verdict, 'clean');
+  assert.equal(invocation[0], 'clamscan');
+  assert.deepEqual(invocation[1], ['--no-summary', '--stdout', '-']);
+  assert.equal(invocation[2].shell, false);
+});
+
+test('ClamAV adapter maps an explicit infected result to malicious', async () => {
+  const child = fakeChild({ output: 'stdin: Eicar-Test-Signature FOUND\\n', code: 1 });
+  const scanner = createClamAVScanner({ spawnProcess: () => child });
+  assert.deepEqual(await scanner.scan({ content: Buffer.from('test fixture') }), { verdict: 'malicious', engine: 'ClamAV', output: 'stdin: Eicar-Test-Signature FOUND' });
+});
+
+test('ClamAV adapter fails closed on indeterminate exit codes', async () => {
+  const child = fakeChild({ output: 'stdin: ERROR\\n', errorOutput: 'database unavailable', code: 2 });
+  const scanner = createClamAVScanner({ spawnProcess: () => child });
+  await assert.rejects(scanner.scan({ content: Buffer.from('fixture') }), error => error.code === 'ZION_MALWARE_SCANNER_ERROR');
+});
+
+test('ClamAV adapter kills the child process when its signal aborts', async () => {
+  const child = fakeChild();
+  child.stdin.end = () => {};
+  const scanner = createClamAVScanner({ spawnProcess: () => child });
+  const controller = new AbortController();
+  const pending = scanner.scan({ content: Buffer.from('fixture'), signal: controller.signal });
+  controller.abort();
+  await assert.rejects(pending, error => error.code === 'ZION_MALWARE_SCAN_ABORTED');
+  assert.equal(child.killed, true);
+});
