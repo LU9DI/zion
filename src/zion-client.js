@@ -10,6 +10,8 @@ const stableJson = value => {
 };
 const DEFAULT_CHUNK_BYTES = 1024 * 1024;
 const DEFAULT_MAX_FILE_BYTES = 256 * 1024 * 1024;
+const DEFAULT_MALWARE_SCAN_TIMEOUT_MS = 30_000;
+const MAX_MALWARE_SCAN_TIMEOUT_MS = 5 * 60_000;
 
 function validateAdapter(adapter) {
   if (!adapter || typeof adapter.putChunk !== 'function' || typeof adapter.getChunk !== 'function') {
@@ -44,17 +46,19 @@ function decryptChunk(envelope, key) {
  * This class does not claim ZKP, distributed consensus, or a production network adapter.
  */
 export class ZionClient {
-  constructor({ storageAdapter, moderationRegistry = null, blacklistSha256 = [], malwareScanner = null, requireMalwareScan = false, chunkBytes = DEFAULT_CHUNK_BYTES, maxFileBytes = DEFAULT_MAX_FILE_BYTES } = {}) {
+  constructor({ storageAdapter, moderationRegistry = null, blacklistSha256 = [], malwareScanner = null, requireMalwareScan = false, malwareScanTimeoutMs = DEFAULT_MALWARE_SCAN_TIMEOUT_MS, chunkBytes = DEFAULT_CHUNK_BYTES, maxFileBytes = DEFAULT_MAX_FILE_BYTES } = {}) {
     validateAdapter(storageAdapter);
     if (!Number.isSafeInteger(chunkBytes) || chunkBytes < 1 || chunkBytes > 16 * 1024 * 1024) throw new RangeError('chunkBytes must be from 1 byte to 16 MiB');
     if (!Number.isSafeInteger(maxFileBytes) || maxFileBytes < 1 || maxFileBytes > 2 * 1024 * 1024 * 1024) throw new RangeError('maxFileBytes must be from 1 byte to 2 GiB');
     if (malwareScanner !== null && typeof malwareScanner.scan !== 'function') throw new TypeError('malwareScanner must implement scan({ content, sha256, bytes })');
     if (typeof requireMalwareScan !== 'boolean') throw new TypeError('requireMalwareScan must be boolean');
+    if (!Number.isSafeInteger(malwareScanTimeoutMs) || malwareScanTimeoutMs < 1 || malwareScanTimeoutMs > MAX_MALWARE_SCAN_TIMEOUT_MS) throw new RangeError('malwareScanTimeoutMs must be from 1 ms to 5 minutes');
     if (requireMalwareScan && !malwareScanner) throw Object.assign(new Error('required-local-malware-scanner-not-configured'), { code: 'ZION_MALWARE_SCANNER_REQUIRED' });
     this.storageAdapter = storageAdapter;
     this.moderationRegistry = moderationRegistry;
     this.malwareScanner = malwareScanner;
     this.requireMalwareScan = requireMalwareScan;
+    this.malwareScanTimeoutMs = malwareScanTimeoutMs;
     this.blacklistSha256 = [...blacklistSha256];
     this.chunkBytes = chunkBytes;
     this.maxFileBytes = maxFileBytes;
@@ -83,11 +87,30 @@ export class ZionClient {
     let malwareScan = 'not-configured';
     if (this.malwareScanner) {
       let verdict;
+      const scanController = new AbortController();
+      let timeoutHandle;
       try {
         // Give the scanner its own copy so a plugin cannot mutate the bytes that Zion encrypts.
-        verdict = await this.malwareScanner.scan({ content: Buffer.from(content), sha256: screening.sha256, bytes: content.length });
+        // The signal is cooperative: adapters must honor it to stop underlying scanner work.
+        const scanPromise = Promise.resolve().then(() => this.malwareScanner.scan({
+          content: Buffer.from(content),
+          sha256: screening.sha256,
+          bytes: content.length,
+          signal: scanController.signal,
+        }));
+        const timeoutPromise = new Promise((_, reject) => {
+          timeoutHandle = setTimeout(() => {
+            scanController.abort(new Error('malware-scan-timeout'));
+            reject(Object.assign(new Error('local-malware-scan-timeout'), { code: 'ZION_MALWARE_SCAN_TIMEOUT' }));
+          }, this.malwareScanTimeoutMs);
+        });
+        verdict = await Promise.race([scanPromise, timeoutPromise]);
       } catch (cause) {
+        if (cause?.code === 'ZION_MALWARE_SCAN_TIMEOUT') throw cause;
         throw Object.assign(new Error('local-malware-scan-failed', { cause }), { code: 'ZION_MALWARE_SCAN_FAILED' });
+      } finally {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        if (!scanController.signal.aborted) scanController.abort();
       }
       if (!verdict || verdict.verdict !== 'clean') {
         const reason = verdict?.verdict === 'malicious' ? 'malicious' : verdict?.verdict === 'suspicious' ? 'suspicious' : 'unknown';
