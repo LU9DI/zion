@@ -175,3 +175,32 @@ test('SDK verify method binds a receipt to its original storage request', () => 
   assert.equal(client.verify(receipt, request).ok, true);
   assert.equal(client.verify(receipt, { ...request, chunkId: 'b'.repeat(64) }).ok, false);
 });
+
+
+test('malware scanner timeout aborts the scan and fails closed before storage', async () => {
+  let stored = 0;
+  let aborted = false;
+  const client = new ZionClient({
+    storageAdapter: { async putChunk() { stored++; }, async getChunk() { throw new Error('not-used'); } },
+    malwareScanTimeoutMs: 10,
+    malwareScanner: {
+      scan({ signal }) {
+        return new Promise((resolve, reject) => {
+          signal.addEventListener('abort', () => { aborted = true; reject(new Error('scanner-aborted')); }, { once: true });
+        });
+      },
+    },
+  });
+  await assert.rejects(client.upload('timeout fixture'), error => error.code === 'ZION_MALWARE_SCAN_TIMEOUT');
+  assert.equal(aborted, true);
+  assert.equal(stored, 0);
+});
+
+test('malware scan timeout configuration is bounded', () => {
+  for (const value of [0, -1, 300_001, 1.5, NaN]) {
+    assert.throws(
+      () => new ZionClient({ storageAdapter: new MemoryCiphertextAdapter(), malwareScanTimeoutMs: value }),
+      /malwareScanTimeoutMs/,
+    );
+  }
+});
