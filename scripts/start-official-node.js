@@ -141,7 +141,7 @@ export function installShutdownHandlers(running, { processLike = process, stdout
   const shutdown = async signal => {
     if (shuttingDown || closed) return;
     shuttingDown = true;
-    stdout.write(`Official Zion node shutting down (${signal})\\n`);
+    stdout.write(`Official Zion node shutting down (${signal})\n`);
     try {
       await running.close();
       closed = true;
@@ -149,7 +149,7 @@ export function installShutdownHandlers(running, { processLike = process, stdout
       processLike.off?.('SIGTERM', onSigterm);
     } catch {
       processLike.exitCode = 1;
-      stderr.write('Official node shutdown was incomplete; inspect deployment logs and resource status.\\n');
+      stderr.write('Official node shutdown was incomplete; inspect deployment logs and resource status.\n');
     } finally { shuttingDown = false; }
   };
   const onSigint = () => { shutdown('SIGINT').catch(() => { processLike.exitCode = 1; }); };
@@ -161,13 +161,13 @@ export function installShutdownHandlers(running, { processLike = process, stdout
 
 async function main() {
   const running = await startOfficialNode();
-  process.stdout.write(`Official Zion node listening on ${running.address.host}:${running.address.port}\\n`);
+  process.stdout.write(`Official Zion node listening on ${running.address.host}:${running.address.port}\n`);
   installShutdownHandlers(running);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
   main().catch(() => {
-    process.stderr.write('Official Zion node startup failed; inspect deployment logs for diagnostics.\\n');
+    process.stderr.write('Official Zion node startup failed; inspect deployment logs for diagnostics.\n');
     process.exitCode = 1;
   });
 }
