@@ -1186,14 +1186,19 @@ test('destroyed socket stops frame processing after an asynchronous integrity ch
   assert.equal(handled, 0, 'a frame must not be processed after its socket is destroyed during an awaited health check');
 });
 
-test('authenticated application frames do not query the admission backend again', async t => {
+test('authenticated application frames use the durable authorization fence', async t => {
   const genesis = testGenesis();
   const serverIdentity = createNodeIdentity(); const clientIdentity = createNodeIdentity();
-  let admissionReads = 0; let handled = 0;
+  let admissionReads = 0; let authorizationFences = 0; let handled = 0;
   const integrityGuard = { async checkHealthy() {}, assertHealthy() {} };
   const admissionController = {
     async isAdmitted() { admissionReads += 1; return true; },
     async admit() { return { ok: true }; },
+    async withPeerAuthorizationFence(_nodeId, { allowUnadmitted = false } = {}, work) {
+      authorizationFences++;
+      assert.equal(allowUnadmitted, true, 'the trusted bootstrap identity may have no admission row');
+      return { ok: true, admitted: true, status: 'trusted-allowlist', value: await work() };
+    },
   };
   const server = new PeerTransport({
     identity: serverIdentity, networkMode: 'official', protocolGenesis: genesis, integrityGuard,
@@ -1205,10 +1210,12 @@ test('authenticated application frames do not query the admission backend again'
   const socket = await client.connect('127.0.0.1', addr.port); t.after(() => { socket.destroy(); client.close(); });
   await waitFor(() => socket.__zionSession?.authenticated && [...server.connections][0]?.__zionSession?.authenticated);
   const readsAfterHandshake = admissionReads;
-  client.send(socket, { type: 'PING', nonce: 'no-admission-read' });
+  client.send(socket, { type: 'PING', nonce: 'durable-authorization-fence' });
   await waitFor(() => handled === 1);
-  assert.ok(readsAfterHandshake >= 1, 'the handshake checks admission state');
-  assert.equal(admissionReads, readsAfterHandshake, 'application traffic must not query admission storage');
+  assert.ok(readsAfterHandshake >= 1, 'the handshake checks the peer state');
+  assert.equal(admissionReads, readsAfterHandshake,
+    'the frame path must use one transactional authorization fence, not a separate status read');
+  assert.equal(authorizationFences, 1, 'every authenticated application frame must use the durable fence');
 });
 
 
