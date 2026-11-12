@@ -225,3 +225,17 @@ test('scanner plaintext copy is zeroized after a failed verdict', async () => {
   await assert.rejects(client.upload(Buffer.from('ephemeral blocked copy')), error => error.code === 'ZION_CONTENT_REJECTED');
   assert.ok(scannerBuffer.every(byte => byte === 0));
 });
+
+test('scanner plaintext copy is zeroized after timeout cancellation', async () => {
+  let scannerBuffer;
+  const client = new ZionClient({
+    storageAdapter: new MemoryCiphertextAdapter(),
+    malwareScanTimeoutMs: 10,
+    malwareScanner: { scan({ content, signal }) {
+      scannerBuffer = content;
+      return new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }));
+    } },
+  });
+  await assert.rejects(client.upload(Buffer.from('timed out scanner copy')), error => error.code === 'ZION_MALWARE_SCAN_TIMEOUT');
+  assert.ok(scannerBuffer.every(byte => byte === 0));
+});
