@@ -78,6 +78,12 @@ export class PostgresPeerAdmissionStore {
     if (!validateInput(input)) return { ok: false, reason: 'invalid-input' };
     try {
       return await this.#transaction(async client => {
+        // Use the same per-subject lock order as revocation. This prevents a
+        // bootstrap deny tombstone from racing with a first invitation admission.
+        await client.query(
+          'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+          [input.subjectNodeId],
+        );
         const policyResult = await client.query(
           'SELECT max_active_peers, max_admissions_per_issuer, min_storage_headroom_ratio, policy_version FROM peer_admission_policy WHERE singleton = true FOR UPDATE',
         );
@@ -256,6 +262,16 @@ export class PostgresPeerAdmissionStore {
         'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
         [subjectNodeId],
       );
+      // Match commitAdmission's lock order (subject -> policy -> capacity).
+      // A missing row is a trusted-allowlist identity, so persist a revocation
+      // tombstone rather than returning admission-not-found and losing the ban
+      // on restart. The tombstone consumes no active capacity or issuer quota.
+      const policyResult = await client.query(
+        'SELECT policy_version FROM peer_admission_policy WHERE singleton = true FOR UPDATE',
+      );
+      if (!policyResult.rows?.[0]) {
+        throw Object.assign(new Error('Admission policy row missing'), { code: 'ZION_ADMISSION_CONFIG_MISSING' });
+      }
       const capacityResult = await client.query(
         'SELECT active_reservations FROM peer_admission_capacity WHERE singleton = true FOR UPDATE',
       );
@@ -267,7 +283,14 @@ export class PostgresPeerAdmissionStore {
         [subjectNodeId],
       );
       const status = current.rows?.[0]?.status;
-      if (status === undefined) return { ok: false, reason: 'admission-not-found', subjectNodeId };
+      if (status === undefined) {
+        await client.query(
+          "INSERT INTO peer_admissions (subject_node_id, status, policy_version) VALUES ($1, 'revoked', $2)",
+          [subjectNodeId, Number(policyResult.rows[0].policy_version)],
+        );
+        await client.query("SELECT pg_notify('zion_peer_revocations', $1)", [subjectNodeId]);
+        return { ok: true, changed: true, subjectNodeId, status: 'revoked', tombstone: true };
+      }
       if (status === 'revoked') return { ok: true, changed: false, subjectNodeId, status: 'revoked' };
       if (status === 'released') return { ok: false, reason: 'admission-already-released', subjectNodeId, status: 'released' };
       if (status !== 'active') {
