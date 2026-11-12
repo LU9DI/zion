@@ -67,6 +67,24 @@ test('Postgres controller checks authoritative status and denies revoked peers',
   assert.equal(x.store.calls.filter(call => call[0] === 'status').length, 3);
 });
 
+test('Postgres controller preflights allowlist authorization without a dispatch transaction', async () => {
+  const x = fixture();
+  assert.deepEqual(await x.controller.isPeerAuthorized(id('f'), { allowUnadmitted: true }), {
+    ok: true, authorized: true, status: null,
+  });
+  assert.deepEqual(await x.controller.isPeerAuthorized(id('f'), { allowUnadmitted: false }), {
+    ok: true, authorized: false, status: null,
+  });
+  await x.controller.admit({ subjectNodeId: x.subject.nodeId, vouchers: x.vouchers });
+  assert.deepEqual(await x.controller.isPeerAuthorized(x.subject.nodeId), {
+    ok: true, authorized: true, status: 'active',
+  });
+  await x.controller.revoke(x.subject.nodeId);
+  assert.deepEqual(await x.controller.isPeerAuthorized(x.subject.nodeId, { allowUnadmitted: true }), {
+    ok: true, authorized: false, status: 'revoked',
+  });
+});
+
 test('Postgres controller fails closed when authoritative status is unavailable', async () => {
   const x = fixture();
   x.store.getAdmissionStatus = async () => ({ ok: false, reason: 'admission-state-unavailable' });
