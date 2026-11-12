@@ -56,6 +56,7 @@ export function createClamAVScanner({
           let outputOverflow = false;
           let timedOut = false;
           let settled = false;
+          let timer;
           const finish = (error, value) => {
             if (settled) return;
             settled = true;
@@ -75,7 +76,7 @@ export function createClamAVScanner({
             return;
           }
 
-          const timer = setTimeout(() => {
+          timer = setTimeout(() => {
             timedOut = true;
             child.kill('SIGKILL');
           }, timeoutMs);
