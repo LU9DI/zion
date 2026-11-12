@@ -18,16 +18,19 @@ function validateDependencies(value) {
       typeof integrityGuard.addQuarantineListener !== 'function' || !integrityGuard.status) {
     throw new TypeError('Deployment adapter must provide a complete IntegrityGuard');
   }
-  if (!identity?.privateKey || typeof identity.nodeId !== 'string') {
+  if (!identity?.privateKey || (typeof identity.privateKey === 'string' && !identity.privateKey.trim()) ||
+      typeof identity.nodeId !== 'string' || !identity.nodeId.trim()) {
     throw new TypeError('Deployment adapter must provide a node identity');
   }
-  if (!protocolGenesis || !Array.isArray(trustedPeerIds) || trustedPeerIds.length === 0) {
+  if (!protocolGenesis || !Array.isArray(trustedPeerIds) || trustedPeerIds.length === 0 ||
+      trustedPeerIds.some(peerId => typeof peerId !== 'string' || !peerId.trim())) {
     throw new TypeError('Deployment adapter must provide reviewed genesis and a non-empty peer trust list');
   }
   requireFunction(startStorage, 'startStorage');
   requireFunction(stopStorage, 'stopStorage');
   if (!controllerOptions || typeof controllerOptions !== 'object' || Array.isArray(controllerOptions) ||
       !Array.isArray(controllerOptions.trustedIssuerNodeIds) || controllerOptions.trustedIssuerNodeIds.length === 0 ||
+      controllerOptions.trustedIssuerNodeIds.some(nodeId => typeof nodeId !== 'string' || !nodeId.trim()) ||
       typeof controllerOptions.capacityProvider !== 'function') {
     throw new TypeError('Deployment adapter must provide controllerOptions with trustedIssuerNodeIds and capacityProvider()');
   }
