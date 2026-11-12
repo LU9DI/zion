@@ -445,6 +445,28 @@ test('notification API starts only after healthy transport and closes before tra
   assert.ok(lifecycle.indexOf('api-close') < state.events.indexOf('close'));
 });
 
+test('notification API startup failure closes partially allocated listener', async () => {
+  const state = fixture();
+  const lifecycle = [];
+  const api = {
+    async listen() {
+      lifecycle.push('listen');
+      throw new Error('notification listener failed after partial allocation');
+    },
+    async close() { lifecycle.push('close'); },
+  };
+  const bootstrap = new OfficialNodeBootstrap({
+    integrityGuard: state.guard,
+    transport: state.transport,
+    async startStorage() {},
+    async stopStorage() {},
+    notificationApi: api,
+  });
+  await assert.rejects(bootstrap.start(), /partial allocation/);
+  assert.deepEqual(lifecycle, ['listen', 'close']);
+  assert.equal(bootstrap.notificationApiStarted, false);
+});
+
 test('official bootstrap rejects malformed notification API lifecycle adapter', () => {
   const state = fixture();
   assert.throws(() => new OfficialNodeBootstrap({ integrityGuard: state.guard, transport: state.transport,
