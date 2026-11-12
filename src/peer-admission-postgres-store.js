@@ -206,6 +206,44 @@ export class PostgresPeerAdmissionStore {
     }
   }
 
+  /**
+   * Authorize an application frame for either an admitted peer or a trusted
+   * bootstrap identity that has no admission row. A durable released/revoked
+   * row always overrides the static allowlist. The shared advisory lock is held
+   * through work, serializing dispatch with revokeAdmission/releaseAdmission.
+   */
+  async withPeerAuthorizationFence(subjectNodeId, { allowUnadmitted = false } = {}, work) {
+    if (this.commitOutcomeUnknown) return { ok: false, reason: 'admission-state-unavailable' };
+    if (!NODE_ID.test(subjectNodeId ?? '') || typeof allowUnadmitted !== 'boolean' ||
+        typeof work !== 'function') {
+      return { ok: false, reason: 'invalid-input' };
+    }
+    try {
+      return await this.#transaction(async client => {
+        await client.query(
+          'SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))',
+          [subjectNodeId],
+        );
+        const current = await client.query(
+          'SELECT status FROM peer_admissions WHERE subject_node_id = $1',
+          [subjectNodeId],
+        );
+        const status = current.rows?.[0]?.status ?? null;
+        const allowed = status === 'active' || (status === null && allowUnadmitted);
+        if (!allowed) return { ok: true, admitted: false, status };
+        const value = await work();
+        return {
+          ok: true,
+          admitted: true,
+          status: status ?? 'trusted-allowlist',
+          value,
+        };
+      }, { isolation: 'READ COMMITTED' });
+    } catch {
+      return { ok: false, reason: 'admission-state-unavailable' };
+    }
+  }
+
   async revokeAdmission(subjectNodeId) {
     if (this.commitOutcomeUnknown) return { ok: false, reason: 'admission-state-unavailable' };
     if (!NODE_ID.test(subjectNodeId ?? '')) return { ok: false, reason: 'invalid-input' };
