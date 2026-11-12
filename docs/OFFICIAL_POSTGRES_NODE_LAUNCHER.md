@@ -21,7 +21,9 @@ ES module. The module must export:
     application message handler. Identity, genesis, trust allowlist, integrity
     guard, admission controller, and revocation listener are launcher-owned;
   - `startStorage()` and `stopStorage()` backed by the deployment's real
-    storage service.
+    storage service. `stopStorage()` must be safe to call after a partially
+    completed or failed `startStorage()`; startup rollback invokes it whenever
+    storage initialization has begun.
   - Optional `storeOptions`, `listenerOptions`, `bootstrapOptions`,
     `getStorageStatus()`, and `recordContainmentEvent()`.
 
