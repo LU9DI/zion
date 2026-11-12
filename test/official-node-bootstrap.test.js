@@ -93,6 +93,18 @@ test('integrity change between storage startup and bind closes storage without o
   assert.equal(events.includes('listen'), false);
 });
 
+test('storage startup failure attempts cleanup of partially allocated resources', async () => {
+  const { bootstrap, events } = fixture({
+    async startStorage() {
+      events.push('startStorage');
+      throw new Error('storage adapter failed after partial allocation');
+    },
+  });
+  await assert.rejects(bootstrap.start(), /partial allocation/);
+  assert.ok(events.includes('stopStorage'));
+  assert.equal(bootstrap.storageStarted, false);
+});
+
 test('network bind failure rolls back started storage', async () => {
   const { bootstrap, events } = fixture({ listenFails: true });
   await assert.rejects(bootstrap.start(), /bind failed/);
