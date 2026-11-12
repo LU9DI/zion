@@ -1215,7 +1215,7 @@ test('authenticated application frames use the durable authorization fence', asy
   assert.ok(readsAfterHandshake >= 1, 'the handshake checks the peer state');
   assert.equal(admissionReads, readsAfterHandshake,
     'the frame path must use one transactional authorization fence, not a separate status read');
-  assert.equal(authorizationFences, 1, 'every authenticated application frame must use the durable fence');
+  assert.equal(authorizationFences, 2, 'each authenticated application frame is preflighted and fenced across dispatch');
 });
 
 
@@ -1762,13 +1762,14 @@ test('trusted allowlist sessions recheck durable revocation before every applica
   await waitFor(() => delivered === 1);
   assert.deepEqual(fenceCalls.at(-1), { nodeId: trustedPeer.nodeId, allowUnadmitted: true });
   assert.equal(replayGuard.accepted, acceptedAfterHandshake + 1);
+  assert.equal(fenceCalls.length, 2, 'the first frame is preflighted and then fenced across dispatch');
 
   durableStatus = 'revoked'; // Simulate a durable transition while LISTEN is disconnected.
   client.send(socket, { type: 'PING', nonce: 'second-trusted-frame' });
   await waitFor(() => serverSocket.destroyed, 1500,
     'a trusted allowlist session must observe durable revocation without a notification');
   assert.equal(delivered, 1, 'the revoked frame must not reach the application handler');
-  assert.equal(fenceCalls.length, 2, 'the revoked frame is denied during preflight and never reaches dispatch fencing');
+  assert.equal(fenceCalls.length, 3, 'the revoked frame is denied during preflight and never reaches dispatch fencing');
   assert.equal(replayGuard.accepted, acceptedAfterHandshake + 1,
     'a revoked peer must be rejected before consuming replay-cache capacity');
 });
