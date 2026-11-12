@@ -16,6 +16,7 @@ export class PostgresPeerAdmissionController {
     if (!store || typeof store.commitAdmission !== 'function' ||
       typeof store.getAdmissionStatus !== 'function' ||
       typeof store.withAdmissionFence !== 'function' ||
+      typeof store.withPeerAuthorizationFence !== 'function' ||
       typeof store.revokeAdmission !== 'function' ||
       !Array.isArray(trustedIssuerNodeIds) ||
       trustedIssuerNodeIds.some(id => !ID.test(id)) ||
@@ -95,6 +96,10 @@ export class PostgresPeerAdmissionController {
 
   withAdmissionFence(subjectNodeId, work) {
     return this.store.withAdmissionFence(subjectNodeId, work);
+  }
+
+  withPeerAuthorizationFence(subjectNodeId, options, work) {
+    return this.store.withPeerAuthorizationFence(subjectNodeId, options, work);
   }
 
   revoke(subjectNodeId) {
