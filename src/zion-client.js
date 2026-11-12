@@ -122,6 +122,7 @@ export class ZionClient {
       }
       if (!verdict || verdict.verdict !== 'clean') {
         const reason = verdict?.verdict === 'malicious' ? 'malicious' : verdict?.verdict === 'suspicious' ? 'suspicious' : 'unknown';
+        content.fill(0);
         throw Object.assign(new Error(`content-rejected:malware-${reason}`), { code: 'ZION_CONTENT_REJECTED', reason: `malware-${reason}` });
       }
       malwareScan = 'clean';
