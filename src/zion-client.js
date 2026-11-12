@@ -89,6 +89,7 @@ export class ZionClient {
       let verdict;
       const scanController = new AbortController();
       let timeoutHandle;
+      let scanTimedOut = false;
       try {
         // Give the scanner its own copy so a plugin cannot mutate the bytes that Zion encrypts.
         // The signal is cooperative: adapters must honor it to stop underlying scanner work.
@@ -100,13 +101,14 @@ export class ZionClient {
         }));
         const timeoutPromise = new Promise((_, reject) => {
           timeoutHandle = setTimeout(() => {
+            scanTimedOut = true;
             scanController.abort(new Error('malware-scan-timeout'));
             reject(Object.assign(new Error('local-malware-scan-timeout'), { code: 'ZION_MALWARE_SCAN_TIMEOUT' }));
           }, this.malwareScanTimeoutMs);
         });
         verdict = await Promise.race([scanPromise, timeoutPromise]);
       } catch (cause) {
-        if (cause?.code === 'ZION_MALWARE_SCAN_TIMEOUT') throw cause;
+        if (scanTimedOut || cause?.code === 'ZION_MALWARE_SCAN_TIMEOUT') throw Object.assign(new Error('local-malware-scan-timeout'), { code: 'ZION_MALWARE_SCAN_TIMEOUT' });
         throw Object.assign(new Error('local-malware-scan-failed', { cause }), { code: 'ZION_MALWARE_SCAN_FAILED' });
       } finally {
         if (timeoutHandle) clearTimeout(timeoutHandle);
