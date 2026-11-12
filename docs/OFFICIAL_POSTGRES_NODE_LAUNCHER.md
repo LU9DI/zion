@@ -70,3 +70,20 @@ migration as a separate, reviewed release operation before starting the node.
 - This launcher is an integration seam, not evidence of a production
   deployment. No real adapter, credentials, TLS issuance, storage backend,
   network topology, or database migration is supplied by this repository.
+
+## Durable authorization for trusted bootstrap peers
+
+A peer on `trustedPeerIds` may complete the handshake without an invitation,
+but the allowlist is not a permanent revocation bypass. In official mode, every
+authenticated application-frame dispatch is fenced by the PostgreSQL admission
+store. An allowlisted peer with no admission row is permitted; a durable
+`revoked` or `released` row overrides the allowlist and blocks dispatch.
+Peers admitted through invitations require an `active` row.
+
+The frame fence holds a shared transaction advisory lock through application
+dispatch. Revocation and release take the matching exclusive lock before
+changing the durable status. This serializes in-flight dispatch with both
+transitions. PostgreSQL errors and ambiguous admission state fail closed.
+`LISTEN/NOTIFY` remains an acceleration path for promptly closing sockets;
+it is not the authorization source and is not relied on to enforce the next
+application frame after a listener reconnect gap.
