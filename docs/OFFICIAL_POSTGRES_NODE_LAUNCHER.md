@@ -48,8 +48,11 @@ export async function createOfficialNodeDependencies({ env, pool }) {
 ```
 
 Set `ZION_POSTGRES_URL` (or `DATABASE_URL`) and optionally
-`ZION_POSTGRES_POOL_MAX` (1–100; default 10). Apply the PostgreSQL admission
-migration as a separate, reviewed release operation before starting the node.
+`ZION_POSTGRES_POOL_MAX` (2–100; default 10). The minimum is two because the
+revocation listener holds one dedicated pool connection for `LISTEN`; a pool of
+one would starve admission queries. Size the pool above two for concurrent
+admission-fenced handlers. Apply the PostgreSQL admission migration as a
+separate, reviewed release operation before starting the node.
 
 ## Security and lifecycle requirements
 
