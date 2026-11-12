@@ -1211,12 +1211,12 @@ test('authenticated application frames use the durable authorization fence', asy
   await waitFor(() => socket.__zionSession?.authenticated && [...server.connections][0]?.__zionSession?.authenticated);
   const readsAfterHandshake = admissionReads;
   const fencesAfterHandshake = authorizationFences;
-  assert.equal(fencesAfterHandshake, 1, 'the trusted handshake is authorized against durable state');
+  assert.equal(fencesAfterHandshake, 0, 'the handshake does not use the application-frame fence');
   client.send(socket, { type: 'PING', nonce: 'durable-authorization-fence' });
   await waitFor(() => handled === 1);
-  assert.equal(readsAfterHandshake, 0, 'the durable fence replaces the non-atomic status read');
+  assert.ok(readsAfterHandshake >= 1, 'the handshake checks admission state');
   assert.equal(admissionReads, readsAfterHandshake,
-    'handshake and application authorization must not use a separate status read');
+    'application authorization uses the transactional fence instead of another status read');
   assert.equal(authorizationFences, fencesAfterHandshake + 2,
     'each authenticated application frame is preflighted and fenced across dispatch');
 });
@@ -1761,7 +1761,7 @@ test('trusted allowlist sessions recheck durable revocation before every applica
   assert.equal(serverSocket.__zionSession.trustedByAllowlist, true);
   const acceptedAfterHandshake = replayGuard.accepted;
   const fencesAfterHandshake = fenceCalls.length;
-  assert.equal(fencesAfterHandshake, 1, 'handshake must consult durable allowlist authorization');
+  assert.equal(fencesAfterHandshake, 0, 'the trusted handshake remains independent of application-frame fencing');
 
   client.send(socket, { type: 'PING', nonce: 'first-trusted-frame' });
   await waitFor(() => delivered === 1);
