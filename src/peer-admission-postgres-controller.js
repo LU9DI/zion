@@ -50,6 +50,19 @@ export class PostgresPeerAdmissionController {
     return result.status === 'active';
   }
 
+  async isPeerAuthorized(subjectNodeId, { allowUnadmitted = false } = {}) {
+    if (!ID.test(subjectNodeId ?? '') || typeof allowUnadmitted !== 'boolean') {
+      return { ok: false, authorized: false, reason: 'invalid-input' };
+    }
+    const result = await this.store.getAdmissionStatus(subjectNodeId);
+    if (!result?.ok) {
+      return { ok: false, authorized: false, reason: 'admission-state-unavailable' };
+    }
+    const authorized = result.status === 'active' ||
+      (result.status === null && allowUnadmitted);
+    return { ok: true, authorized, status: result.status };
+  }
+
   async admit({ subjectNodeId, vouchers } = {}) {
     if (!ID.test(subjectNodeId ?? '') || !Array.isArray(vouchers) ||
       vouchers.length < this.threshold || vouchers.length > this.maxVouchers) {
