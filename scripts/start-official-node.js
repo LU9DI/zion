@@ -68,8 +68,8 @@ export async function startOfficialNode({ env = process.env, loadAdapterModule =
     throw new Error('Set ZION_POSTGRES_URL (or DATABASE_URL) for the official node');
   }
   const poolMaxRaw = env.ZION_POSTGRES_POOL_MAX ?? '10';
-  if (!/^[1-9][0-9]*$/.test(poolMaxRaw) || !Number.isSafeInteger(Number(poolMaxRaw)) || Number(poolMaxRaw) > 100) {
-    throw new Error('ZION_POSTGRES_POOL_MAX must be an integer between 1 and 100');
+  if (!/^[1-9][0-9]*$/.test(poolMaxRaw) || !Number.isSafeInteger(Number(poolMaxRaw)) || Number(poolMaxRaw) < 2 || Number(poolMaxRaw) > 100) {
+    throw new Error('ZION_POSTGRES_POOL_MAX must be an integer between 2 and 100; the revocation listener reserves one connection');
   }
 
   const adapterModule = await loadAdapterModule(pathToFileURL(resolve(adapterPath)).href);
