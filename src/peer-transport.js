@@ -408,11 +408,17 @@ export class PeerTransport {
     if (socket.__zionSession?.authenticated && this.admissionController) {
       let authorized;
       try {
-        const preflight = await this.admissionController.withPeerAuthorizationFence(
-          checked.nodeId,
-          { allowUnadmitted: trustedByAllowlist },
-          async () => true,
-        );
+        const preflight = typeof this.admissionController.withPeerAuthorizationFence === 'function'
+          ? await this.admissionController.withPeerAuthorizationFence(
+            checked.nodeId,
+            { allowUnadmitted: trustedByAllowlist },
+            async () => true,
+          )
+          : {
+            ok: true,
+            admitted: await this.admissionController.isAdmitted(checked.nodeId) === true,
+            value: true,
+          };
         authorized = preflight?.ok === true && preflight.admitted === true && preflight.value === true;
       } catch {
         socket.destroy();
@@ -553,11 +559,17 @@ export class PeerTransport {
         let previouslyAuthorized = trustedByAllowlist && !this.admissionController;
         if (this.admissionController) {
           try {
-            const authorization = await this.admissionController.withPeerAuthorizationFence(
-              checked.nodeId,
-              { allowUnadmitted: trustedByAllowlist },
-              async () => true,
-            );
+            const authorization = typeof this.admissionController.withPeerAuthorizationFence === 'function'
+              ? await this.admissionController.withPeerAuthorizationFence(
+                checked.nodeId,
+                { allowUnadmitted: trustedByAllowlist },
+                async () => true,
+              )
+              : {
+                ok: true,
+                admitted: await this.admissionController.isAdmitted(checked.nodeId) === true,
+                value: true,
+              };
             previouslyAuthorized = authorization?.ok === true &&
               authorization.admitted === true && authorization.value === true;
           } catch {
