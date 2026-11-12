@@ -30,6 +30,29 @@ The scanner runs on the client before any chunk is encrypted or passed to the st
 
 Set `requireMalwareScan: true` in any application policy that must not upload without a scanner. Construction fails if no scanner is configured. Without that option and without an adapter, upload retains the legacy exact-hash-only behavior and reports `screening.malwareScan: 'not-configured'`; this is not a malware-safe mode.
 
+## ClamAV adapter
+
+Zion now provides `createClamAVScanner()` in `src/clamav-scanner.js`. It invokes the locally installed ClamAV `clamscan` executable without a shell, writes the input to a uniquely named file in a private temporary directory, and removes that directory after the scan. The temporary file is plaintext while scanning; cleanup is best-effort and is not a secure-erasure guarantee.
+
+```js
+import { ZionClient } from './src/zion-client.js';
+import { createClamAVScanner } from './src/clamav-scanner.js';
+
+const client = new ZionClient({
+  storageAdapter,
+  malwareScanner: createClamAVScanner({
+    commandPath: 'clamscan', // or an absolute path managed by the host
+    timeoutMs: 30_000,
+    maxFileBytes: 256 * 1024 * 1024,
+  }),
+  requireMalwareScan: true,
+});
+```
+
+The adapter accepts only ClamAV's explicit `<temporary-file>: OK` result as clean. A signature match is malicious; engine errors, timeouts, output-limit violations, malformed results, and size-limit outcomes never become clean. Zion's existing fail-closed upload gate rejects all non-clean verdicts before encryption and storage.
+
+Install and maintain ClamAV and its signature database on the user's device or host before enabling this adapter. For example, on Debian/Ubuntu install the distribution's `clamav` package and keep its signature database updated using the platform's supported update service. The Zion repository does not install, update, or manage the antivirus engine. A scanner that is missing or cannot access a current database causes upload to fail closed.
+
 ## Deployment requirements and limits
 
 - Zion does not bundle or claim to provide an antivirus engine. The host application must integrate, update, and operate a reputable local scanner and its signature database.
