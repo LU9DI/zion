@@ -8,6 +8,10 @@
 4. **Peer security** signs messages and manifests with Ed25519, binds node IDs to public keys, validates timestamps, and rejects replayed messages using a bounded nonce cache with heap-based expiry.
 5. **Experimental TCP transport** uses bounded frames/connections, message-type allowlisting, per-peer rate limits, and loopback-only binding by default.
 
+## Client-side content admission
+
+`ZionClient` performs an exact SHA-256 blacklist check before encryption. It also supports an injected local malware-scanner adapter; when `requireMalwareScan: true`, upload fails closed unless the scanner returns the exact `clean` verdict. The scanner runs before encryption and storage, and receives a copy of the plaintext. Zion does not bundle an antivirus engine: production applications must supply and independently validate a maintained local scanner. Hash matching alone is not malware detection. See `docs/LOCAL_CONTENT_SCREENING.md`.
+
 ## Not implemented yet
 
 - A running libp2p node with Kademlia DHT, bootstrap diversity, NAT traversal, and secure remote deployment. `src/dht-provider-discovery.js` is only an injected adapter/policy boundary, not a deployed DHT.
