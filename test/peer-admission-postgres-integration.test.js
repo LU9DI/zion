@@ -297,6 +297,21 @@ test('PostgreSQL migration and independent-process admission races enforce capac
       admissionInput('5', ['1', '2'], ['c', 'd']),
     ), { ok: false, reason: 'subject-already-admitted' });
 
+    // A first admission racing a bootstrap revocation must never leave the
+    // subject active: both paths serialize on the same per-subject advisory lock.
+    await Promise.all([
+      revocationStore.revokeAdmission(id('b')),
+      revocationStore.commitAdmission(admissionInput('b', ['1', '2'], ['e', 'f'])),
+    ]);
+    assert.deepEqual(await revocationStore.getAdmissionStatus(id('b')), {
+      ok: true, subjectNodeId: id('b'), status: 'revoked',
+    });
+    assert.deepEqual(await revocationStore.withPeerAuthorizationFence(
+      id('b'), { allowUnadmitted: true }, async () => {
+        throw new Error('racing bootstrap revocation must win over admission');
+      },
+    ), { ok: true, admitted: false, status: 'revoked' });
+
     const trustedAdmission = await revocationStore.commitAdmission(
       admissionInput('6', ['5', '4'], ['a', 'b']),
     );
