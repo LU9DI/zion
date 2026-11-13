@@ -1,5 +1,14 @@
 # Inactivity-based contribution and capacity policy
 
+> **Scope distinction:** this experimental controller tracks owner/node contribution
+> activity. It is not the project lifecycle scheduler. The separate project-level
+> requirement is defined in
+> [PROJECT_INACTIVITY_AND_STORAGE_ABUSE_POLICY.md](./PROJECT_INACTIVITY_AND_STORAGE_ABUSE_POLICY.md):
+> pause a project after 7 days without meaningful activity and release its
+> storage reservation after 15 days, only after safe replica relocation. The
+> defaults below are retained for this older node-contribution controller and
+> must not be presented as the project's 7/15-day enforcement.
+
 `InactivityResourcePolicy` is an experimental, opt-in policy controller for a Zion node. It deliberately separates owner activity from storage safety.
 
 ## Defaults
@@ -39,7 +48,6 @@ await policy.evaluate();
 ```
 
 The UI preview describes the policy but is not yet wired to a running remote node. Do not represent this module as a production scheduler until service adapters, notification delivery, and replica migration have been integrated and tested across restarts and network failures.
-
 
 ## Storage adapter integration (experimental)
 
