@@ -52,15 +52,37 @@ test('event log rejects a second process opening the same journal', () => {
   } finally { f.cleanup(); }
 });
 
-test('event log recovers a stale lock written by a terminated process', async () => {
+test('event log fails closed on a stale-looking lock until explicit recovery', async () => {
   const f = fixture();
   try {
     writeFileSync(f.path + '.lock', JSON.stringify({ pid: 2147483647, token: 'stale-lock-token' }) + '\n');
+    assert.throws(() => new SignedProjectEventLog(f.path, { identity: f.identity }), {
+      code: 'ZION_EVENT_LOG_LOCKED',
+      message: /automatic stale-lock removal is disabled/,
+    });
+    // Recovery is an explicit maintenance action after the operator verifies that
+    // no writer is active; startup never deletes the lock based on a PID probe.
+    rmSync(f.path + '.lock');
     const log = new SignedProjectEventLog(f.path, { identity: f.identity });
     await log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: { recovered: true } });
     assert.equal(log.snapshot().count, 1);
     log.close();
     assert.throws(() => readFileSync(f.path + '.lock', 'utf8'), { code: 'ENOENT' });
+  } finally { f.cleanup(); }
+});
+
+test('replica fails closed on a stale-looking lock until explicit recovery', () => {
+  const f = fixture();
+  const replicaPath = join(f.dir, 'stale-lock-replica.events');
+  try {
+    writeFileSync(replicaPath + '.lock', JSON.stringify({ pid: 2147483647, token: 'stale-replica-token' }) + '\n');
+    assert.throws(() => new SignedProjectEventReplica(replicaPath, { authorizePeer: () => true }), {
+      code: 'ZION_REPLICA_LOCKED',
+      message: /automatic stale-lock removal is disabled/,
+    });
+    rmSync(replicaPath + '.lock');
+    const replica = new SignedProjectEventReplica(replicaPath, { authorizePeer: () => true });
+    replica.close();
   } finally { f.cleanup(); }
 });
 
