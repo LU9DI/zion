@@ -31,7 +31,7 @@ function validatePublicKey(nodeId, publicKeyPem) {
   return publicKeyPem;
 }
 function freezeState(state) {
-  const governors = Object.freeze(Object.fromEntries(Object.entries(state.governors).sort(([a], [b]) => a.localeCompare(b))));
+  const governors = Object.freeze(Object.fromEntries(Object.entries(state.governors).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)));
   const value = { schemaVersion: 1, projectId: state.projectId, epoch: state.epoch, threshold: state.threshold, governors };
   return Object.freeze({ ...value, stateHash: digest(value) });
 }
@@ -39,7 +39,9 @@ function validateState(state) {
   if (!state || state.schemaVersion !== 1 || !HEX64.test(state.projectId || '') ||
       !Number.isSafeInteger(state.epoch) || state.epoch < 0 ||
       !Number.isSafeInteger(state.threshold) || !state.governors ||
-      typeof state.governors !== 'object' || Array.isArray(state.governors)) throw new TypeError('Invalid project governance state');
+      typeof state.governors !== 'object' || Array.isArray(state.governors) ||
+      (Object.getPrototypeOf(state.governors) !== Object.prototype && Object.getPrototypeOf(state.governors) !== null)) throw new TypeError('Invalid project governance state');
+  exactKeys(state, state.stateHash === undefined ? ['schemaVersion', 'projectId', 'epoch', 'threshold', 'governors'] : ['schemaVersion', 'projectId', 'epoch', 'threshold', 'governors', 'stateHash'], 'Governance state');
   const entries = Object.entries(state.governors);
   if (!entries.length || entries.length > 256 || state.threshold < 1 || state.threshold > entries.length) throw new TypeError('Invalid project governance threshold or membership');
   for (const [nodeId, pem] of entries) validatePublicKey(nodeId, pem);
