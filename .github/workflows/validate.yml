@@ -50,7 +50,7 @@ jobs:
       - name: Install pinned PostgreSQL integration-test driver
         run: npm install --no-save --no-package-lock pg@8.23.1
       - name: Verify PostgreSQL integration-test driver version
-        run: node -e "if (require('pg/package.json').version !== '8.23.1') process.exit(1)"
+        run: node --input-type=module -e "import { readFileSync } from 'node:fs'; if (JSON.parse(readFileSync('node_modules/pg/package.json', 'utf8')).version !== '8.23.1') process.exit(1)"
       - name: Syntax checks
         run: npm run check
       - name: Test suite including real PostgreSQL integration
