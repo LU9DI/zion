@@ -411,35 +411,44 @@ export class PeerTransport {
     // Reject a durably revoked peer before it can consume replay-cache capacity.
     // The later fence still encloses dispatch and closes the preflight/dispatch race.
     if (socket.__zionSession?.authenticated && this.admissionController) {
-      let authorized;
+      // Bound the socket's wait for the asynchronous authorization preflight too.
+      // Destroying the socket cannot cancel an arbitrary backend promise; the
+      // admission store/pool must still enforce finite database-side timeouts.
+      const preflightTimer = setTimeout(() => socket.destroy(), this.handlerTimeoutMs);
+      preflightTimer.unref?.();
       try {
-        const preflight = typeof this.admissionController.isPeerAuthorized === 'function'
-          ? await this.admissionController.isPeerAuthorized(
-            checked.nodeId,
-            { allowUnadmitted: trustedByAllowlist },
-          )
-          : typeof this.admissionController.withPeerAuthorizationFence === 'function'
-            ? await this.admissionController.withPeerAuthorizationFence(
+        let authorized;
+        try {
+          const preflight = typeof this.admissionController.isPeerAuthorized === 'function'
+            ? await this.admissionController.isPeerAuthorized(
               checked.nodeId,
               { allowUnadmitted: trustedByAllowlist },
-              async () => true,
             )
-            : {
-              ok: true,
-              admitted: await this.admissionController.isAdmitted(checked.nodeId) === true,
-              value: true,
-            };
-        authorized = preflight?.ok === true &&
-          (preflight.authorized === true ||
-            (preflight.admitted === true && preflight.value === true));
-      } catch {
-        socket.destroy();
-        return;
-      }
-      if (!authorized || socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
-          (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) {
-        socket.destroy();
-        return;
+            : typeof this.admissionController.withPeerAuthorizationFence === 'function'
+              ? await this.admissionController.withPeerAuthorizationFence(
+                checked.nodeId,
+                { allowUnadmitted: trustedByAllowlist },
+                async () => true,
+              )
+              : {
+                ok: true,
+                admitted: await this.admissionController.isAdmitted(checked.nodeId) === true,
+                value: true,
+              };
+          authorized = preflight?.ok === true &&
+            (preflight.authorized === true ||
+              (preflight.admitted === true && preflight.value === true));
+        } catch {
+          socket.destroy();
+          return;
+        }
+        if (!authorized || socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
+            (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) {
+          socket.destroy();
+          return;
+        }
+      } finally {
+        clearTimeout(preflightTimer);
       }
     }
     if (!trustedByAllowlist && !this.admissionController) { socket.destroy(); return; }
