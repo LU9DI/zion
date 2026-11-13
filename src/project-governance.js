@@ -103,16 +103,49 @@ export function approveGovernanceProposal(identity, proposal, { now = Date.now()
       !Number.isSafeInteger(proposal.epoch) || proposal.epoch < 1) throw new TypeError('Invalid governance approval input');
   return signPeerMessage(identity, { type: APPROVAL_TYPE, projectId: proposal.projectId, epoch: proposal.epoch, proposalHash: digest(proposal) }, { now });
 }
+function validateProposalShape(proposal) {
+  if (!proposal || typeof proposal !== 'object' || Array.isArray(proposal) ||
+      proposal.schemaVersion !== 1 || !HEX64.test(proposal.projectId || '') ||
+      !Number.isSafeInteger(proposal.epoch) || proposal.epoch < 1 ||
+      !HEX64.test(proposal.previousStateHash || '') || typeof proposal.action !== 'string') {
+    throw new Error('Malformed governance proposal');
+  }
+  switch (proposal.action) {
+    case 'ADD_GOVERNOR':
+      exactKeys(proposal, ['schemaVersion', 'projectId', 'epoch', 'previousStateHash', 'action', 'nodeId', 'publicKeyPem'], 'Add-governor proposal');
+      validatePublicKey(proposal.nodeId, proposal.publicKeyPem);
+      break;
+    case 'ROTATE_GOVERNOR_KEY':
+      exactKeys(proposal, ['schemaVersion', 'projectId', 'epoch', 'previousStateHash', 'action', 'oldNodeId', 'nodeId', 'publicKeyPem'], 'Rotate-key proposal');
+      if (!HEX64.test(proposal.oldNodeId || '')) throw new Error('Invalid old governor identity');
+      validatePublicKey(proposal.nodeId, proposal.publicKeyPem);
+      break;
+    case 'REVOKE_GOVERNOR':
+      exactKeys(proposal, ['schemaVersion', 'projectId', 'epoch', 'previousStateHash', 'action', 'nodeId'], 'Revoke-governor proposal');
+      if (!HEX64.test(proposal.nodeId || '')) throw new Error('Invalid governor identity');
+      break;
+    case 'SET_THRESHOLD':
+      exactKeys(proposal, ['schemaVersion', 'projectId', 'epoch', 'previousStateHash', 'action', 'threshold'], 'Set-threshold proposal');
+      if (!Number.isSafeInteger(proposal.threshold) || proposal.threshold < 1 || proposal.threshold > 256) throw new Error('Invalid proposed threshold');
+      break;
+    default: throw new Error('Unsupported governance action');
+  }
+}
 /** Verify threshold approval and deterministically apply one epoch. Caller must commit it through distributed BFT. */
 export function applyGovernanceCertificate(stateInput, certificate, { now = Date.now(), maxClockSkewMs = 120000 } = {}) {
   const state = validateState(stateInput);
   exactKeys(certificate, ['proposal', 'approvals'], 'Governance certificate');
   const proposal = certificate.proposal;
-  if (!proposal || proposal.schemaVersion !== 1 || proposal.projectId !== state.projectId ||
+  validateProposalShape(proposal);
+  if (proposal.projectId !== state.projectId ||
       proposal.epoch !== state.epoch + 1 || proposal.previousStateHash !== state.stateHash ||
       !Array.isArray(certificate.approvals) || certificate.approvals.length > 256) throw new Error('Governance proposal is stale, malformed, or for another project');
   const proposalHash = digest(proposal), signers = new Set();
   for (const approval of certificate.approvals) {
+    exactKeys(approval, ['version', 'nodeId', 'timestamp', 'nonce', 'payload', 'publicKeyPem', 'signature'], 'Governance approval envelope');
+    if (typeof approval.publicKeyPem !== 'string' || approval.publicKeyPem.length > 4096 ||
+        typeof approval.signature !== 'string' || approval.signature.length > 256) throw new Error('Oversized governance approval envelope');
+    exactKeys(approval.payload, ['type', 'projectId', 'epoch', 'proposalHash'], 'Governance approval payload');
     const checked = verifyPeerMessage(approval, { now, maxClockSkewMs, maxBytes: 4096 });
     if (!checked.ok || !Object.hasOwn(state.governors, checked.nodeId) || signers.has(checked.nodeId)) throw new Error('Invalid, unauthorized, or duplicate governance approval');
     const payload = checked.payload;
