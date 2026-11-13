@@ -1,5 +1,5 @@
 import { isAbsolute, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ProjectInactivityController } from '../src/project-inactivity-controller.js';
 import { PostgresProjectResourceRepository } from '../src/project-resource-postgres-repository.js';
 
@@ -77,7 +77,7 @@ async function main() {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === resolve(new URL(import.meta.url).pathname)) {
+if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
   main().catch(error => {
     process.stderr.write(`Zion project lifecycle sweep failed: ${error?.message ?? 'unknown error'}\n`);
     process.exitCode = 1;
