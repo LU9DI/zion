@@ -36,11 +36,12 @@ function acquireLock(lockPath) {
 // it does not decide project membership, quorum commitment, or canonical project state.
 export class SignedProjectEventReplica {
   constructor(path, { authorizePeer, maxBytes = 256 * 1024 * 1024,
-    maxRecords = 1_000_000, now = () => Date.now(), maxClockSkewMs = 120_000 } = {}) {
+    maxRecords = 1_000_000, now = () => Date.now(), maxClockSkewMs = 120_000, maxEventAgeMs = Number.MAX_SAFE_INTEGER } = {}) {
     if (typeof path !== 'string' || !path.trim() || typeof authorizePeer !== 'function' ||
         !Number.isSafeInteger(maxBytes) || maxBytes < 1024 || maxBytes > 4 * 1024 * 1024 * 1024 ||
         !Number.isSafeInteger(maxRecords) || maxRecords < 1 || maxRecords > 5_000_000 ||
-        typeof now !== 'function' || !Number.isSafeInteger(maxClockSkewMs) || maxClockSkewMs < 0) {
+        typeof now !== 'function' || !Number.isSafeInteger(maxClockSkewMs) || maxClockSkewMs < 0 ||
+        !Number.isSafeInteger(maxEventAgeMs) || maxEventAgeMs < 0) {
       throw new TypeError('Invalid signed event replica configuration');
     }
     this.path = resolve(path);
@@ -49,6 +50,7 @@ export class SignedProjectEventReplica {
     this.maxRecords = maxRecords;
     this.now = now;
     this.maxClockSkewMs = maxClockSkewMs;
+    this.maxEventAgeMs = maxEventAgeMs;
     this.states = new Map();
     this.records = 0;
     this.byteLength = 0;
@@ -75,7 +77,7 @@ export class SignedProjectEventReplica {
       try { record = JSON.parse(line); } catch {
         throw Object.assign(new Error('Replica journal contains invalid JSON'), { code: 'ZION_REPLICA_CORRUPT' });
       }
-      const checked = verifySignedProjectEventRecord(record, { now: this.now(), maxClockSkewMs: Number.MAX_SAFE_INTEGER });
+      const checked = verifySignedProjectEventRecord(record, { now: this.now(), maxClockSkewMs: this.maxClockSkewMs, maxAgeMs: this.maxEventAgeMs, maxFutureSkewMs: this.maxClockSkewMs });
       if (!checked.ok) throw Object.assign(new Error('Replica journal signature or record hash is invalid'), { code: 'ZION_REPLICA_CORRUPT' });
       const event = checked.event;
       const state = this.states.get(checked.nodeId) ?? { sequence: 0, lastHash: '0'.repeat(64), hashes: [] };
@@ -100,7 +102,7 @@ export class SignedProjectEventReplica {
   #ingest(record) {
     if (this.closed) throw Object.assign(new Error('Replica is closed'), { code: 'ZION_REPLICA_CLOSED' });
     if (this.persistenceFailed) throw Object.assign(new Error('Replica persistence unavailable after failed append'), { code: 'ZION_REPLICA_UNAVAILABLE' });
-    const checked = verifySignedProjectEventRecord(record, { now: this.now(), maxClockSkewMs: this.maxClockSkewMs });
+    const checked = verifySignedProjectEventRecord(record, { now: this.now(), maxClockSkewMs: this.maxClockSkewMs, maxAgeMs: this.maxEventAgeMs, maxFutureSkewMs: this.maxClockSkewMs });
     if (!checked.ok) throw Object.assign(new Error(`Invalid signed event: ${checked.reason}`), { code: 'ZION_REPLICA_INVALID_RECORD' });
     const { nodeId, event } = checked;
     if (this.authorizePeer(nodeId, event.projectId) !== true) {
