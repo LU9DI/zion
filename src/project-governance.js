@@ -66,12 +66,18 @@ export function createGovernanceProposal(stateInput, change) {
   switch (change.action) {
     case 'ADD_GOVERNOR':
     case 'ROTATE_GOVERNOR_KEY':
-      exactKeys(change, ['action', 'nodeId', 'publicKeyPem'], 'Governance change');
-      proposal = { ...base, nodeId: change.nodeId, publicKeyPem: change.publicKeyPem };
-      validatePublicKey(proposal.nodeId, proposal.publicKeyPem);
-      if (change.action === 'ADD_GOVERNOR' && Object.hasOwn(state.governors, change.nodeId)) throw new Error('Governor already exists');
-      if (change.action === 'ROTATE_GOVERNOR_KEY' && !Object.hasOwn(state.governors, change.nodeId)) throw new Error('Governor to rotate does not exist');
-      if (Object.entries(state.governors).some(([id, pem]) => id !== change.nodeId && pem === change.publicKeyPem)) throw new Error('Governance key is already assigned');
+      if (change.action === 'ADD_GOVERNOR') {
+        exactKeys(change, ['action', 'nodeId', 'publicKeyPem'], 'Governance change');
+        proposal = { ...base, nodeId: change.nodeId, publicKeyPem: change.publicKeyPem };
+        validatePublicKey(proposal.nodeId, proposal.publicKeyPem);
+        if (Object.hasOwn(state.governors, change.nodeId)) throw new Error('Governor already exists');
+      } else {
+        exactKeys(change, ['action', 'oldNodeId', 'nodeId', 'publicKeyPem'], 'Governance change');
+        proposal = { ...base, oldNodeId: change.oldNodeId, nodeId: change.nodeId, publicKeyPem: change.publicKeyPem };
+        validatePublicKey(proposal.nodeId, proposal.publicKeyPem);
+        if (!Object.hasOwn(state.governors, change.oldNodeId)) throw new Error('Governor to rotate does not exist');
+        if (Object.hasOwn(state.governors, change.nodeId) || Object.values(state.governors).includes(change.publicKeyPem)) throw new Error('Rotated governance identity is already assigned');
+      }
       break;
     case 'REVOKE_GOVERNOR':
       exactKeys(change, ['action', 'nodeId'], 'Governance change');
@@ -120,10 +126,11 @@ export function applyGovernanceCertificate(stateInput, certificate, { now = Date
       next.governors[proposal.nodeId] = validatePublicKey(proposal.nodeId, proposal.publicKeyPem);
       break;
     case 'ROTATE_GOVERNOR_KEY':
-      exactKeys(proposal, ['schemaVersion', 'projectId', 'epoch', 'previousStateHash', 'action', 'nodeId', 'publicKeyPem'], 'Rotate-key proposal');
-      if (!Object.hasOwn(next.governors, proposal.nodeId)) throw new Error('Governor to rotate does not exist');
+      exactKeys(proposal, ['schemaVersion', 'projectId', 'epoch', 'previousStateHash', 'action', 'oldNodeId', 'nodeId', 'publicKeyPem'], 'Rotate-key proposal');
+      if (!Object.hasOwn(next.governors, proposal.oldNodeId) || Object.hasOwn(next.governors, proposal.nodeId)) throw new Error('Invalid identity rotation');
       validatePublicKey(proposal.nodeId, proposal.publicKeyPem);
-      if (Object.entries(next.governors).some(([id, pem]) => id !== proposal.nodeId && pem === proposal.publicKeyPem)) throw new Error('Rotated key is already assigned');
+      if (Object.values(next.governors).includes(proposal.publicKeyPem)) throw new Error('Rotated key is already assigned');
+      delete next.governors[proposal.oldNodeId];
       next.governors[proposal.nodeId] = proposal.publicKeyPem;
       break;
     case 'REVOKE_GOVERNOR':
