@@ -1,12 +1,19 @@
 # Project inactivity and storage-abuse policy
 
-Status: **design requirement; not yet enforced by the runtime**.
+Status: **experimental controller and migration schema prepared; runtime enforcement is not active**.
 
-This policy is project-scoped. It is separate from the existing experimental
+The project-scoped lifecycle controller is implemented in
+`src/project-inactivity-controller.js`, with focused unit tests in
+`tests/project-inactivity-controller.test.js`. It uses a repository-provided
+project lock/fence and explicit storage adapters. The production repository
+implementation, durable scheduler, notification delivery, storage migration
+adapter, and full race/restart integration tests are still required. Do not
+represent this feature as active in a deployed node.
+
+This policy is separate from the existing experimental
 `InactivityResourcePolicy`, which tracks owner/node contribution activity and
-currently has different defaults. Do not claim that the project policy is active
-until the project registry, durable activity ledger, storage-lease controller,
-scheduler, and real storage adapters are integrated and tested.
+has different defaults. The project policy is the authoritative requirement for
+project inactivity: pause at 7 days, release storage reservation at 15 days.
 
 ## 1. Inactivity lifecycle
 
@@ -118,23 +125,27 @@ The implementation must provide:
 - bounded retries, dead-letter/alert handling, and restart recovery;
 - retention/legal-hold checks before any data deletion.
 
-A scheduler must claim a project transition using a durable lease/fence, re-read
-the latest activity timestamp under that fence, and then apply the transition.
-This prevents a concurrent valid user action from being paused or released based
-on stale inactivity data. A fresh activity event must win over an uncommitted
-inactivity transition.
+The experimental controller expects a repository adapter to serialize activity
+writes and lifecycle evaluations using the same project-level lock. It rechecks
+the activity timestamp and live lease set after replica relocation and before
+capacity release. The adapter must guarantee these operations are transactional
+and fenced; the controller alone cannot provide that guarantee.
 
 ## 6. Required validation before activation
 
-Tests must cover at least:
-- exact boundaries at 7 and 15 days, including clock skew and scheduler delays;
-- non-meaningful events not resetting inactivity;
-- duplicate/replayed activity events being idempotent;
+Focused unit tests currently cover:
+- exact 7-day and 15-day boundaries;
+- non-meaningful activity not refreshing the clock;
+- verified relocation before capacity release;
+- failed relocation and unconfirmed capacity release leaving the reservation pending;
+- no data deletion during reservation release.
+
+Before production activation, add integration tests for:
+- duplicate/replayed events and idempotency under database concurrency;
 - valid activity racing with pause and storage release;
 - concurrent schedulers and process restart recovery;
 - pause preserving owner read/export and preventing new writes/jobs;
-- release refusing to proceed when migration/read-back/receipt verification fails;
-- no data deletion or last-replica loss during release;
+- real replica read-back, ciphertext digest, byte count, replica identity and durability receipt;
 - reactivation after pause and after released capacity;
 - duplicate uploads not consuming additional unique-byte quota;
 - burst uploads, object-count exhaustion, rapid churn, and multi-identity abuse;
