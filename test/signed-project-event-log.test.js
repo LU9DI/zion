@@ -227,3 +227,51 @@ test('replica detects equivocation when one peer signs conflicting events at the
     alternateLog.close();
   } finally { f.cleanup(); }
 });
+
+
+test('replica fails closed on a truncated durable record after restart', async () => {
+  const f = fixture();
+  const replicaPath = join(f.dir, 'truncated-replica.events');
+  try {
+    let now = 1_800_000_000_000;
+    const source = new SignedProjectEventLog(f.path, { identity: f.identity, now: () => now });
+    await source.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: {} });
+    const record = source.snapshotRecords().records[0];
+    const replica = new SignedProjectEventReplica(replicaPath, {
+      authorizePeer: () => true,
+      now: () => now,
+    });
+    await replica.ingest(record);
+    replica.close();
+    source.close();
+
+    const persisted = readFileSync(replicaPath);
+    writeFileSync(replicaPath, persisted.subarray(0, persisted.length - 2));
+    assert.throws(() => new SignedProjectEventReplica(replicaPath, {
+      authorizePeer: () => true,
+      now: () => now,
+    }), { code: 'ZION_REPLICA_CORRUPT' });
+  } finally { f.cleanup(); }
+});
+
+test('replica enforces a global record limit before durable append', async () => {
+  const f = fixture();
+  try {
+    let now = 1_800_000_000_000;
+    const source = new SignedProjectEventLog(f.path, { identity: f.identity, now: () => now });
+    await source.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: { n: 1 } });
+    now += 1;
+    await source.append({ projectId: PROJECT, eventType: 'PROJECT_UPDATED', data: { n: 2 } });
+    const records = source.snapshotRecords({ limit: 2 }).records;
+    const replica = new SignedProjectEventReplica(join(f.dir, 'bounded-replica.events'), {
+      authorizePeer: () => true,
+      maxRecords: 1,
+      now: () => now,
+    });
+    await replica.ingest(records[0]);
+    await assert.rejects(replica.ingest(records[1]), { code: 'ZION_REPLICA_TOO_LARGE' });
+    assert.equal(replica.snapshot().records, 1);
+    replica.close();
+    source.close();
+  } finally { f.cleanup(); }
+});
