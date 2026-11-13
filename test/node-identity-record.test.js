@@ -114,3 +114,29 @@ test('encrypted identity creation rejects malformed keystore adapters before wri
     /createOrGetWrappingKey/,
   );
 });
+
+
+test('encrypted identity rejects malformed and oversized encoded fields before keystore access', async () => {
+  const identity = createNodeIdentity();
+  const record = await createEncryptedNodeIdentityRecord(identity, new FakeKeystore());
+  let unwrapCalls = 0;
+  const observingKeystore = {
+    async unwrapKey() {
+      unwrapCalls += 1;
+      throw new Error('unwrap must not be reached for malformed records');
+    },
+  };
+
+  const malformedRecords = [
+    { ...record, publicKeyDer: '!!!!' },
+    { ...record, nonce: 'abc' },
+    { ...record, ciphertext: Buffer.alloc(16 * 1024 + 1, 0x41).toString('base64') },
+    { ...record, authTag: Buffer.from([0x01]).toString('base64') },
+    { ...record, wrappedDek: Buffer.alloc(4097, 0x42).toString('base64') },
+  ];
+
+  for (const malformed of malformedRecords) {
+    await assert.rejects(loadEncryptedNodeIdentityRecord(malformed, observingKeystore));
+  }
+  assert.equal(unwrapCalls, 0);
+});
