@@ -737,9 +737,11 @@ test('handler deadline covers authorization-fence wait and prevents late dispatc
   t.after(() => { socket.destroy(); client.close(); });
   await waitFor(() => server.admittedPeerIds.has(newcomer.nodeId));
   await waitFor(() => socket.__zionSession?.authenticated === true);
+  let peerClosed = false;
+  socket.once('close', () => { peerClosed = true; });
   client.send(socket, { type: 'PING', nonce: 'fence-deadline' });
   await fenceEntered;
-  await waitFor(() => socket.destroyed, 1000, 'authorization wait did not trigger handler deadline');
+  await waitFor(() => peerClosed, 1000, 'authorization wait did not trigger handler deadline');
   releaseFence();
   await waitFor(() => server.activeMessageHandlers === 0, 1000, 'handler slot was not released after fence completion');
   assert.equal(received, 0, 'a handler must not start after its authorization deadline has expired');
