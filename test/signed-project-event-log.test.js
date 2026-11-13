@@ -59,10 +59,7 @@ test('event log recovers a stale lock written by a terminated process', async ()
     await log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: { recovered: true } });
     assert.equal(log.snapshot().count, 1);
     log.close();
-    assert.equal(readFileSync(f.path + '.lock', 'utf8').length, 0);
-  } catch (error) {
-    if (error?.code === 'ENOENT') return;
-    throw error;
+    assert.throws(() => readFileSync(f.path + '.lock', 'utf8'), { code: 'ENOENT' });
   } finally { f.cleanup(); }
 });
 
