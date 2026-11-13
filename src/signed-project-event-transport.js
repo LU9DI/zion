@@ -6,10 +6,11 @@ import { verifySignedProjectEventRecord } from './signed-project-event-log.js';
  * The transport authenticates the sender; the record verifier authenticates its
  * origin. Relaying another node's event is deliberately rejected in this first version.
  */
-export function createSignedProjectEventReplicationHandler({ replica, transport, now = () => Date.now(), maxClockSkewMs = 120_000 } = {}) {
+export function createSignedProjectEventReplicationHandler({ replica, transport, now = () => Date.now(), maxClockSkewMs = 120_000, maxEventAgeMs = Number.MAX_SAFE_INTEGER } = {}) {
   if (!replica || typeof replica.ingest !== 'function' || !transport || typeof transport.send !== 'function' ||
       !transport.identity?.nodeId || typeof now !== 'function' ||
-      !Number.isSafeInteger(maxClockSkewMs) || maxClockSkewMs < 0) {
+      !Number.isSafeInteger(maxClockSkewMs) || maxClockSkewMs < 0 ||
+      !Number.isSafeInteger(maxEventAgeMs) || maxEventAgeMs < 0) {
     throw new TypeError('Invalid signed project event replication handler configuration');
   }
   return async (message, socket) => {
@@ -19,7 +20,7 @@ export function createSignedProjectEventReplicationHandler({ replica, transport,
     if (typeof requestId !== 'string' || !/^[a-f0-9]{32}$/.test(requestId)) {
       throw Object.assign(new Error('Invalid project event replication request ID'), { code: 'ZION_REPLICATION_INVALID_REQUEST' });
     }
-    const checked = verifySignedProjectEventRecord(record, { now: now(), maxClockSkewMs });
+    const checked = verifySignedProjectEventRecord(record, { now: now(), maxClockSkewMs, maxAgeMs: maxEventAgeMs, maxFutureSkewMs: maxClockSkewMs });
     if (!checked.ok || checked.nodeId !== message.nodeId) {
       throw Object.assign(new Error('Replicated event signer must match the authenticated transport peer'), {
         code: 'ZION_REPLICATION_SENDER_MISMATCH',
