@@ -55,3 +55,27 @@ Do not add packages until a reproducible spike can be run in an isolated worktre
 - How to retain every existing transport resource guard with libp2p connection/stream APIs.
 
 These are blockers to the adapter implementation, not reasons to weaken the decentralization requirement. No implementation, package installation, lockfile, migration, merge, or deployment is claimed by this assessment.
+
+
+## Follow-up inspection: official identity ownership and persistence
+
+Inspected `scripts/start-official-node.js` and `src/peer-security.js` at the same HEAD.
+
+Verified:
+- The official launcher requires `ZION_OFFICIAL_ADAPTER_MODULE` to point to an absolute, deployment-owned module.
+- That adapter must return `identity`, and validation checks only for a non-empty `privateKey` and `nodeId`. The launcher does not define a key-file format, load/store API, atomic rotation procedure, backup/restore contract, or restart identity check.
+- The official launcher also requires PostgreSQL connection configuration and a non-empty `trustedPeerIds` list. These are additional transitional centralization constraints; this transport ADR does not remove them.
+- `createNodeIdentity()` generates a fresh Ed25519 keypair in memory and derives `nodeId` as SHA-256 over the SPKI DER public key. It contains no persistence operation.
+- The repository's encrypted chunk store protects content chunks using a supplied 32-byte encryption key; it is not a node-identity keystore and must not be repurposed as one without a separate design.
+
+Conclusion:
+The repository establishes an identity injection boundary, but does not establish the deployment adapter's real key lifecycle. Therefore identity continuity across restart is **unverified**, not proven absent in every deployment. No adapter module or key material was inspected or changed.
+
+Required next gate before a libp2p adapter:
+1. Locate and inspect the actual deployment-owned adapter and its key persistence implementation (outside the tracked repository unless supplied).
+2. Specify a versioned identity envelope and strict permissions, atomic writes, fsync, backup/restore, rotation, revocation, and recovery behavior.
+3. Add tests that start, stop, and restart two independent processes and assert stable Zion node ID and stable libp2p PeerId.
+4. Verify that the libp2p PeerId is cryptographically derived from the same Ed25519 key using supported APIs; otherwise define an explicit, user-visible identity migration with dual signatures and a committed transition record.
+5. Design decentralized membership and bootstrap replacement in parallel: the current launcher still requires PostgreSQL and a static peer trust list. A secure Noise transport alone does not remove those dependencies.
+
+No key files, private key bytes, deployment secrets, or external adapter configuration were accessed.
