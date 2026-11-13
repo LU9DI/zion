@@ -39,12 +39,14 @@ export class PeerTransport {
     socketRateLimiter = new PeerRateLimiter({ capacity: 256, refillPerSecond: 200 }),
     // Global pre-verification budget caps CPU across rapid reconnects that obtain fresh socket IDs.
     globalRateLimiter = new PeerRateLimiter({ capacity: 4096, refillPerSecond: 2000, maxPeers: 1 }), transferScheduler = null,
-    protocolGenesis = null, networkMode = 'legacy', integrityGuard = null, admissionController = null, revocationListener = null, admissionVouchers = [], tlsOptions = null, tlsHandshakeTimeoutMs = 10_000, frameAssemblyTimeoutMs = 10_000, now = () => Date.now() } = {}) {
+    protocolGenesis = null, networkMode = 'legacy', integrityGuard = null, admissionController = null, revocationListener = null, admissionVouchers = [], tlsOptions = null, tlsHandshakeTimeoutMs = 10_000, frameAssemblyTimeoutMs = 10_000, handlerTimeoutMs = 30_000, maxConcurrentHandlers = 16, now = () => Date.now() } = {}) {
     if (!identity?.privateKey || typeof identity.nodeId !== 'string') throw new TypeError('A node identity is required');
     if (typeof host !== 'string' || !host || !Number.isInteger(port) || port < 0 || port > 65535) throw new RangeError('Invalid bind address');
     if (!Number.isSafeInteger(maxConnections) || maxConnections < 1 || !Number.isSafeInteger(maxFrameBytes) || maxFrameBytes < 256) throw new RangeError('Invalid transport limits');
     if (!Number.isSafeInteger(tlsHandshakeTimeoutMs) || tlsHandshakeTimeoutMs < 100 || tlsHandshakeTimeoutMs > 60_000) throw new RangeError('Invalid TLS handshake timeout');
     if (!Number.isSafeInteger(frameAssemblyTimeoutMs) || frameAssemblyTimeoutMs < 100 || frameAssemblyTimeoutMs > 60_000) throw new RangeError('Invalid frame assembly timeout');
+    if (!Number.isSafeInteger(handlerTimeoutMs) || handlerTimeoutMs < 100 || handlerTimeoutMs > 300_000) throw new RangeError('Invalid message handler timeout');
+    if (!Number.isSafeInteger(maxConcurrentHandlers) || maxConcurrentHandlers < 1 || maxConcurrentHandlers > 1024) throw new RangeError('Invalid concurrent message handler limit');
     if (typeof onMessage !== 'function') throw new TypeError('onMessage must be a function');
     if (!['legacy', 'official'].includes(networkMode)) throw new TypeError('networkMode must be legacy or official');
     if (networkMode === 'official' && protocolGenesis === null) throw new Error('Official Zion network mode requires a reviewed protocol genesis');
@@ -60,6 +62,9 @@ export class PeerTransport {
     this.tlsOptions = tlsReady ? tlsOptions : null;
     this.tlsHandshakeTimeoutMs = tlsHandshakeTimeoutMs;
     this.frameAssemblyTimeoutMs = frameAssemblyTimeoutMs;
+    this.handlerTimeoutMs = handlerTimeoutMs;
+    this.maxConcurrentHandlers = maxConcurrentHandlers;
+    this.activeMessageHandlers = 0;
     this.identity = identity; this.host = host; this.port = port; this.maxConnections = maxConnections;
     this.networkMode = networkMode;
     this.genesis = protocolGenesis === null ? null : validateGenesisDocument(protocolGenesis);
@@ -617,9 +622,41 @@ export class PeerTransport {
         socket.destroy();
         return;
       }
-      const dispatch = () => this.onMessage(
-        Object.freeze({ nodeId: checked.nodeId, payload: checked.payload, envelope: message }), socket,
-      );
+      // Bound the number of application callbacks that can hold admission fences
+      // (and therefore PostgreSQL connections/locks) at once. Overload is rejected
+      // before acquiring a durable authorization fence.
+      if (this.activeMessageHandlers >= this.maxConcurrentHandlers) {
+        socket.destroy();
+        return;
+      }
+      this.activeMessageHandlers++;
+      const dispatch = async () => {
+        const controller = new AbortController();
+        const abortForClose = () => {
+          if (!controller.signal.aborted) controller.abort(new Error('Peer socket closed'));
+        };
+        socket.once('close', abortForClose);
+        const timer = setTimeout(() => {
+          if (!controller.signal.aborted) controller.abort(new Error('Message handler deadline exceeded'));
+          socket.destroy();
+        }, this.handlerTimeoutMs);
+        timer.unref?.();
+        try {
+          // The handler must observe signal and stop its own work. We deliberately
+          // continue awaiting it after abort so the PostgreSQL authorization fence
+          // is never released while application work is still running.
+          await this.onMessage(Object.freeze({
+            nodeId: checked.nodeId,
+            payload: checked.payload,
+            envelope: message,
+            signal: controller.signal,
+          }), socket);
+        } finally {
+          clearTimeout(timer);
+          socket.off('close', abortForClose);
+        }
+      };
+      try {
       if (socket.__zionSession?.admissionRequired) {
         if (typeof this.admissionController?.withPeerAuthorizationFence !== 'function') {
           socket.destroy();
@@ -646,6 +683,9 @@ export class PeerTransport {
         }
       } else {
         await dispatch();
+      }
+      } finally {
+        this.activeMessageHandlers--;
       }
     } catch {
       // Fail closed on handler errors; do not leak internal error details to peers.
