@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createNodeIdentity } from '../src/peer-security.js';
 import { SignedProjectEventLog, verifySignedProjectEventRecord } from '../src/signed-project-event-log.js';
+import { SignedProjectEventReplica } from '../src/signed-project-event-replica.js';
 
 const PROJECT = 'a'.repeat(64);
 function fixture(options = {}) {
@@ -144,5 +145,60 @@ test('event log serializes concurrent appends into a single sequence', async () 
     assert.deepEqual(results.map(x => x.sequence), Array.from({ length: 20 }, (_, i) => i + 1));
     assert.equal(log.snapshot().count, 20);
     log.close();
+  } finally { f.cleanup(); }
+});
+
+
+test('replica durably accepts authorized contiguous records, deduplicates, and recovers after restart', async () => {
+  const f = fixture();
+  const replicaPath = join(f.dir, 'replica.events');
+  try {
+    let now = 1_800_000_000_000;
+    const source = new SignedProjectEventLog(f.path, { identity: f.identity, now: () => now });
+    await source.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: { name: 'replicated' } });
+    now += 1;
+    await source.append({ projectId: PROJECT, eventType: 'PROJECT_UPDATED', data: { version: 2 } });
+    const records = source.snapshotRecords({ limit: 2 }).records;
+    const replica = new SignedProjectEventReplica(replicaPath, {
+      authorizePeer: (nodeId, projectId) => nodeId === f.identity.nodeId && projectId === PROJECT,
+      now: () => now,
+    });
+    await assert.rejects(replica.ingest(records[1]), { code: 'ZION_REPLICA_GAP' });
+    const first = await replica.ingest(records[0]);
+    assert.equal(first.accepted, true);
+    const duplicate = await replica.ingest(records[0]);
+    assert.equal(duplicate.duplicate, true);
+    const second = await replica.ingest(records[1]);
+    assert.equal(second.sequence, 2);
+    assert.equal(replica.snapshot().records, 2);
+    replica.close();
+    source.close();
+
+    now += 10_000_000_000;
+    const recovered = new SignedProjectEventReplica(replicaPath, {
+      authorizePeer: () => true,
+      now: () => now,
+    });
+    assert.equal(recovered.snapshot().records, 2);
+    assert.equal(recovered.snapshot().peers[0].sequence, 2);
+    recovered.close();
+  } finally { f.cleanup(); }
+});
+
+test('replica rejects peers not authorized for the event project', async () => {
+  const f = fixture();
+  try {
+    let now = 1_800_000_000_000;
+    const source = new SignedProjectEventLog(f.path, { identity: f.identity, now: () => now });
+    await source.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: {} });
+    const record = source.snapshotRecords().records[0];
+    const replica = new SignedProjectEventReplica(join(f.dir, 'unauthorized.events'), {
+      authorizePeer: () => false,
+      now: () => now,
+    });
+    await assert.rejects(replica.ingest(record), { code: 'ZION_REPLICA_UNAUTHORIZED' });
+    assert.equal(replica.snapshot().records, 0);
+    replica.close();
+    source.close();
   } finally { f.cleanup(); }
 });
