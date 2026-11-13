@@ -127,3 +127,16 @@ The signed local event journal adds tamper-evident local sequencing but does not
 6. Add OS-enforced resource isolation and abuse budgets.
 7. Add signed/reproducible release pipeline, SBOM, dependency policy and independent review.
 8. Remove central runtime dependencies only after security and recovery gates pass.
+
+
+## 9. First governance implementation increment
+
+`src/project-governance.js` adds a deterministic, project-scoped governance state machine:
+- Ed25519 public keys are validated against their SHA-256-derived node IDs.
+- Project genesis fixes the initial governor set and threshold.
+- Proposals bind project ID, next epoch, and prior state hash.
+- Distinct active governors sign the exact proposal hash; duplicate, outsider, stale, malformed, and insufficient approvals are rejected.
+- Supported transitions are adding a governor, rotating a governor to a new key-derived node ID, revoking a governor, and changing the threshold.
+- Revocation cannot silently leave fewer active governors than the current threshold.
+
+This is a threshold-approval primitive, not a BFT consensus implementation. The caller must still commit the resulting transition through the project's distributed consensus, persist it safely, prevent forks/rollback, and distribute the committed certificate. Genesis trust ceremony, crash-safe state storage, network integration, and adversarial multi-node consensus tests remain outstanding.
