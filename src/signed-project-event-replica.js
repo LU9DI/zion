@@ -4,32 +4,21 @@ import { dirname, resolve } from 'node:path';
 import { verifySignedProjectEventRecord } from './signed-project-event-log.js';
 
 function acquireLock(lockPath) {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const token = randomUUID();
-    try {
-      const fd = openSync(lockPath, 'wx', 0o600);
-      const bytes = Buffer.from(JSON.stringify({ pid: process.pid, token }) + '\n');
-      writeSync(fd, bytes);
-      fsyncSync(fd);
-      return { fd, token };
-    } catch (error) {
-      if (error?.code !== 'EEXIST') throw error;
-      let lock;
-      try { lock = JSON.parse(readFileSync(lockPath, 'utf8')); }
-      catch { throw Object.assign(new Error('Event log lock is unreadable; manual recovery is required'), { code: 'ZION_EVENT_LOG_LOCKED' }); }
-      if (!Number.isSafeInteger(lock?.pid) || lock.pid < 1 || typeof lock.token !== 'string') {
-        throw Object.assign(new Error('Event log lock is invalid; manual recovery is required'), { code: 'ZION_EVENT_LOG_LOCKED' });
-      }
-      try { process.kill(lock.pid, 0); }
-      catch (probeError) {
-        if (probeError?.code !== 'ESRCH') throw Object.assign(new Error('Event log lock owner cannot be verified'), { code: 'ZION_EVENT_LOG_LOCKED' });
-        try { unlinkSync(lockPath); } catch (unlinkError) {
-          if (unlinkError?.code !== 'ENOENT') throw unlinkError;
-        }
-      }
+  const token = randomUUID();
+  try {
+    const fd = openSync(lockPath, 'wx', 0o600);
+    const bytes = Buffer.from(JSON.stringify({ pid: process.pid, token }) + '\n');
+    writeSync(fd, bytes);
+    fsyncSync(fd);
+    return { fd, token };
+  } catch (error) {
+    if (error?.code === 'EEXIST') {
+      throw Object.assign(new Error('Replica lock already exists; automatic stale-lock removal is disabled and explicit recovery is required'), {
+        code: 'ZION_REPLICA_LOCKED',
+      });
     }
+    throw error;
   }
-  throw Object.assign(new Error('Event log is already open by another process'), { code: 'ZION_EVENT_LOG_LOCKED' });
 }
 
 // Durable receiver for signed per-node journals. This is replication storage only;
