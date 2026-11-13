@@ -393,7 +393,7 @@ test('inactivity scheduler starts only after healthy node startup and stops befo
 
 test('inactivity scheduler async shutdown completes before transport and storage cleanup', async () => {
   const state = fixture();
-  const lifecycle = [];
+  const lifecycle = state.events;
   let releaseStop;
   const stopGate = new Promise(resolve => { releaseStop = resolve; });
   let signalStopStarted;
