@@ -202,3 +202,28 @@ test('replica rejects peers not authorized for the event project', async () => {
     source.close();
   } finally { f.cleanup(); }
 });
+
+
+test('replica detects equivocation when one peer signs conflicting events at the same sequence', async () => {
+  const f = fixture();
+  const alternatePath = join(f.dir, 'alternate.events');
+  try {
+    let now = 1_800_000_000_000;
+    const firstLog = new SignedProjectEventLog(f.path, { identity: f.identity, now: () => now });
+    const alternateLog = new SignedProjectEventLog(alternatePath, { identity: f.identity, now: () => now });
+    await firstLog.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: { name: 'canonical' } });
+    await alternateLog.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: { name: 'conflicting' } });
+    const firstRecord = firstLog.snapshotRecords().records[0];
+    const conflictingRecord = alternateLog.snapshotRecords().records[0];
+    const replica = new SignedProjectEventReplica(join(f.dir, 'equivocation.events'), {
+      authorizePeer: () => true,
+      now: () => now,
+    });
+    await replica.ingest(firstRecord);
+    await assert.rejects(replica.ingest(conflictingRecord), { code: 'ZION_REPLICA_EQUIVOCATION' });
+    assert.equal(replica.snapshot().records, 1);
+    replica.close();
+    firstLog.close();
+    alternateLog.close();
+  } finally { f.cleanup(); }
+});
