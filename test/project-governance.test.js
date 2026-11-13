@@ -36,7 +36,7 @@ function canonical(value) {
 }
 function stateHash(state) {
   const { stateHash: ignored, ...value } = state;
-  return createHash('sha256').update('ZION-PROJECT-GOVERNANCE-V1\\0').update(canonical(value)).digest('hex');
+  return createHash('sha256').update('ZION-PROJECT-GOVERNANCE-V1\0').update(canonical(value)).digest('hex');
 }
 
 test('project governance adds a governor only after threshold approvals', () => {
