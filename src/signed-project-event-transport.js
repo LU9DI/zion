@@ -42,12 +42,14 @@ export function createSignedProjectEventReplicationHandler({ replica, transport,
 }
 
 /** Send a local node's signed event record to one already-authenticated peer. */
-export function sendSignedProjectEventRecord({ transport, socket, record, now = () => Date.now(), maxClockSkewMs = 120_000 } = {}) {
+export function sendSignedProjectEventRecord({ transport, socket, record, now = () => Date.now(), maxClockSkewMs = 120_000, maxEventAgeMs = Number.MAX_SAFE_INTEGER } = {}) {
   if (!transport?.identity?.nodeId || typeof transport.send !== 'function' ||
-      !socket || socket.destroyed || typeof now !== 'function') {
+      !socket || socket.destroyed || typeof now !== 'function' ||
+      !Number.isSafeInteger(maxClockSkewMs) || maxClockSkewMs < 0 ||
+      !Number.isSafeInteger(maxEventAgeMs) || maxEventAgeMs < 0) {
     throw new TypeError('Invalid signed project event replication send configuration');
   }
-  const checked = verifySignedProjectEventRecord(record, { now: now(), maxClockSkewMs });
+  const checked = verifySignedProjectEventRecord(record, { now: now(), maxClockSkewMs, maxAgeMs: maxEventAgeMs, maxFutureSkewMs: maxClockSkewMs });
   if (!checked.ok || checked.nodeId !== transport.identity.nodeId) {
     throw Object.assign(new Error('Only locally signed event records may be sent by this transport'), {
       code: 'ZION_REPLICATION_LOCAL_SIGNER_MISMATCH',
