@@ -94,7 +94,9 @@ export async function createEncryptedNodeIdentityRecord(identity, keystore, {
     cipher.setAAD(aadFor(record));
     const ciphertext = Buffer.concat([cipher.update(privateDer), cipher.final()]);
     const authTag = cipher.getAuthTag();
-    const wrapped = Buffer.from(await keystore.wrapKey({ keyId, plaintextKey: dek }));
+    const wrappedValue = await keystore.wrapKey({ keyId, plaintextKey: dek });
+    if (!(wrappedValue instanceof Uint8Array)) throw new TypeError('Local keystore must return wrapped key bytes');
+    const wrapped = Buffer.from(wrappedValue);
     if (wrapped.length < 1 || wrapped.length > MAX_WRAPPED_KEY_BYTES) throw new RangeError('Wrapped DEK has an invalid size');
     return Object.freeze({
       ...record,
@@ -114,7 +116,7 @@ export async function loadEncryptedNodeIdentityRecord(record, keystore) {
   requireKeystore(keystore, ['unwrapKey']);
   exactKeys(record, ['schemaVersion', 'algorithm', 'cipher', 'keyId', 'nodeId', 'publicKeyDer', 'nonce', 'ciphertext', 'authTag', 'wrappedDek'], 'Node identity record');
   if (record.schemaVersion !== RECORD_VERSION || record.algorithm !== 'Ed25519' ||
-      record.cipher !== 'AES-256-GCM' || !KEY_ID_RE.test(record.keyId || '') ||
+      record.cipher !== 'AES-256-GCM' || typeof record.keyId !== 'string' || !KEY_ID_RE.test(record.keyId) ||
       !NODE_ID_RE.test(record.nodeId || '')) throw new Error('Unsupported or invalid node identity record');
   const publicDer = decodeBase64(record.publicKeyDer, 'Public key', 1024);
   if (deriveNodeId(publicDer) !== record.nodeId) throw new Error('Stored node ID does not match the public key');
@@ -128,7 +130,9 @@ export async function loadEncryptedNodeIdentityRecord(record, keystore) {
   let dek;
   let privateDer;
   try {
-    dek = Buffer.from(await keystore.unwrapKey({ keyId: record.keyId, wrappedKey: wrappedDek }));
+    const unwrappedValue = await keystore.unwrapKey({ keyId: record.keyId, wrappedKey: wrappedDek });
+    if (!(unwrappedValue instanceof Uint8Array)) throw new TypeError('Local keystore must return unwrapped key bytes');
+    dek = Buffer.from(unwrappedValue);
     if (dek.length !== 32) throw new Error('Local keystore returned an invalid DEK');
     const decipher = createDecipheriv('aes-256-gcm', dek, nonce);
     decipher.setAAD(aadFor(record));
