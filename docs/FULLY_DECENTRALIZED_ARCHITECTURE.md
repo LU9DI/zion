@@ -130,3 +130,10 @@ The architecture is not complete until automated tests demonstrate:
 - a dependency audit proving no central service is required by the official runtime.
 
 Passing unit tests alone is not production certification. Public-network release still requires independent protocol/security review and deployment evidence.
+
+
+## 11. First implementation increment — local signed event journal
+
+The branch now contains `src/signed-project-event-log.js` and `test/signed-project-event-log.test.js`. The journal provides a node-local append-only JSONL log with Ed25519-signed events, per-node sequence numbers, previous-record hash chaining, bounded size/count, serialized concurrent appends, fsync before acknowledgement, single-process locking with stale-PID recovery, and fail-closed startup on truncated or tampered records. It rejects a journal signed by a different node identity.
+
+This is deliberately **not** a distributed commit protocol: a local signature and hash chain do not prove quorum agreement, prevent a malicious signer from forking its own log, or establish global ordering. The journal is a durable substrate for later peer replication and quorum certificates. It is not yet wired into the official node launcher or project authorization path. Tests are committed but their CI result must be checked before treating them as passing.
