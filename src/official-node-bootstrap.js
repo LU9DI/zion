@@ -57,6 +57,8 @@ export class OfficialNodeBootstrap {
     this.containmentPromise = null;
     // Serialize adapter shutdown calls across quarantine, rollback, retry, and close.
     this.adapterCleanupQueue = Promise.resolve();
+    // Concurrent callers share one shutdown pass; failed passes may be retried.
+    this.adapterCleanupPromise = null;
     // Cleanup waits for asynchronous adapter starts to settle before stopping them.
     this.pendingAdapterStarts = new Set();
     this.closePromise = null;
@@ -125,8 +127,10 @@ export class OfficialNodeBootstrap {
   }
 
   async #cleanupAdapters() {
-    // Each caller gets a turn; adapter shutdown methods never overlap even if
-    // close(), quarantine containment, rollback, and retry are requested together.
+    // Coalesce concurrent shutdown requests. A failed pass is not cached, so
+    // retryContainment() can make another attempt after an adapter failure.
+    if (this.adapterCleanupPromise) return this.adapterCleanupPromise;
+
     const operation = this.adapterCleanupQueue.then(async () => {
       const pendingStarts = [...this.pendingAdapterStarts];
       if (pendingStarts.length) await Promise.allSettled(pendingStarts);
@@ -160,8 +164,14 @@ export class OfficialNodeBootstrap {
       }
       return errors;
     });
+
+    this.adapterCleanupPromise = operation;
     this.adapterCleanupQueue = operation.then(() => undefined, () => undefined);
-    return operation;
+    try {
+      return await operation;
+    } finally {
+      if (this.adapterCleanupPromise === operation) this.adapterCleanupPromise = null;
+    }
   }
 
   async #contain() {
