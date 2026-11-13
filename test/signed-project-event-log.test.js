@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createNodeIdentity } from '../src/peer-security.js';
-import { SignedProjectEventLog } from '../src/signed-project-event-log.js';
+import { SignedProjectEventLog, verifySignedProjectEventRecord } from '../src/signed-project-event-log.js';
 
 const PROJECT = 'a'.repeat(64);
 function fixture(options = {}) {
@@ -105,6 +105,29 @@ test('event log validates input and enforces bounded capacity', async () => {
     await log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: {} });
     await assert.rejects(log.append({ projectId: PROJECT, eventType: 'PROJECT_UPDATED', data: {} }), { code: 'ZION_EVENT_LOG_TOO_LARGE' });
     assert.equal(log.snapshot().count, 1);
+    log.close();
+  } finally { f.cleanup(); }
+});
+
+test('event log exposes bounded signed records that remote peers can verify', async () => {
+  const f = fixture();
+  try {
+    let now = 1_800_000_000_000;
+    const log = new SignedProjectEventLog(f.path, { identity: f.identity, now: () => now });
+    await log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: { name: 'alpha' } });
+    now += 1;
+    await log.append({ projectId: PROJECT, eventType: 'PROJECT_UPDATED', data: { version: 2 } });
+    const page = log.snapshotRecords({ afterSequence: 0, limit: 1 });
+    assert.equal(page.fromSequence, 1);
+    assert.equal(page.nextSequence, 2);
+    assert.equal(page.lastSequence, 2);
+    assert.equal(page.records.length, 1);
+    const verified = verifySignedProjectEventRecord(page.records[0], { now, maxClockSkewMs: 120_000 });
+    assert.equal(verified.ok, true);
+    assert.equal(verified.nodeId, f.identity.nodeId);
+    assert.equal(verified.event.sequence, 1);
+    assert.equal(log.snapshotRecords({ afterSequence: 1, limit: 256 }).records.length, 1);
+    assert.throws(() => log.snapshotRecords({ afterSequence: -1 }), /replication cursor/);
     log.close();
   } finally { f.cleanup(); }
 });
