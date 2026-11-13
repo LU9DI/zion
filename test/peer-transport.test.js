@@ -142,6 +142,69 @@ test('transport serializes async handlers and bounds queued frames per socket', 
 });
 
 
+test('message handler deadline aborts cooperatively and closes the peer socket', async t => {
+  let unblock;
+  let observedSignal;
+  const blocked = new Promise(resolve => { unblock = resolve; });
+  const server = new PeerTransport({
+    identity: createNodeIdentity(),
+    handlerTimeoutMs: 150,
+    onMessage: async message => {
+      observedSignal = message.signal;
+      await blocked;
+    },
+  });
+  const address = await server.listen();
+  t.after(async () => { unblock(); await server.close(); });
+  const client = new PeerTransport({ identity: createNodeIdentity() });
+  const socket = connect(address.port, '127.0.0.1');
+  t.after(() => socket.destroy());
+  await once(socket, 'connect');
+  client.send(socket, { type: 'PING', nonce: 'handler-deadline' });
+  await waitFor(() => Boolean(observedSignal?.aborted), 1000, 'handler signal was not aborted at its deadline');
+  await waitFor(() => socket.destroyed, 1000, 'deadline did not close the peer connection');
+  unblock();
+});
+
+test('global concurrent handler limit rejects excess work before dispatch', async t => {
+  let unblock;
+  let calls = 0;
+  const blocked = new Promise(resolve => { unblock = resolve; });
+  const server = new PeerTransport({
+    identity: createNodeIdentity(),
+    maxConcurrentHandlers: 1,
+    onMessage: async () => {
+      calls++;
+      await blocked;
+    },
+  });
+  const address = await server.listen();
+  const firstClient = new PeerTransport({ identity: createNodeIdentity() });
+  const secondClient = new PeerTransport({ identity: createNodeIdentity() });
+  const first = connect(address.port, '127.0.0.1');
+  const second = connect(address.port, '127.0.0.1');
+  try {
+    await Promise.all([once(first, 'connect'), once(second, 'connect')]);
+    firstClient.send(first, { type: 'PING', nonce: 'handler-slot-1' });
+    await waitFor(() => calls === 1);
+    secondClient.send(second, { type: 'PING', nonce: 'handler-slot-2' });
+    await waitFor(() => second.destroyed, 1000, 'excess handler work was not rejected');
+    assert.equal(calls, 1, 'the excess callback must never run');
+  } finally {
+    unblock();
+    first.destroy();
+    second.destroy();
+    await server.close();
+  }
+});
+
+test('message handler limits reject invalid configuration', () => {
+  assert.throws(() => new PeerTransport({ identity: createNodeIdentity(), handlerTimeoutMs: 99 }), /handler timeout/);
+  assert.throws(() => new PeerTransport({ identity: createNodeIdentity(), handlerTimeoutMs: 300001 }), /handler timeout/);
+  assert.throws(() => new PeerTransport({ identity: createNodeIdentity(), maxConcurrentHandlers: 0 }), /concurrent message handler limit/);
+  assert.throws(() => new PeerTransport({ identity: createNodeIdentity(), maxConcurrentHandlers: 1025 }), /concurrent message handler limit/);
+});
+
 test('transport applies rate limiting before replay-cache admission', async t => {
   const replayGuard = {
     accepted: 0,

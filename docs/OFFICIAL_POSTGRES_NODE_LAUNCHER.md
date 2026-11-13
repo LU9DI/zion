@@ -61,6 +61,9 @@ separate, reviewed release operation before starting the node.
 - Keep the adapter, manifest, signing trust anchor, identity private key,
   TLS private key, genesis, trust lists, and database credentials outside the
   repository and inaccessible to the node's untrusted workload.
+- Message handlers receive a message field named `signal`, an `AbortSignal`. The transport aborts it and closes the peer socket when `handlerTimeoutMs` expires (default 30 seconds; allowed range 100 ms–5 minutes) or the socket closes. Handlers must propagate this signal to database queries, storage operations, and downstream work, and stop promptly when aborted.
+- `maxConcurrentHandlers` bounds active application callbacks across the process (default 16; allowed range 1–1024). Excess frames are rejected by closing the sending socket before a new authorization fence is acquired. Tune this below the database pool's available capacity, accounting for the dedicated revocation-listener connection and other application queries.
+- The timeout is cooperative, not a mechanism for forcibly terminating JavaScript. The transport deliberately continues awaiting a handler after abort so it cannot release a PostgreSQL authorization fence while that handler is still running. A handler that ignores its signal can therefore continue holding a database connection/lock and a concurrency slot; production adapters must enforce their own query/operation deadlines and cancellation. Do not mistake socket closure for proof that application work stopped.
 - Public binding requires mutual TLS material and an explicit peer allowlist.
   A real production adapter must also provision and rotate certificates and
   peer trust safely.
