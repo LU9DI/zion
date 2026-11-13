@@ -1885,3 +1885,31 @@ test('transport applies a cross-process revocation notification to active sessio
   await server.close();
   assert.equal(listenerStopped, true, 'transport shutdown must stop the listener');
 });
+
+
+test('closing a peer socket aborts its active message handler signal', async t => {
+  let observedSignal;
+  let unblock;
+  const blocked = new Promise(resolve => { unblock = resolve; });
+  const server = new PeerTransport({
+    identity: createNodeIdentity(),
+    onMessage: async message => {
+      observedSignal = message.signal;
+      await blocked;
+    },
+  });
+  const address = await server.listen();
+  t.after(async () => { unblock(); await server.close(); });
+  const client = new PeerTransport({ identity: createNodeIdentity() });
+  const socket = connect(address.port, '127.0.0.1');
+  t.after(() => socket.destroy());
+  await once(socket, 'connect');
+  client.send(socket, { type: 'PING', nonce: 'handler-disconnect-abort' });
+  await waitFor(() => Boolean(observedSignal), 1000, 'message handler did not start');
+  socket.destroy();
+  await waitFor(() => observedSignal.aborted, 1000,
+    'closing the peer socket did not abort the active handler signal');
+  unblock();
+  await waitFor(() => server.activeMessageHandlers === 0, 1000,
+    'completed handler did not release its concurrency slot');
+});
