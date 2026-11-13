@@ -47,8 +47,10 @@ jobs:
         shell: bash
         run: |
           if [ -f package-lock.json ]; then npm ci; fi
-      - name: Install PostgreSQL integration-test driver
-        run: npm install --no-save --no-package-lock pg@^8.13.0
+      - name: Install pinned PostgreSQL integration-test driver
+        run: npm install --no-save --no-package-lock pg@8.23.1
+      - name: Verify PostgreSQL integration-test driver version
+        run: node -e "if (require('pg/package.json').version !== '8.23.1') process.exit(1)"
       - name: Syntax checks
         run: npm run check
       - name: Test suite including real PostgreSQL integration
@@ -81,8 +83,6 @@ jobs:
         uses: actions/checkout@v4
       - name: Set up Node.js
         uses: actions/setup-node@v4
-        with:
-          node-version: 20
       - name: Install ClamAV engine and signature updater
         run: |
           sudo apt-get update
