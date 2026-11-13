@@ -7,6 +7,16 @@ const connectionString = process.env.ZION_POSTGRES_TEST_URL;
 const enabled = Boolean(connectionString);
 const subjectNodeId = 'a'.repeat(64);
 
+test('PostgreSQL integration tests run against the pinned node-postgres driver', {
+  skip: !enabled && 'set ZION_POSTGRES_TEST_URL to run real PostgreSQL integration tests',
+}, async () => {
+  const metadata = JSON.parse(await readFile(
+    new URL('../node_modules/pg/package.json', import.meta.url),
+    'utf8',
+  ));
+  assert.equal(metadata.version, '8.23.1');
+});
+
 async function createIsolatedPool(schema, poolOptions = {}) {
   const { Pool } = await import('pg');
   const admin = new Pool({ connectionString });
