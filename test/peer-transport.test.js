@@ -684,6 +684,66 @@ test('official transport admits an unknown peer only when its signed handshake c
   await waitFor(() => !server.admittedPeerIds.has(newcomer.nodeId));
 });
 
+test('handler deadline covers authorization-fence wait and prevents late dispatch', async t => {
+  const { createPeerIntroductionVoucher } = await import('../src/peer-introduction-vouchers.js');
+  const genesis = testGenesis('Zion authorization-fence deadline');
+  const issuerA = createNodeIdentity(), issuerB = createNodeIdentity();
+  const newcomer = createNodeIdentity(), seed = createNodeIdentity();
+  const vouchers = [
+    createPeerIntroductionVoucher({ issuerIdentity: issuerA, subjectNodeId: newcomer.nodeId }),
+    createPeerIntroductionVoucher({ issuerIdentity: issuerB, subjectNodeId: newcomer.nodeId }),
+  ];
+  let state = null;
+  const stateStore = { load: () => state === null ? null : structuredClone(state), save: next => { state = structuredClone(next); } };
+  const localController = new PeerAdmissionController({
+    trustedIssuerNodeIds: [issuerA.nodeId, issuerB.nodeId], threshold: 2, stateStore,
+    capacityProvider: async () => ({ activePeers: 0, maxPeers: 10, storageHeadroomRatio: 0.5 }),
+  });
+  let enterFence;
+  let releaseFence;
+  const fenceEntered = new Promise(resolve => { enterFence = resolve; });
+  const fenceBlocked = new Promise(resolve => { releaseFence = resolve; });
+  let received = 0;
+  const delayedController = {
+    admit: input => localController.admit(input),
+    isAdmitted: nodeId => localController.isAdmitted(nodeId),
+    withAdmissionFence: (nodeId, work) => localController.withAdmissionFence(nodeId, work),
+    async withPeerAuthorizationFence(nodeId, _options, work) {
+      enterFence();
+      await fenceBlocked;
+      return localController.withAdmissionFence(nodeId, work);
+    },
+  };
+  const guard = {
+    status: { quarantined: false },
+    checkHealthy: async () => {},
+    assertHealthy: () => {},
+    addQuarantineListener: () => () => {},
+  };
+  const server = new PeerTransport({
+    identity: seed, host: '127.0.0.1', networkMode: 'official', protocolGenesis: genesis,
+    integrityGuard: guard, trustedPeerIds: [issuerA.nodeId, issuerB.nodeId],
+    admissionController: delayedController, handlerTimeoutMs: 150,
+    onMessage: async () => { received++; },
+  });
+  const address = await server.listen();
+  t.after(async () => { releaseFence(); await server.close(); });
+  const client = new PeerTransport({
+    identity: newcomer, host: '127.0.0.1', networkMode: 'official', protocolGenesis: genesis,
+    integrityGuard: guard, trustedPeerIds: [seed.nodeId], admissionVouchers: vouchers,
+  });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(() => { socket.destroy(); client.close(); });
+  await waitFor(() => server.admittedPeerIds.has(newcomer.nodeId));
+  await waitFor(() => socket.__zionSession?.authenticated === true);
+  client.send(socket, { type: 'PING', nonce: 'fence-deadline' });
+  await fenceEntered;
+  await waitFor(() => socket.destroyed, 1000, 'authorization wait did not trigger handler deadline');
+  releaseFence();
+  await waitFor(() => server.activeMessageHandlers === 0, 1000, 'handler slot was not released after fence completion');
+  assert.equal(received, 0, 'a handler must not start after its authorization deadline has expired');
+});
+
 test('admission-store failure refunds the unauthenticated tier token and closes the peer', async t => {
   const genesis = testGenesis('Zion admission-store failure');
   const seed = createNodeIdentity();
