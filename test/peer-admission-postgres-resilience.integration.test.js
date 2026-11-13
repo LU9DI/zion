@@ -53,7 +53,7 @@ async function within(promise, message, ms = 2500) {
   }
 }
 
-test('PostgreSQL authorization checkout remains queued until a pool slot is released', {
+test('PostgreSQL authorization checkout fails closed when the pool queue timeout expires', {
   skip: !enabled && 'set ZION_POSTGRES_TEST_URL to run real PostgreSQL integration tests',
 }, async () => {
   const isolated = await createIsolatedPool('zion_pool_queue_timeout_test', {
@@ -68,23 +68,17 @@ test('PostgreSQL authorization checkout remains queued until a pool slot is rele
     const store = new PostgresPeerAdmissionStore({ pool });
     held = await pool.connect();
 
-    let settled = false;
-    const pendingRead = store.getAdmissionStatus(subjectNodeId).then(result => {
-      settled = true;
-      return result;
-    });
+    const pendingRead = store.getAdmissionStatus(subjectNodeId);
     await new Promise(resolve => setTimeout(resolve, 30));
-    assert.equal(pool.waitingCount, 1, 'the authorization checkout must be queued');
-    await new Promise(resolve => setTimeout(resolve, 300));
-    assert.equal(settled, false,
-      'connectionTimeoutMillis must not be assumed to time out a queued pool checkout');
-    held.release();
-    held = null;
+    assert.equal(pool.waitingCount, 1, 'the authorization checkout must enter the pool queue');
     const result = await within(
       pendingRead,
-      'authorization read did not resume after a pool slot was released',
+      'authorization checkout did not respect connectionTimeoutMillis',
     );
-    assert.deepEqual(result, { ok: true, subjectNodeId, status: null });
+    assert.deepEqual(result, { ok: false, reason: 'admission-state-unavailable' });
+    assert.equal(pool.waitingCount, 0, 'timed-out checkout must leave the pool queue');
+    held.release();
+    held = null;
   } finally {
     held?.release();
     await isolated.cleanup();
