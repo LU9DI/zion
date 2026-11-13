@@ -108,7 +108,7 @@ export class SignedProjectEventReplica {
     }
     const state = this.states.get(nodeId) ?? { sequence: 0, lastHash: '0'.repeat(64), hashes: [] };
     if (event.sequence <= state.sequence) {
-      if (state.hashes[event.sequence - 1] === record.recordHash) return Object.freeze({ accepted: false, duplicate: true, nodeId, sequence: event.sequence });
+      if (state.hashes[event.sequence - 1] === record.recordHash) return Object.freeze({ accepted: false, duplicate: true, nodeId, sequence: event.sequence, recordHash: record.recordHash });
       throw Object.assign(new Error('Conflicting record for an already observed peer sequence'), { code: 'ZION_REPLICA_EQUIVOCATION' });
     }
     if (event.sequence !== state.sequence + 1 || event.previousHash !== state.lastHash) {
