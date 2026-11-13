@@ -452,7 +452,7 @@ test('quarantine waits for asynchronous inactivity scheduler startup before stop
   await quarantining;
   await assert.rejects(starting, /cancelled|quarantined|healthy/i);
   assert.ok(lifecycle.indexOf('scheduler-start-finished') < lifecycle.indexOf('scheduler-stop'));
-  assert.ok(lifecycle.indexOf('scheduler-stop') < lifecycle.indexOf('close'));
+  assert.ok(lifecycle.indexOf('scheduler-stop') < lifecycle.indexOf('close'), `unexpected lifecycle order: ${JSON.stringify(lifecycle)}`);
   assert.ok(lifecycle.indexOf('close') < lifecycle.indexOf('stopStorage'));
   assert.equal(bootstrap.inactivitySchedulerStarted, false);
 });
