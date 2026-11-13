@@ -37,6 +37,7 @@ function validateDependencies(value) {
   if (!transportOptions || typeof transportOptions !== 'object' || Array.isArray(transportOptions)) {
     throw new TypeError('Deployment adapter must provide transportOptions');
   }
+  requireFunction(transportOptions.onMessage, 'transportOptions.onMessage');
   if (transportOptions.identity || transportOptions.protocolGenesis || transportOptions.trustedPeerIds ||
       transportOptions.admissionController || transportOptions.revocationListener) {
     throw new TypeError('Identity, genesis, trust, and admission wiring are owned by the launcher');
