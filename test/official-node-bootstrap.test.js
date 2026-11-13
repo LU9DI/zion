@@ -10,6 +10,7 @@ function deferred() {
 
 function fixture({ verifyOk = true, failSecondCheck = false, listenFails = false, failCloseCount = 0, failStopStorageCount = 0, failStartStorage = false, listenGate = null, storageGate = null, stopStorageGate = null, notificationDeliveryWorker = null, idleParticipationScheduler = null } = {}) {
   const events = [];
+  const transportCloseCallStacks = [];
   let checks = 0;
   let closeFailuresRemaining = failCloseCount;
   let stopFailuresRemaining = failStopStorageCount;
@@ -44,7 +45,7 @@ function fixture({ verifyOk = true, failSecondCheck = false, listenFails = false
   const transport = {
     networkMode: 'official',
     async listen() { events.push('listen'); if (listenGate) { listenGate.entered?.(); await listenGate.promise; } if (listenFails) throw new Error('bind failed'); transportListening = true; return { host: '127.0.0.1', port: 1234 }; },
-    async close() { events.push('close'); if (closeFailuresRemaining-- > 0) throw new Error('transport close failed'); transportListening = false; },
+    async close() { transportCloseCallStacks.push(new Error('transport.close call').stack); events.push('close'); if (closeFailuresRemaining-- > 0) throw new Error('transport close failed'); transportListening = false; },
     async getStatus() { return { listening: transportListening }; }
   };
   const bootstrap = new OfficialNodeBootstrap({
@@ -63,7 +64,7 @@ function fixture({ verifyOk = true, failSecondCheck = false, listenFails = false
     notificationDeliveryWorker,
     idleParticipationScheduler
   });
-  return { bootstrap, events, guard, transport, get maxActiveStopStorage() { return maxActiveStopStorage; } };
+  return { bootstrap, events, guard, transport, transportCloseCallStacks, get maxActiveStopStorage() { return maxActiveStopStorage; } };
 }
 
 test('official bootstrap verifies release before opening storage and network', async () => {
@@ -452,7 +453,7 @@ test('quarantine waits for asynchronous inactivity scheduler startup before stop
   await quarantining;
   await assert.rejects(starting, /cancelled|quarantined|healthy/i);
   assert.ok(lifecycle.indexOf('scheduler-start-finished') < lifecycle.indexOf('scheduler-stop'));
-  assert.ok(lifecycle.indexOf('scheduler-stop') < lifecycle.indexOf('close'), `unexpected lifecycle order: ${JSON.stringify(lifecycle)}; containment=${JSON.stringify(bootstrap.containmentHistory)}; status=${bootstrap.containmentStatus}; pendingStarts=${bootstrap.pendingAdapterStarts.size}; cleanupHistory=${JSON.stringify(bootstrap.adapterCleanupHistory)}`);
+  assert.ok(lifecycle.indexOf('scheduler-stop') < lifecycle.indexOf('close'), `unexpected lifecycle order: ${JSON.stringify(lifecycle)}; containment=${JSON.stringify(bootstrap.containmentHistory)}; status=${bootstrap.containmentStatus}; pendingStarts=${bootstrap.pendingAdapterStarts.size}; cleanupHistory=${JSON.stringify(bootstrap.adapterCleanupHistory)}; closeStacks=${JSON.stringify(state.transportCloseCallStacks)}`);
   assert.ok(lifecycle.indexOf('close') < lifecycle.indexOf('storage-stop'));
   assert.equal(lifecycle.filter(event => event === 'scheduler-stop').length, 1);
   assert.equal(lifecycle.filter(event => event === 'close').length, 1);
