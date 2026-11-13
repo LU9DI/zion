@@ -101,6 +101,48 @@ test('official launcher closes a partially invalid PostgreSQL pool', async () =>
 });
 
 
+test('official launcher rejects a missing application message handler and closes the pool', async () => {
+  let poolClosed = false;
+  const { createNodeIdentity } = await import('../src/peer-security.js');
+  const guard = {
+    status: { quarantined: false, verified: true },
+    async verify() { return { ok: true }; },
+    async checkHealthy() {},
+    assertHealthy() {},
+    addQuarantineListener() { return () => {}; },
+  };
+
+  await assert.rejects(
+    startOfficialNode({
+      env: {
+        ZION_OFFICIAL_ADAPTER_MODULE: '/opt/zion/adapter.mjs',
+        ZION_POSTGRES_URL: 'postgres://unused',
+      },
+      loadAdapterModule: async () => ({
+        createPool: async () => ({
+          connect: async () => ({}),
+          end: async () => { poolClosed = true; },
+        }),
+        createOfficialNodeDependencies: async () => ({
+          integrityGuard: guard,
+          identity: createNodeIdentity(),
+          protocolGenesis: {},
+          trustedPeerIds: ['1'.repeat(64)],
+          startStorage: async () => {},
+          stopStorage: async () => {},
+          controllerOptions: {
+            trustedIssuerNodeIds: ['2'.repeat(64)],
+            capacityProvider: async () => ({ activePeers: 0, maxPeers: 10, storageHeadroomRatio: 1 }),
+          },
+          transportOptions: { host: '127.0.0.1', port: 0 },
+        }),
+      }),
+    }),
+    /transportOptions\.onMessage\(\)/,
+  );
+  assert.equal(poolClosed, true);
+});
+
 test('official launcher starts the composed node and closes transport, storage, listener, and pool', async () => {
   const { EventEmitter } = await import('node:events');
   const { createNodeIdentity } = await import('../src/peer-security.js');
