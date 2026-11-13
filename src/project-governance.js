@@ -37,7 +37,7 @@ function freezeState(state) {
 }
 function validateState(state) {
   if (!state || state.schemaVersion !== 1 || !HEX64.test(state.projectId || '') ||
-      !Number.isSafeInteger(state.epoch) || state.epoch < 0 ||
+      !Number.isSafeInteger(state.epoch) || state.epoch < 0 || state.epoch >= Number.MAX_SAFE_INTEGER ||
       !Number.isSafeInteger(state.threshold) || !state.governors ||
       typeof state.governors !== 'object' || Array.isArray(state.governors) ||
       (Object.getPrototypeOf(state.governors) !== Object.prototype && Object.getPrototypeOf(state.governors) !== null)) throw new TypeError('Invalid project governance state');
