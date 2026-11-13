@@ -43,11 +43,11 @@ function validatePayload(payload) {
     (Object.getPrototypeOf(payload) === Object.prototype || Object.getPrototypeOf(payload) === null);
 }
 
-export function verifySignedProjectEventRecord(record, { now = Date.now(), maxClockSkewMs = 120_000, maxBytes = 1024 * 1024 } = {}) {
+export function verifySignedProjectEventRecord(record, { now = Date.now(), maxClockSkewMs = 120_000, maxAgeMs = maxClockSkewMs, maxFutureSkewMs = maxClockSkewMs, maxBytes = 1024 * 1024 } = {}) {
   if (!record || typeof record !== 'object' || !record.envelope || typeof record.recordHash !== 'string' ||
       !/^[a-f0-9]{64}$/.test(record.recordHash)) return { ok: false, reason: 'invalid-record' };
   const { envelope } = record;
-  const verified = verifyPeerMessage(envelope, { now, maxClockSkewMs, maxBytes });
+  const verified = verifyPeerMessage(envelope, { now, maxClockSkewMs, maxAgeMs, maxFutureSkewMs, maxBytes });
   if (!verified.ok) return verified;
   const event = verified.payload;
   if (event.type !== 'PROJECT_EVENT' || !PROJECT_ID.test(event.projectId ?? '') ||
