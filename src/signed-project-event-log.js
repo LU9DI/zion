@@ -14,7 +14,7 @@ function acquireLock(lockPath) {
     const token = randomUUID();
     try {
       const fd = openSync(lockPath, 'wx', 0o600);
-      const bytes = Buffer.from(JSON.stringify({ pid: process.pid, token }) + '\\n');
+      const bytes = Buffer.from(JSON.stringify({ pid: process.pid, token }) + '\n');
       writeSync(fd, bytes);
       fsyncSync(fd);
       return { fd, token };
