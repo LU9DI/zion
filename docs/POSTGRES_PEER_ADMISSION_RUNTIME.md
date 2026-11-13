@@ -4,9 +4,9 @@
 
 `createPostgresPeerAdmissionRuntime()` composes the PostgreSQL admission store, controller, dedicated revocation listener, and official-mode `PeerTransport`. It is an integration factory, not a deployable node executable.
 
-At the current repository revision there is no production node entrypoint, deployment manifest, container definition, or start script that constructs an `OfficialNodeBootstrap` with this runtime. `src/demo.js` and `src/social-message-node.js` are not substitutes for the official P2P node entrypoint. Therefore, merging this feature does **not** by itself switch a running deployment to PostgreSQL-backed admission.
+This branch adds the `start:official` entrypoint (`scripts/start-official-node.js`), which composes this runtime with `OfficialNodeBootstrap`. It is the supported startup path for an official node; `src/demo.js` and `src/social-message-node.js` remain demos/legacy paths and are not substitutes.
 
-The host application must deliberately wire the runtime into its official startup path and supply real, deployment-owned identity, integrity, protocol-genesis, trust, TLS, capacity, storage, and message-processing adapters.
+The entrypoint deliberately requires a deployment-owned adapter module (`ZION_OFFICIAL_ADAPTER_MODULE`) and PostgreSQL connection configuration. It does not include production credentials, TLS certificate issuance/rotation, identity provisioning, trust anchors, or a real storage backend. Consequently, adding the launcher does **not** by itself deploy or switch a running service to PostgreSQL-backed admission. See `docs/OFFICIAL_POSTGRES_NODE_LAUNCHER.md` for the adapter contract and lifecycle.
 
 ## Required host dependencies and database
 

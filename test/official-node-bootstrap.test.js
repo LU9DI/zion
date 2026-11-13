@@ -8,8 +8,9 @@ function deferred() {
   return { promise, resolve };
 }
 
-function fixture({ verifyOk = true, failSecondCheck = false, listenFails = false, failCloseCount = 0, failStopStorageCount = 0, listenGate = null, storageGate = null, stopStorageGate = null, notificationDeliveryWorker = null, idleParticipationScheduler = null } = {}) {
+function fixture({ verifyOk = true, failSecondCheck = false, listenFails = false, failCloseCount = 0, failStopStorageCount = 0, failStartStorage = false, listenGate = null, storageGate = null, stopStorageGate = null, notificationDeliveryWorker = null, idleParticipationScheduler = null } = {}) {
   const events = [];
+  const transportCloseCallStacks = [];
   let checks = 0;
   let closeFailuresRemaining = failCloseCount;
   let stopFailuresRemaining = failStopStorageCount;
@@ -44,12 +45,12 @@ function fixture({ verifyOk = true, failSecondCheck = false, listenFails = false
   const transport = {
     networkMode: 'official',
     async listen() { events.push('listen'); if (listenGate) { listenGate.entered?.(); await listenGate.promise; } if (listenFails) throw new Error('bind failed'); transportListening = true; return { host: '127.0.0.1', port: 1234 }; },
-    async close() { events.push('close'); if (closeFailuresRemaining-- > 0) throw new Error('transport close failed'); transportListening = false; },
+    async close() { transportCloseCallStacks.push(new Error('transport.close call').stack); events.push('close'); if (closeFailuresRemaining-- > 0) throw new Error('transport close failed'); transportListening = false; },
     async getStatus() { return { listening: transportListening }; }
   };
   const bootstrap = new OfficialNodeBootstrap({
     integrityGuard: guard, transport,
-    async startStorage() { events.push('startStorage'); if (storageGate) { storageGate.entered?.(); await storageGate.promise; } storageRunning = true; },
+    async startStorage() { events.push('startStorage'); if (storageGate) { storageGate.entered?.(); await storageGate.promise; } if (failStartStorage) { storageRunning = true; throw new Error('storage adapter failed after partial allocation'); } storageRunning = true; },
     async stopStorage() {
       events.push('stopStorage');
       activeStopStorage++; maxActiveStopStorage = Math.max(maxActiveStopStorage, activeStopStorage);
@@ -63,7 +64,7 @@ function fixture({ verifyOk = true, failSecondCheck = false, listenFails = false
     notificationDeliveryWorker,
     idleParticipationScheduler
   });
-  return { bootstrap, events, guard, transport, get maxActiveStopStorage() { return maxActiveStopStorage; } };
+  return { bootstrap, events, guard, transport, transportCloseCallStacks, get maxActiveStopStorage() { return maxActiveStopStorage; } };
 }
 
 test('official bootstrap verifies release before opening storage and network', async () => {
@@ -91,6 +92,13 @@ test('integrity change between storage startup and bind closes storage without o
   assert.ok(events.includes('startStorage'));
   assert.ok(events.includes('stopStorage'));
   assert.equal(events.includes('listen'), false);
+});
+
+test('storage startup failure attempts cleanup of partially allocated resources', async () => {
+  const { bootstrap, events } = fixture({ failStartStorage: true });
+  await assert.rejects(bootstrap.start(), /partial allocation/);
+  assert.ok(events.includes('stopStorage'));
+  assert.equal(bootstrap.storageStarted, false);
 });
 
 test('network bind failure rolls back started storage', async () => {
@@ -173,8 +181,9 @@ test('quarantine during storage startup is reconciled after the adapter resolves
   const { bootstrap, events, guard } = fixture({ storageGate: gate });
   const starting = bootstrap.start();
   await entered;
-  await guard.quarantine();
+  const quarantining = guard.quarantine();
   gate.resolve();
+  await quarantining;
   await assert.rejects(starting, /quarantined|not healthy|integrity/i);
   assert.equal(bootstrap.started, false);
   assert.equal(bootstrap.storageStarted, false);
@@ -383,6 +392,80 @@ test('inactivity scheduler starts only after healthy node startup and stops befo
   assert.ok(events.indexOf('inactivity-stop') < events.indexOf('stopStorage'));
 });
 
+test('inactivity scheduler async shutdown completes before transport and storage cleanup', async () => {
+  const state = fixture();
+  const lifecycle = state.events;
+  let releaseStop;
+  const stopGate = new Promise(resolve => { releaseStop = resolve; });
+  let signalStopStarted;
+  const stopStarted = new Promise(resolve => { signalStopStarted = resolve; });
+  const bootstrap = new OfficialNodeBootstrap({
+    integrityGuard: state.guard,
+    transport: state.transport,
+    async startStorage() { lifecycle.push('storage-start'); },
+    async stopStorage() { lifecycle.push('storage-stop'); },
+    inactivityScheduler: {
+      start() { lifecycle.push('scheduler-start'); },
+      async stop() {
+        signalStopStarted();
+        await stopGate;
+        lifecycle.push('scheduler-stop-finished');
+      },
+    },
+  });
+  await bootstrap.start();
+  const closing = bootstrap.close();
+  await stopStarted;
+  assert.equal(state.events.includes('close'), false);
+  assert.equal(lifecycle.includes('storage-stop'), false);
+  releaseStop();
+  await closing;
+  assert.ok(lifecycle.indexOf('scheduler-stop-finished') < state.events.indexOf('close'));
+  assert.ok(state.events.indexOf('close') < lifecycle.indexOf('storage-stop'));
+});
+
+test('quarantine waits for asynchronous inactivity scheduler startup before stopping it', async () => {
+  const state = fixture();
+  // fixture() creates a bootstrap of its own. This test constructs a separate
+  // bootstrap below using the same guard and transport, so detach the unused
+  // fixture instance to ensure quarantine exercises only the instance under test.
+  state.bootstrap.removeQuarantineListener?.();
+  state.bootstrap.removeQuarantineListener = null;
+  const lifecycle = state.events;
+  let releaseStart;
+  const startGate = new Promise(resolve => { releaseStart = resolve; });
+  let signalStart;
+  const startEntered = new Promise(resolve => { signalStart = resolve; });
+  const bootstrap = new OfficialNodeBootstrap({
+    integrityGuard: state.guard,
+    transport: state.transport,
+    async startStorage() { lifecycle.push('storage-start'); },
+    async stopStorage() { lifecycle.push('storage-stop'); },
+    inactivityScheduler: {
+      async start() {
+        lifecycle.push('scheduler-start-entered');
+        signalStart();
+        await startGate;
+        lifecycle.push('scheduler-start-finished');
+      },
+      async stop() { lifecycle.push('scheduler-stop'); },
+    },
+  });
+  const starting = bootstrap.start();
+  await startEntered;
+  const quarantining = state.guard.quarantine();
+  releaseStart();
+  await quarantining;
+  await assert.rejects(starting, /cancelled|quarantined|healthy/i);
+  assert.ok(lifecycle.indexOf('scheduler-start-finished') < lifecycle.indexOf('scheduler-stop'));
+  assert.ok(lifecycle.indexOf('scheduler-stop') < lifecycle.indexOf('close'), `unexpected lifecycle order: ${JSON.stringify(lifecycle)}; containment=${JSON.stringify(bootstrap.containmentHistory)}; status=${bootstrap.containmentStatus}; pendingStarts=${bootstrap.pendingAdapterStarts.size}; cleanupHistory=${JSON.stringify(bootstrap.adapterCleanupHistory)}; closeStacks=${JSON.stringify(state.transportCloseCallStacks)}`);
+  assert.ok(lifecycle.indexOf('close') < lifecycle.indexOf('storage-stop'));
+  assert.equal(lifecycle.filter(event => event === 'scheduler-stop').length, 1);
+  assert.equal(lifecycle.filter(event => event === 'close').length, 1);
+  assert.equal(lifecycle.filter(event => event === 'storage-stop').length, 1);
+  assert.equal(bootstrap.inactivitySchedulerStarted, false);
+});
+
 test('inactivity scheduler is not started when integrity verification fails', async () => {
   const state = fixture({ verifyOk: false });
   let starts = 0;
@@ -436,6 +519,60 @@ test('notification API starts only after healthy transport and closes before tra
   await bootstrap.close();
   assert.ok(lifecycle.indexOf('api-close') >= 0);
   assert.ok(lifecycle.indexOf('api-close') < state.events.indexOf('close'));
+});
+
+test('notification API startup failure closes partially allocated listener', async () => {
+  const state = fixture();
+  const lifecycle = [];
+  const api = {
+    async listen() {
+      lifecycle.push('listen');
+      throw new Error('notification listener failed after partial allocation');
+    },
+    async close() { lifecycle.push('close'); },
+  };
+  const bootstrap = new OfficialNodeBootstrap({
+    integrityGuard: state.guard,
+    transport: state.transport,
+    async startStorage() {},
+    async stopStorage() {},
+    notificationApi: api,
+  });
+  await assert.rejects(bootstrap.start(), /partial allocation/);
+  assert.deepEqual(lifecycle, ['listen', 'close']);
+  assert.equal(bootstrap.notificationApiStarted, false);
+});
+
+test('quarantine waits for pending notification listener startup before closing it', async () => {
+  const state = fixture();
+  const gate = deferred();
+  let signalEntered;
+  const entered = new Promise(resolve => { signalEntered = resolve; });
+  const lifecycle = [];
+  const api = {
+    async listen() {
+      lifecycle.push('listen-start');
+      signalEntered();
+      await gate.promise;
+      lifecycle.push('listen-finished');
+    },
+    async close() { lifecycle.push('close'); },
+  };
+  const bootstrap = new OfficialNodeBootstrap({
+    integrityGuard: state.guard,
+    transport: state.transport,
+    async startStorage() {},
+    async stopStorage() {},
+    notificationApi: api,
+  });
+  const starting = bootstrap.start();
+  await entered;
+  const quarantining = state.guard.quarantine();
+  gate.resolve();
+  await quarantining;
+  await assert.rejects(starting, /cancelled|quarantined|healthy/i);
+  assert.deepEqual(lifecycle, ['listen-start', 'listen-finished', 'close']);
+  assert.equal(bootstrap.notificationApiStarted, false);
 });
 
 test('official bootstrap rejects malformed notification API lifecycle adapter', () => {

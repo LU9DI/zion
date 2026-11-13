@@ -57,6 +57,11 @@ export class OfficialNodeBootstrap {
     this.containmentPromise = null;
     // Serialize adapter shutdown calls across quarantine, rollback, retry, and close.
     this.adapterCleanupQueue = Promise.resolve();
+    // Concurrent callers share one shutdown pass; failed passes may be retried.
+    this.adapterCleanupPromise = null;
+    // Cleanup waits for asynchronous adapter starts to settle before stopping them.
+    this.pendingAdapterStarts = new Set();
+    this.adapterCleanupHistory = [];
     this.closePromise = null;
     // Explicit close is terminal for this instance; create a new bootstrap to restart.
     this.closed = false;
@@ -123,9 +128,28 @@ export class OfficialNodeBootstrap {
   }
 
   async #cleanupAdapters() {
-    // Each caller gets a turn; adapter shutdown methods never overlap even if
-    // close(), quarantine containment, rollback, and retry are requested together.
+    // Record every caller, including callers that join an in-flight pass, so
+    // lifecycle races can be diagnosed without guessing from adapter events.
+    this.adapterCleanupHistory.push(Object.freeze({
+      at: new Date().toISOString(),
+      joined: Boolean(this.adapterCleanupPromise),
+      containmentStatus: this.containmentStatus,
+      transportStarted: this.transportState,
+      storageStarted: this.storageStarted,
+      inactivitySchedulerStarted: this.inactivitySchedulerStarted,
+      idleParticipationSchedulerStarted: this.idleParticipationSchedulerStarted,
+      notificationDeliveryWorkerStarted: this.notificationDeliveryWorkerStarted,
+      notificationApiStarted: this.notificationApiStarted,
+      pendingStarts: this.pendingAdapterStarts.size,
+      caller: new Error('adapter cleanup caller').stack?.split('\\n').slice(1, 5).map(line => line.trim()) ?? []
+    }));
+    // Coalesce concurrent shutdown requests. A failed pass is not cached, so
+    // retryContainment() can make another attempt after an adapter failure.
+    if (this.adapterCleanupPromise) return this.adapterCleanupPromise;
+
     const operation = this.adapterCleanupQueue.then(async () => {
+      const pendingStarts = [...this.pendingAdapterStarts];
+      if (pendingStarts.length) await Promise.allSettled(pendingStarts);
       const errors = [];
       if (this.idleParticipationSchedulerStarted && this.idleParticipationScheduler) {
         try { await this.idleParticipationScheduler.stop(); this.idleParticipationSchedulerStarted = false; }
@@ -140,7 +164,7 @@ export class OfficialNodeBootstrap {
         catch (error) { errors.push(error); }
       }
       if (this.inactivitySchedulerStarted && this.inactivityScheduler) {
-        try { this.inactivityScheduler.stop(); this.inactivitySchedulerStarted = false; }
+        try { await this.inactivityScheduler.stop(); this.inactivitySchedulerStarted = false; }
         catch (error) { errors.push(error); }
       }
       this.transportState = 'stopping';
@@ -156,11 +180,18 @@ export class OfficialNodeBootstrap {
       }
       return errors;
     });
+
+    this.adapterCleanupPromise = operation;
     this.adapterCleanupQueue = operation.then(() => undefined, () => undefined);
-    return operation;
+    try {
+      return await operation;
+    } finally {
+      if (this.adapterCleanupPromise === operation) this.adapterCleanupPromise = null;
+    }
   }
 
   async #contain() {
+    if (this.containmentStatus === 'contained') return;
     if (this.containmentPromise) return this.containmentPromise;
     this.lifecycleEpoch++;
     this.started = false;
@@ -220,9 +251,14 @@ export class OfficialNodeBootstrap {
       }
 
       // Storage may create/open persistent state, so it is not touched before verification.
-      this.storageState = 'starting';
-      await this.startStorage();
+      // Mark cleanup as required before invoking the adapter: startStorage()
+      // may allocate resources and then reject before it can report success.
       this.storageStarted = true;
+      this.storageState = 'starting';
+      const storageStart = Promise.resolve().then(() => this.startStorage());
+      this.pendingAdapterStarts.add(storageStart);
+      try { await storageStart; }
+      finally { this.pendingAdapterStarts.delete(storageStart); }
       this.storageState = 'running';
       this.#assertLifecycle(epoch);
       // Recheck immediately before opening the network listener.
@@ -242,8 +278,12 @@ export class OfficialNodeBootstrap {
       }
       // Start authenticated notification API only after integrity, storage, and transport are healthy.
       if (this.notificationApi) {
-        await this.notificationApi.listen();
+        // listen() can allocate its socket before rejecting; register cleanup first.
         this.notificationApiStarted = true;
+        const notificationApiStart = Promise.resolve().then(() => this.notificationApi.listen());
+        this.pendingAdapterStarts.add(notificationApiStart);
+        try { await notificationApiStart; }
+        finally { this.pendingAdapterStarts.delete(notificationApiStart); }
         this.#assertLifecycle(epoch);
         await this.integrityGuard.checkHealthy();
         this.#assertLifecycle(epoch);
@@ -251,16 +291,28 @@ export class OfficialNodeBootstrap {
       // Start inactivity automation only after integrity, storage, and transport are healthy.
       // The scheduler must use real host adapters; bootstrap only owns its lifecycle.
       if (this.inactivityScheduler) {
-        this.inactivityScheduler.start({ runImmediately: false });
         this.inactivitySchedulerStarted = true;
+        const schedulerStart = Promise.resolve().then(() => this.inactivityScheduler.start({ runImmediately: false }));
+        this.pendingAdapterStarts.add(schedulerStart);
+        try { await schedulerStart; }
+        finally { this.pendingAdapterStarts.delete(schedulerStart); }
+        this.#assertLifecycle(epoch);
       }
       if (this.idleParticipationScheduler) {
-        this.idleParticipationScheduler.start({ runImmediately: false });
         this.idleParticipationSchedulerStarted = true;
+        const schedulerStart = Promise.resolve().then(() => this.idleParticipationScheduler.start({ runImmediately: false }));
+        this.pendingAdapterStarts.add(schedulerStart);
+        try { await schedulerStart; }
+        finally { this.pendingAdapterStarts.delete(schedulerStart); }
+        this.#assertLifecycle(epoch);
       }
       if (this.notificationDeliveryWorker) {
-        this.notificationDeliveryWorker.start({ runImmediately: false });
         this.notificationDeliveryWorkerStarted = true;
+        const workerStart = Promise.resolve().then(() => this.notificationDeliveryWorker.start({ runImmediately: false }));
+        this.pendingAdapterStarts.add(workerStart);
+        try { await workerStart; }
+        finally { this.pendingAdapterStarts.delete(workerStart); }
+        this.#assertLifecycle(epoch);
       }
       this.started = true;
       return Object.freeze({ ok: true, address, integrity: this.integrityGuard.status,
@@ -269,14 +321,20 @@ export class OfficialNodeBootstrap {
         notificationDelivery: this.notificationDeliveryWorker ? 'scheduled' : 'not-configured',
         notificationApi: this.notificationApi ? 'listening' : 'not-configured' });
     } catch (error) {
-      // Serialize rollback with quarantine/close so storage is never stopped twice concurrently.
-      const cleanupErrors = await this.#cleanupAdapters();
-      if (cleanupErrors.length) {
-        this.containmentStatus = 'failed';
-        this.containmentErrors = cleanupErrors.map(item => String(item?.message ?? item).slice(0, 240));
-      } else if (this.integrityGuard.status.quarantined === true) {
-        this.containmentStatus = 'contained';
-        this.containmentErrors = [];
+      // Quarantine owns containment once its listener has latched the operation.
+      // Do not race it with a second rollback: quarantine drains pending adapter
+      // starts, then stops schedulers before transport and storage.
+      if (this.integrityGuard.status.quarantined === true) {
+        // Route every quarantined startup failure through the same idempotent
+        // containment entry point. This closes the race where the listener
+        // has been scheduled but has not yet published containmentPromise.
+        await this.#contain().catch(() => {});
+      } else {
+        const cleanupErrors = await this.#cleanupAdapters();
+        if (cleanupErrors.length) {
+          this.containmentStatus = 'failed';
+          this.containmentErrors = cleanupErrors.map(item => String(item?.message ?? item).slice(0, 240));
+        }
       }
       this.started = false;
       throw error;

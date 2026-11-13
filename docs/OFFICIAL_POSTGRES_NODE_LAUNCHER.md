@@ -1,0 +1,77 @@
+# Official PostgreSQL node launcher
+
+The repository now exposes `npm run start:official`. It composes the current
+`createPostgresPeerAdmissionRuntime()` with `OfficialNodeBootstrap`; it does
+not reuse the older pre-runtime admission transport.
+
+## Deployment-owned adapter
+
+Set `ZION_OFFICIAL_ADAPTER_MODULE` to an absolute path to a deployment-owned
+ES module. The module must export:
+
+- `createPool({ connectionString, max, connectionTimeoutMillis, application_name, env })`
+  returning a node-postgres-compatible pool with `connect()` and `end()`.
+- `createOfficialNodeDependencies({ env, pool })` returning:
+  - `integrityGuard`: a fully configured `IntegrityGuard` with externally
+    pinned release-manifest trust material;
+  - `identity`, `protocolGenesis`, and a non-empty reviewed `trustedPeerIds`;
+  - `controllerOptions` with non-empty `trustedIssuerNodeIds` and a real
+    `capacityProvider()`;
+  - `transportOptions`: TLS key/certificate/CA, bind address, limits, and
+    application message handler. Identity, genesis, trust allowlist, integrity
+    guard, admission controller, and revocation listener are launcher-owned;
+  - `startStorage()` and `stopStorage()` backed by the deployment's real
+    storage service. `stopStorage()` must be safe to call after a partially
+    completed or failed `startStorage()`; startup rollback invokes it whenever
+    storage initialization has begun.
+  - Optional `storeOptions`, `listenerOptions`, `bootstrapOptions`,
+    `getStorageStatus()`, and `recordContainmentEvent()`.
+
+Example adapter shape (illustrative only; all values and implementations must
+come from the deployment's reviewed configuration):
+
+```js
+import { Pool } from 'pg';
+import { createDeploymentDependencies } from './deployment-dependencies.js';
+
+export function createPool(options) {
+  return new Pool({
+    connectionString: options.connectionString,
+    max: options.max,
+    connectionTimeoutMillis: options.connectionTimeoutMillis,
+    application_name: options.application_name,
+    ssl: { rejectUnauthorized: true, ca: process.env.ZION_POSTGRES_CA },
+  });
+}
+
+export async function createOfficialNodeDependencies({ env, pool }) {
+  return createDeploymentDependencies({ env, pool });
+}
+```
+
+Set `ZION_POSTGRES_URL` (or `DATABASE_URL`) and optionally
+`ZION_POSTGRES_POOL_MAX` (2–100; default 10). The minimum is two because the
+revocation listener holds one dedicated pool connection for `LISTEN`; a pool of
+one would starve admission queries. Size the pool above two for concurrent
+admission-fenced handlers. Apply the PostgreSQL admission migration as a
+separate, reviewed release operation before starting the node.
+
+## Security and lifecycle requirements
+
+- Keep the adapter, manifest, signing trust anchor, identity private key,
+  TLS private key, genesis, trust lists, and database credentials outside the
+  repository and inaccessible to the node's untrusted workload.
+- Public binding requires mutual TLS material and an explicit peer allowlist.
+  A real production adapter must also provision and rotate certificates and
+  peer trust safely.
+- The admission controller and revocation listener are composed by the
+  launcher. The listener starts as part of transport startup and stops as part
+  of transport shutdown.
+- The PostgreSQL pool is closed only after bootstrap confirms successful
+  shutdown. If containment/cleanup fails, the pool is deliberately retained
+  so live handlers are not disconnected from their backing database.
+- SIGINT/SIGTERM request graceful shutdown. An incomplete shutdown leaves a
+  non-zero process exit status and emits a generic diagnostic.
+- This launcher is an integration seam, not evidence of a production
+  deployment. No real adapter, credentials, TLS issuance, storage backend,
+  network topology, or database migration is supplied by this repository.
