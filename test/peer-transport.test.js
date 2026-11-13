@@ -685,6 +685,7 @@ test('official transport admits an unknown peer only when its signed handshake c
 });
 
 test('handler deadline covers authorization-fence wait and prevents late dispatch', async t => {
+  const { PeerAdmissionController } = await import('../src/peer-admission-controller.js');
   const { createPeerIntroductionVoucher } = await import('../src/peer-introduction-vouchers.js');
   const genesis = testGenesis('Zion authorization-fence deadline');
   const issuerA = createNodeIdentity(), issuerB = createNodeIdentity();
