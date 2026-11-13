@@ -17,6 +17,7 @@ CREATE TABLE project_storage_blobs (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (project_id, ciphertext_sha256),
+  UNIQUE (blob_id, project_id),
   CHECK ((verification_status = 'verified') = (verified_at IS NOT NULL))
 );
 
@@ -28,14 +29,15 @@ CREATE TABLE project_storage_objects (
   object_id uuid PRIMARY KEY,
   project_id uuid NOT NULL
     REFERENCES zion_projects(project_id) ON DELETE RESTRICT,
-  blob_id uuid NOT NULL
-    REFERENCES project_storage_blobs(blob_id) ON DELETE RESTRICT,
+  blob_id uuid NOT NULL,
   owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 128),
   object_state text NOT NULL DEFAULT 'active'
     CHECK (object_state IN ('pending', 'active', 'deleted', 'quarantined')),
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (project_id, object_id)
+  UNIQUE (project_id, object_id),
+  FOREIGN KEY (blob_id, project_id)
+    REFERENCES project_storage_blobs(blob_id, project_id) ON DELETE RESTRICT
 );
 
 CREATE INDEX project_storage_objects_by_project_state
