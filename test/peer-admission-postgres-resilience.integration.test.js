@@ -154,3 +154,58 @@ test('PostgreSQL authorization read fails closed when the configured endpoint is
     await pool.end();
   }
 });
+
+test('a revocation notification missed during listener downtime cannot authorize a later frame', {
+  skip: !enabled && 'set ZION_POSTGRES_TEST_URL to run real PostgreSQL integration tests',
+}, async () => {
+  const { PostgresPeerRevocationListener } = await import('../src/peer-admission-postgres-listener.js');
+  const isolated = await createIsolatedPool('zion_listener_gap_authorization_test', {
+    max: 3,
+    connectionTimeoutMillis: 1000,
+    idleTimeoutMillis: 1000,
+  });
+  const { pool } = isolated;
+  const store = new PostgresPeerAdmissionStore({ pool });
+  const received = [];
+  const listener = new PostgresPeerRevocationListener({
+    pool,
+    onRevocation: nodeId => received.push(nodeId),
+    minReconnectMs: 10,
+    maxReconnectMs: 20,
+  });
+  const revokedNodeId = 'b'.repeat(64);
+
+  try {
+    await applyMigration(pool);
+    await listener.start();
+    await listener.stop();
+
+    // The durable transition commits while LISTEN is offline, so its NOTIFY
+    // is intentionally missed by this process.
+    const revoked = await store.revokeAdmission(revokedNodeId);
+    assert.deepEqual(
+      { ok: revoked.ok, changed: revoked.changed, status: revoked.status, tombstone: revoked.tombstone },
+      { ok: true, changed: true, status: 'revoked', tombstone: true },
+    );
+
+    await listener.start();
+    assert.deepEqual(received, [], 'LISTEN must not pretend to replay notifications sent during downtime');
+
+    // A subsequent application-frame fence must consult PostgreSQL directly;
+    // notification delivery is never the authorization boundary.
+    const dispatch = await store.withPeerAuthorizationFence(
+      revokedNodeId,
+      { allowUnadmitted: true },
+      async () => 'must-not-dispatch',
+    );
+    assert.deepEqual(dispatch, { ok: true, admitted: false, status: 'revoked' });
+    assert.deepEqual(await store.getAdmissionStatus(revokedNodeId), {
+      ok: true,
+      subjectNodeId: revokedNodeId,
+      status: 'revoked',
+    });
+  } finally {
+    await listener.stop();
+    await isolated.cleanup();
+  }
+});
