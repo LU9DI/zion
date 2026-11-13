@@ -6,6 +6,7 @@ import {
   createProjectGovernanceState,
   createGovernanceProposal,
   approveGovernanceProposal,
+  proveGovernanceKeyRotation,
   applyGovernanceCertificate,
   verifyProjectGovernanceState,
 } from '../src/project-governance.js';
@@ -24,8 +25,12 @@ function setup(threshold = 2) {
 function approvals(identities, proposal) {
   return identities.map(identity => approveGovernanceProposal(identity, proposal, { now: NOW }));
 }
-function commit(state, proposal, signers) {
-  return applyGovernanceCertificate(state, { proposal, approvals: approvals(signers, proposal) }, { now: NOW });
+function commit(state, proposal, signers, replacementIdentity) {
+  const certificate = { proposal, approvals: approvals(signers, proposal) };
+  if (proposal.action === 'ROTATE_GOVERNOR_KEY') {
+    certificate.newIdentityProof = proveGovernanceKeyRotation(replacementIdentity, proposal, { now: NOW });
+  }
+  return applyGovernanceCertificate(state, certificate, { now: NOW });
 }
 
 function canonical(value) {
@@ -89,7 +94,7 @@ test('project governance rotates a key to its new cryptographic node identity', 
     nodeId: replacement.nodeId,
     publicKeyPem: replacement.publicKeyPem,
   });
-  const next = commit(state, proposal, identities.slice(0, 2));
+  const next = commit(state, proposal, identities.slice(0, 2), replacement);
   assert.equal(Object.hasOwn(next.governors, identities[0].nodeId), false);
   assert.equal(next.governors[replacement.nodeId], replacement.publicKeyPem);
   assert.equal(Object.keys(next.governors).length, 3);
@@ -172,4 +177,45 @@ test('project governance refuses to advance into the terminal unsafe epoch', () 
   };
   const signed = approvals(identities.slice(0, 2), proposal);
   assert.throws(() => applyGovernanceCertificate(terminal, { proposal, approvals: signed }, { now: NOW }), /epoch space exhausted/);
+});
+
+test('project governance rotation requires the outgoing governor signature and replacement proof of possession', () => {
+  const { identities, state } = setup();
+  const replacement = createNodeIdentity();
+  const proposal = createGovernanceProposal(state, {
+    action: 'ROTATE_GOVERNOR_KEY',
+    oldNodeId: identities[0].nodeId,
+    nodeId: replacement.nodeId,
+    publicKeyPem: replacement.publicKeyPem,
+  });
+  const newIdentityProof = proveGovernanceKeyRotation(replacement, proposal, { now: NOW });
+  assert.throws(() => applyGovernanceCertificate(state, {
+    proposal, approvals: approvals(identities.slice(1, 3), proposal), newIdentityProof,
+  }, { now: NOW }), /outgoing governor/);
+  assert.throws(() => applyGovernanceCertificate(state, {
+    proposal, approvals: approvals(identities.slice(0, 2), proposal),
+  }, { now: NOW }), /newIdentityProof|missing or unknown/);
+  const wrongIdentity = createNodeIdentity();
+  const wrongProof = proveGovernanceKeyRotation(wrongIdentity, {
+    ...proposal, nodeId: wrongIdentity.nodeId, publicKeyPem: wrongIdentity.publicKeyPem,
+  }, { now: NOW });
+  assert.throws(() => applyGovernanceCertificate(state, {
+    proposal, approvals: approvals(identities.slice(0, 2), proposal), newIdentityProof: wrongProof,
+  }, { now: NOW }), /Invalid replacement identity proof|does not bind/);
+});
+
+test('replacement identity cannot prove a different public key or a non-rotation proposal', () => {
+  const { identities, state } = setup();
+  const replacement = createNodeIdentity();
+  const proposal = createGovernanceProposal(state, {
+    action: 'ROTATE_GOVERNOR_KEY',
+    oldNodeId: identities[0].nodeId,
+    nodeId: replacement.nodeId,
+    publicKeyPem: replacement.publicKeyPem,
+  });
+  assert.throws(() => proveGovernanceKeyRotation(replacement, {
+    ...proposal, publicKeyPem: identities[3].publicKeyPem,
+  }, { now: NOW }), /does not match/);
+  const ordinary = createGovernanceProposal(state, { action: 'SET_THRESHOLD', threshold: 3 });
+  assert.throws(() => proveGovernanceKeyRotation(replacement, ordinary, { now: NOW }), /Invalid/);
 });
