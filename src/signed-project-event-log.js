@@ -9,6 +9,35 @@ const PROJECT_ID = /^[a-f0-9]{64}$/;
 const EVENT_TYPE = /^[A-Z][A-Z0-9_]{0,63}$/;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
+function acquireLock(lockPath) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const token = randomUUID();
+    try {
+      const fd = openSync(lockPath, 'wx', 0o600);
+      const bytes = Buffer.from(JSON.stringify({ pid: process.pid, token }) + '\\n');
+      writeSync(fd, bytes);
+      fsyncSync(fd);
+      return { fd, token };
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+      let lock;
+      try { lock = JSON.parse(readFileSync(lockPath, 'utf8')); }
+      catch { throw Object.assign(new Error('Event log lock is unreadable; manual recovery is required'), { code: 'ZION_EVENT_LOG_LOCKED' }); }
+      if (!Number.isSafeInteger(lock?.pid) || lock.pid < 1 || typeof lock.token !== 'string') {
+        throw Object.assign(new Error('Event log lock is invalid; manual recovery is required'), { code: 'ZION_EVENT_LOG_LOCKED' });
+      }
+      try { process.kill(lock.pid, 0); }
+      catch (probeError) {
+        if (probeError?.code !== 'ESRCH') throw Object.assign(new Error('Event log lock owner cannot be verified'), { code: 'ZION_EVENT_LOG_LOCKED' });
+        try { unlinkSync(lockPath); } catch (unlinkError) {
+          if (unlinkError?.code !== 'ENOENT') throw unlinkError;
+        }
+      }
+    }
+  }
+  throw Object.assign(new Error('Event log is already open by another process'), { code: 'ZION_EVENT_LOG_LOCKED' });
+}
+
 function validatePayload(payload) {
   return payload !== null && typeof payload === 'object' && !Array.isArray(payload) &&
     (Object.getPrototypeOf(payload) === Object.prototype || Object.getPrototypeOf(payload) === null);
@@ -62,12 +91,9 @@ export class SignedProjectEventLog {
     this.closed = false;
     this.lockPath = `${this.path}.lock`;
     mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
-    try {
-      this.lockFd = openSync(this.lockPath, 'wx', 0o600);
-    } catch (error) {
-      if (error?.code === 'EEXIST') throw Object.assign(new Error('Event log is already open by another process'), { code: 'ZION_EVENT_LOG_LOCKED' });
-      throw error;
-    }
+    const lock = acquireLock(this.lockPath);
+    this.lockFd = lock.fd;
+    this.lockToken = lock.token;
     try { this.#load(); }
     catch (error) { this.close(); throw error; }
   }
@@ -156,6 +182,9 @@ export class SignedProjectEventLog {
     if (this.closed) return;
     this.closed = true;
     if (this.lockFd !== undefined) { try { closeSync(this.lockFd); } finally { this.lockFd = undefined; } }
-    try { unlinkSync(this.lockPath); } catch (error) { if (error?.code !== 'ENOENT') throw error; }
+    try {
+      const lock = JSON.parse(readFileSync(this.lockPath, 'utf8'));
+      if (lock?.token === this.lockToken && lock?.pid === process.pid) unlinkSync(this.lockPath);
+    } catch (error) { if (error?.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error; }
   }
 }
