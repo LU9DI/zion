@@ -19,7 +19,11 @@ function exactKeys(value, keys, label) {
 }
 
 function decodeBase64(value, label, maxBytes) {
-  if (typeof value !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
+  if (typeof value !== 'string') throw new TypeError(`${label} must be canonical base64`);
+  // Reject oversized encoded input before Buffer.from allocates its decoded copy.
+  const maxEncodedLength = 4 * Math.ceil(maxBytes / 3);
+  if (value.length > maxEncodedLength) throw new RangeError(`${label} exceeds its encoded size limit`);
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
     throw new TypeError(`${label} must be canonical base64`);
   }
   const bytes = Buffer.from(value, 'base64');
