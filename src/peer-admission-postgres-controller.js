@@ -16,6 +16,7 @@ export class PostgresPeerAdmissionController {
     if (!store || typeof store.commitAdmission !== 'function' ||
       typeof store.getAdmissionStatus !== 'function' ||
       typeof store.withAdmissionFence !== 'function' ||
+      typeof store.withPeerAuthorizationFence !== 'function' ||
       typeof store.revokeAdmission !== 'function' ||
       !Array.isArray(trustedIssuerNodeIds) ||
       trustedIssuerNodeIds.some(id => !ID.test(id)) ||
@@ -47,6 +48,19 @@ export class PostgresPeerAdmissionController {
       });
     }
     return result.status === 'active';
+  }
+
+  async isPeerAuthorized(subjectNodeId, { allowUnadmitted = false } = {}) {
+    if (!ID.test(subjectNodeId ?? '') || typeof allowUnadmitted !== 'boolean') {
+      return { ok: false, authorized: false, reason: 'invalid-input' };
+    }
+    const result = await this.store.getAdmissionStatus(subjectNodeId);
+    if (!result?.ok) {
+      return { ok: false, authorized: false, reason: 'admission-state-unavailable' };
+    }
+    const authorized = result.status === 'active' ||
+      (result.status === null && allowUnadmitted);
+    return { ok: true, authorized, status: result.status };
   }
 
   async admit({ subjectNodeId, vouchers } = {}) {
@@ -95,6 +109,10 @@ export class PostgresPeerAdmissionController {
 
   withAdmissionFence(subjectNodeId, work) {
     return this.store.withAdmissionFence(subjectNodeId, work);
+  }
+
+  withPeerAuthorizationFence(subjectNodeId, options, work) {
+    return this.store.withPeerAuthorizationFence(subjectNodeId, options, work);
   }
 
   revoke(subjectNodeId) {

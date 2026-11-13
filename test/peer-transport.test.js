@@ -594,6 +594,7 @@ test('official transport admits an unknown peer only when its signed handshake c
     admit: input => admissionController.admit(input),
     isAdmitted: async nodeId => admissionController.isAdmitted(nodeId),
     withAdmissionFence: (nodeId, work) => admissionController.withAdmissionFence(nodeId, work),
+    withPeerAuthorizationFence: (nodeId, _options, work) => admissionController.withAdmissionFence(nodeId, work),
   };
   const server = new PeerTransport({
     identity: seed, host: '127.0.0.1', networkMode: 'official', protocolGenesis: genesis, integrityGuard: guard,
@@ -1185,14 +1186,19 @@ test('destroyed socket stops frame processing after an asynchronous integrity ch
   assert.equal(handled, 0, 'a frame must not be processed after its socket is destroyed during an awaited health check');
 });
 
-test('authenticated application frames do not query the admission backend again', async t => {
+test('authenticated application frames use the durable authorization fence', async t => {
   const genesis = testGenesis();
   const serverIdentity = createNodeIdentity(); const clientIdentity = createNodeIdentity();
-  let admissionReads = 0; let handled = 0;
+  let admissionReads = 0; let authorizationFences = 0; let handled = 0;
   const integrityGuard = { async checkHealthy() {}, assertHealthy() {} };
   const admissionController = {
     async isAdmitted() { admissionReads += 1; return true; },
     async admit() { return { ok: true }; },
+    async withPeerAuthorizationFence(_nodeId, { allowUnadmitted = false } = {}, work) {
+      authorizationFences++;
+      assert.equal(allowUnadmitted, true, 'the trusted bootstrap identity may have no admission row');
+      return { ok: true, admitted: true, status: 'trusted-allowlist', value: await work() };
+    },
   };
   const server = new PeerTransport({
     identity: serverIdentity, networkMode: 'official', protocolGenesis: genesis, integrityGuard,
@@ -1204,10 +1210,15 @@ test('authenticated application frames do not query the admission backend again'
   const socket = await client.connect('127.0.0.1', addr.port); t.after(() => { socket.destroy(); client.close(); });
   await waitFor(() => socket.__zionSession?.authenticated && [...server.connections][0]?.__zionSession?.authenticated);
   const readsAfterHandshake = admissionReads;
-  client.send(socket, { type: 'PING', nonce: 'no-admission-read' });
+  const fencesAfterHandshake = authorizationFences;
+  assert.equal(fencesAfterHandshake, 0, 'the handshake does not use the application-frame fence');
+  client.send(socket, { type: 'PING', nonce: 'durable-authorization-fence' });
   await waitFor(() => handled === 1);
   assert.ok(readsAfterHandshake >= 1, 'the handshake checks admission state');
-  assert.equal(admissionReads, readsAfterHandshake, 'application traffic must not query admission storage');
+  assert.equal(admissionReads, readsAfterHandshake,
+    'application authorization uses the transactional fence instead of another status read');
+  assert.equal(authorizationFences, fencesAfterHandshake + 2,
+    'each authenticated application frame is preflighted and fenced across dispatch');
 });
 
 
@@ -1669,6 +1680,10 @@ test('admitted sessions revalidate shared status before dispatching application 
       if (revoked) return { ok: true, admitted: false, status: 'revoked' };
       return { ok: true, admitted: true, status: 'active', value: await work() };
     },
+    async withPeerAuthorizationFence(_nodeId, { allowUnadmitted = false } = {}, work) {
+      if (revoked) return { ok: true, admitted: false, status: 'revoked' };
+      return { ok: true, admitted: true, status: allowUnadmitted ? 'trusted-allowlist' : 'active', value: await work() };
+    },
     async admit() { return { ok: true }; },
     async revoke() { revoked = true; return { ok: true, changed: true, status: 'revoked' }; },
   };
@@ -1698,6 +1713,71 @@ test('admitted sessions revalidate shared status before dispatching application 
   assert.equal(delivered, 0, 'revoked peer frames must never reach onMessage');
 });
 
+
+test('trusted allowlist sessions recheck durable revocation before every application dispatch', async t => {
+  const genesis = testGenesis('Zion trusted allowlist durable authorization fence');
+  const seed = createNodeIdentity();
+  const trustedPeer = createNodeIdentity();
+  const guard = { status: { quarantined: false }, async checkHealthy() {}, assertHealthy() {}, addQuarantineListener: () => () => {} };
+  let durableStatus = null;
+  const fenceCalls = [];
+  let delivered = 0;
+  const replayGuard = {
+    accepted: 0,
+    has() { return false; },
+    accept() { this.accepted++; return true; },
+  };
+  const admissionController = {
+    async isAdmitted() { return durableStatus === 'active'; },
+    async withPeerAuthorizationFence(nodeId, { allowUnadmitted = false } = {}, work) {
+      fenceCalls.push({ nodeId, allowUnadmitted });
+      if (durableStatus === 'active' || (durableStatus === null && allowUnadmitted)) {
+        return { ok: true, admitted: true, status: durableStatus ?? 'trusted-allowlist', value: await work() };
+      }
+      return { ok: true, admitted: false, status: durableStatus };
+    },
+    async admit() { return { ok: true }; },
+    async revoke() { durableStatus = 'revoked'; return { ok: true, changed: true, status: 'revoked' }; },
+  };
+  const server = new PeerTransport({
+    identity: seed, host: '127.0.0.1', networkMode: 'official',
+    protocolGenesis: genesis, integrityGuard: guard,
+    trustedPeerIds: [seed.nodeId, trustedPeer.nodeId], admissionController, replayGuard,
+    onMessage: async () => { delivered++; },
+  });
+  const address = await server.listen();
+  t.after(() => server.close());
+  const client = new PeerTransport({
+    identity: trustedPeer, host: '127.0.0.1', networkMode: 'official',
+    protocolGenesis: genesis, integrityGuard: guard, trustedPeerIds: [seed.nodeId],
+  });
+  const socket = await client.connect('127.0.0.1', address.port);
+  t.after(() => { socket.destroy(); client.close(); });
+  await waitFor(() => [...server.connections].some(peer =>
+    peer.__zionSession?.peerNodeId === trustedPeer.nodeId && peer.__zionSession?.authenticated));
+  const serverSocket = [...server.connections].find(peer =>
+    peer.__zionSession?.peerNodeId === trustedPeer.nodeId && peer.__zionSession?.authenticated);
+  assert.ok(serverSocket);
+  assert.equal(serverSocket.__zionSession.trustedByAllowlist, true);
+  const acceptedAfterHandshake = replayGuard.accepted;
+  const fencesAfterHandshake = fenceCalls.length;
+  assert.equal(fencesAfterHandshake, 0, 'the trusted handshake remains independent of application-frame fencing');
+
+  client.send(socket, { type: 'PING', nonce: 'first-trusted-frame' });
+  await waitFor(() => delivered === 1);
+  assert.deepEqual(fenceCalls.at(-1), { nodeId: trustedPeer.nodeId, allowUnadmitted: true });
+  assert.equal(replayGuard.accepted, acceptedAfterHandshake + 1);
+  assert.equal(fenceCalls.length, fencesAfterHandshake + 2, 'the first frame is preflighted and then fenced across dispatch');
+
+  durableStatus = 'revoked'; // Simulate a durable transition while LISTEN is disconnected.
+  client.send(socket, { type: 'PING', nonce: 'second-trusted-frame' });
+  await waitFor(() => serverSocket.destroyed, 1500,
+    'a trusted allowlist session must observe durable revocation without a notification');
+  assert.equal(delivered, 1, 'the revoked frame must not reach the application handler');
+  assert.equal(fenceCalls.length, fencesAfterHandshake + 3, 'the revoked frame is denied during preflight and never reaches dispatch fencing');
+  assert.equal(replayGuard.accepted, acceptedAfterHandshake + 1,
+    'a revoked peer must be rejected before consuming replay-cache capacity');
+});
 
 test('transport applies a cross-process revocation notification to active sessions', async t => {
   const genesis = testGenesis('Zion notification-driven peer revocation');

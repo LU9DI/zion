@@ -402,19 +402,41 @@ export class PeerTransport {
     if (socket.__zionSession) socket.__zionSession.peerNodeId = checked.nodeId;
     if (this.revokedPeerIds.has(checked.nodeId)) { socket.destroy(); return; }
     const admissionEpoch = this.peerAdmissionEpochs.get(checked.nodeId) ?? 0;
-    // A process-local socket may outlive a revocation performed by another instance.
-    // Re-check the shared authoritative store before accepting every application frame.
-    if (socket.__zionSession?.authenticated && socket.__zionSession.admissionRequired) {
-      let stillAdmitted;
-      try { stillAdmitted = await this.admissionController.isAdmitted(checked.nodeId); }
-      catch { socket.destroy(); return; }
-      if (!stillAdmitted || socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
+    const trustedByAllowlist = !this.trustedPeerIds || this.trustedPeerIds.has(checked.nodeId);
+    // Reject a durably revoked peer before it can consume replay-cache capacity.
+    // The later fence still encloses dispatch and closes the preflight/dispatch race.
+    if (socket.__zionSession?.authenticated && this.admissionController) {
+      let authorized;
+      try {
+        const preflight = typeof this.admissionController.isPeerAuthorized === 'function'
+          ? await this.admissionController.isPeerAuthorized(
+            checked.nodeId,
+            { allowUnadmitted: trustedByAllowlist },
+          )
+          : typeof this.admissionController.withPeerAuthorizationFence === 'function'
+            ? await this.admissionController.withPeerAuthorizationFence(
+              checked.nodeId,
+              { allowUnadmitted: trustedByAllowlist },
+              async () => true,
+            )
+            : {
+              ok: true,
+              admitted: await this.admissionController.isAdmitted(checked.nodeId) === true,
+              value: true,
+            };
+        authorized = preflight?.ok === true &&
+          (preflight.authorized === true ||
+            (preflight.admitted === true && preflight.value === true));
+      } catch {
+        socket.destroy();
+        return;
+      }
+      if (!authorized || socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
           (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) {
         socket.destroy();
         return;
       }
     }
-    const trustedByAllowlist = !this.trustedPeerIds || this.trustedPeerIds.has(checked.nodeId);
     if (!trustedByAllowlist && !this.admissionController) { socket.destroy(); return; }
     // Reject an already-seen envelope before the identity tier is charged. Replayed frames
     // are signed by a third party, so charging them would let an attacker replay one captured
@@ -539,10 +561,18 @@ export class PeerTransport {
       if (payload?.type === 'ZION_HANDSHAKE' && payload.networkId === this.networkId &&
           payload.channelBinding === this.#channelBinding(socket) && payload.protocolMajor === this.genesis.protocolMajor && typeof payload.nonce === 'string' && /^[a-f0-9]{64}$/.test(payload.nonce) &&
           payload.nonce !== session.localNonce && (!session.remoteNonce || session.remoteNonce === payload.nonce)) {
-        // Admission state is only needed for a new handshake. Avoid a remote/transactional
-        // store read for every authenticated application frame from an already connected peer.
-        const previouslyAdmitted = this.admissionController ?
-          await this.admissionController.isAdmitted(checked.nodeId) === true : false;
+        // Admission state is checked before completing an invited handshake.
+        // Trusted bootstrap identities retain their handshake exemption; every
+        // authenticated application frame is still preflighted and dispatch-fenced.
+        let previouslyAdmitted = false;
+        try {
+          previouslyAdmitted = this.admissionController
+            ? await this.admissionController.isAdmitted(checked.nodeId) === true
+            : false;
+        } catch {
+          socket.destroy();
+          return;
+        }
         if (socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
             (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) { socket.destroy(); return; }
         if (!trustedByAllowlist && !previouslyAdmitted) {
@@ -559,7 +589,8 @@ export class PeerTransport {
         }
         // Persist the authorization mode on the session so subsequent application
         // frames cannot rely on a stale process-local admission cache.
-        session.admissionRequired = !trustedByAllowlist && Boolean(this.admissionController);
+        session.trustedByAllowlist = trustedByAllowlist;
+        session.admissionRequired = Boolean(this.admissionController);
         session.remoteNonce = payload.nonce;
         this.#sendHandshake(socket, { type: 'ZION_HANDSHAKE_ACK', networkId: this.networkId, protocolMajor: this.genesis.protocolMajor, nonce: session.localNonce, echo: session.remoteNonce });
         return;
@@ -567,6 +598,8 @@ export class PeerTransport {
       if (payload?.type === 'ZION_HANDSHAKE_ACK' && payload.networkId === this.networkId &&
           payload.channelBinding === this.#channelBinding(socket) && payload.protocolMajor === this.genesis.protocolMajor && payload.echo === session.localNonce &&
           typeof payload.nonce === 'string' && payload.nonce === session.remoteNonce) {
+        session.trustedByAllowlist = trustedByAllowlist;
+        session.admissionRequired = Boolean(this.admissionController);
         session.authenticated = true;
         return;
       }
@@ -588,21 +621,25 @@ export class PeerTransport {
         Object.freeze({ nodeId: checked.nodeId, payload: checked.payload, envelope: message }), socket,
       );
       if (socket.__zionSession?.admissionRequired) {
-        if (typeof this.admissionController?.withAdmissionFence !== 'function') {
+        if (typeof this.admissionController?.withPeerAuthorizationFence !== 'function') {
           socket.destroy();
           return;
         }
-        const fenced = await this.admissionController.withAdmissionFence(checked.nodeId, async () => {
-          // The PostgreSQL shared advisory lock is held across this callback.
-          // Revocation takes the exclusive lock, so it cannot commit between
-          // this final local fence check and completion of application dispatch.
-          if (socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
-              (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) {
-            return { dispatched: false };
-          }
-          await dispatch();
-          return { dispatched: true };
-        });
+        const fenced = await this.admissionController.withPeerAuthorizationFence(
+          checked.nodeId,
+          { allowUnadmitted: socket.__zionSession.trustedByAllowlist === true },
+          async () => {
+            // The PostgreSQL shared advisory lock is held across this callback.
+            // Revocation/release takes the exclusive lock, so it cannot commit
+            // between this durable authorization check and application dispatch.
+            if (socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
+                (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) {
+              return { dispatched: false };
+            }
+            await dispatch();
+            return { dispatched: true };
+          },
+        );
         if (!fenced?.ok || !fenced.admitted || !fenced.value?.dispatched) {
           socket.destroy();
           return;

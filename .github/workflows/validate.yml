@@ -71,3 +71,29 @@ jobs:
         env:
           ZION_RUST_STORAGE_BIN: target/release/rea-storage-cli
         run: node --test test/rust-storage-integration.test.js
+
+  clamav-integration:
+    name: Real ClamAV malware-screening integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install ClamAV engine and signature updater
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y clamav clamav-freshclam
+      - name: Update malware signatures
+        run: |
+          sudo systemctl stop clamav-freshclam || true
+          sudo freshclam --stdout --verbose
+      - name: Verify engine and signature database
+        run: |
+          clamscan --version
+          test -s /var/lib/clamav/daily.cvd -o -s /var/lib/clamav/daily.cld
+      - name: Run real-engine EICAR and benign-file integration tests
+        run: node --test test/clamav-integration.test.js

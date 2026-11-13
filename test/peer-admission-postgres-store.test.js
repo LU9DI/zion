@@ -39,8 +39,15 @@ function fakePool({ failInvitationInsert = false, retryOnce = false, failCommit 
             return { rows: [{ max_active_peers: 100, max_admissions_per_issuer: 5,
               min_storage_headroom_ratio: 0.1, policy_version: 7 }] };
           }
+          if (sql.startsWith('SELECT policy_version FROM peer_admission_policy')) {
+            return { rows: [{ policy_version: 7 }] };
+          }
           if (sql.startsWith('SELECT active_reservations')) return { rows: [{ active_reservations: 0 }] };
           if (sql.startsWith('SELECT status FROM peer_admissions')) return { rows: currentAdmissionStatus ? [{ status: currentAdmissionStatus }] : [] };
+          if (sql.startsWith('INSERT INTO peer_admissions') && params[1] === 'revoked') {
+            currentAdmissionStatus = 'revoked';
+            return { rows: [] };
+          }
           if (sql.includes(`SET status = 'revoked'`)) { currentAdmissionStatus = 'revoked'; return { rows: [] }; }
           if (sql.includes('count(*)::integer')) return { rows: [{ count: 0 }] };
           if (sql.startsWith('INSERT INTO consumed_peer_invitations') && failInvitationInsert) {
@@ -190,6 +197,52 @@ test('shared admission fence holds the advisory lock through dispatch and reject
   const denied = await revokedStore.withAdmissionFence(id('b'), async () => { dispatched++; });
   assert.deepEqual(denied, { ok: true, admitted: false, status: 'revoked' });
   assert.equal(dispatched, 1);
+});
+
+test('trusted allowlist authorization permits only missing rows and remains fenced by durable revocation', async () => {
+  let dispatched = 0;
+  const trustedPool = fakePool({ admissionStatus: null });
+  const trustedStore = new PostgresPeerAdmissionStore({ pool: trustedPool });
+  const trusted = await trustedStore.withPeerAuthorizationFence(id('a'), { allowUnadmitted: true }, async () => {
+    dispatched++;
+    return 'trusted-frame';
+  });
+  assert.deepEqual(trusted, {
+    ok: true, admitted: true, status: 'trusted-allowlist', value: 'trusted-frame',
+  });
+  assert.equal(dispatched, 1);
+  const sql = trustedPool.calls.map(x => x.sql);
+  const shared = sql.indexOf('SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))');
+  const statusRead = sql.findIndex(x => x.startsWith('SELECT status FROM peer_admissions'));
+  assert.ok(shared >= 0 && shared < statusRead);
+  assert.ok(sql.includes('COMMIT'));
+
+  for (const status of [null, 'revoked', 'released']) {
+    const pool = fakePool({ admissionStatus: status });
+    const store = new PostgresPeerAdmissionStore({ pool });
+    const denied = await store.withPeerAuthorizationFence(id('b'), { allowUnadmitted: false }, async () => {
+      dispatched++;
+    });
+    assert.deepEqual(denied, { ok: true, admitted: false, status });
+  }
+  for (const status of ['revoked', 'released']) {
+    const pool = fakePool({ admissionStatus: status });
+    const store = new PostgresPeerAdmissionStore({ pool });
+    const denied = await store.withPeerAuthorizationFence(id('c'), { allowUnadmitted: true }, async () => {
+      dispatched++;
+    });
+    assert.deepEqual(denied, { ok: true, admitted: false, status },
+      'a durable inactive row overrides the trusted allowlist');
+  }
+  assert.equal(dispatched, 1);
+
+  const unavailable = new PostgresPeerAdmissionStore({
+    pool: { async connect() { throw new Error('database unavailable'); } },
+  });
+  assert.deepEqual(await unavailable.withPeerAuthorizationFence(id('d'), { allowUnadmitted: true }, async () => {
+    dispatched++;
+  }), { ok: false, reason: 'admission-state-unavailable' });
+  assert.equal(dispatched, 1, 'database failure must fail closed before dispatch');
 });
 
 test('revocation acquires the exclusive advisory fence before changing durable admission state', async () => {
