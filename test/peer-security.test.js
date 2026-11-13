@@ -200,3 +200,67 @@ test('rate limiter fails closed on clock rollback without granting duplicate ref
   now = 2000;
   assert.equal(limiter.allow('peer'), true, 'tokens refill after genuinely advancing beyond the prior timestamp');
 });
+
+import {
+  createEncryptedNodeIdentityRecord,
+  loadEncryptedNodeIdentityRecord,
+} from '../src/node-identity-record.js';
+
+function fakeIdentityKeystore() {
+  const wrappingKey = Buffer.alloc(32, 0x5a);
+  return {
+    async createOrGetWrappingKey({ keyId, purpose }) {
+      assert.match(keyId, /^zion-node-identity:/);
+      assert.equal(purpose, 'zion-node-identity-dek-v1');
+    },
+    async wrapKey({ plaintextKey }) {
+      const nonce = Buffer.alloc(12, 0x31);
+      const cipher = (await import('node:crypto')).createCipheriv('aes-256-gcm', wrappingKey, nonce);
+      return Buffer.concat([nonce, cipher.update(plaintextKey), cipher.final(), cipher.getAuthTag()]);
+    },
+    async unwrapKey({ wrappedKey }) {
+      const bytes = Buffer.from(wrappedKey);
+      const nonce = bytes.subarray(0, 12);
+      const tag = bytes.subarray(bytes.length - 16);
+      const decipher = (await import('node:crypto')).createDecipheriv('aes-256-gcm', wrappingKey, nonce);
+      decipher.setAuthTag(tag);
+      return Buffer.concat([decipher.update(bytes.subarray(12, -16)), decipher.final()]);
+    },
+  };
+}
+
+test('encrypted identity record restores the same Ed25519 identity through a local keystore', async () => {
+  const identity = createNodeIdentity();
+  const keystore = fakeIdentityKeystore();
+  const record = await createEncryptedNodeIdentityRecord(identity, keystore, {
+    keyId: 'zion-node-identity:test',
+    random: size => Buffer.alloc(size, size === 32 ? 0x42 : 0x24),
+  });
+  assert.equal(JSON.stringify(record).includes(identity.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString()), false);
+  const restored = await loadEncryptedNodeIdentityRecord(record, keystore);
+  assert.equal(restored.nodeId, identity.nodeId);
+  assert.equal(restored.publicKeyPem, identity.publicKeyPem);
+  const message = signPeerMessage(restored, { type: 'IDENTITY_RESTORE_TEST' }, { now: 1000, nonce: 'f'.repeat(32) });
+  assert.equal(verifyPeerMessage(message, { now: 1000 }).ok, true);
+});
+
+test('encrypted identity record fails closed on tampering, wrong keystore and malformed schema', async () => {
+  const identity = createNodeIdentity();
+  const keystore = fakeIdentityKeystore();
+  const record = await createEncryptedNodeIdentityRecord(identity, keystore, { keyId: 'zion-node-identity:test' });
+  await assert.rejects(() => loadEncryptedNodeIdentityRecord({ ...record, ciphertext: Buffer.from('tampered').toString('base64') }, keystore));
+  await assert.rejects(() => loadEncryptedNodeIdentityRecord({ ...record, nodeId: '0'.repeat(64) }, keystore));
+  await assert.rejects(() => loadEncryptedNodeIdentityRecord({ ...record, extra: true }, keystore), /schema/);
+  const wrong = fakeIdentityKeystore();
+  wrong.unwrapKey = async () => Buffer.alloc(32, 0x99);
+  await assert.rejects(() => loadEncryptedNodeIdentityRecord(record, wrong));
+});
+
+test('encrypted identity record rejects invalid adapters and oversized or malformed fields', async () => {
+  const identity = createNodeIdentity();
+  await assert.rejects(() => createEncryptedNodeIdentityRecord(identity, {}), /keystore/);
+  const keystore = fakeIdentityKeystore();
+  const record = await createEncryptedNodeIdentityRecord(identity, keystore, { keyId: 'zion-node-identity:test' });
+  await assert.rejects(() => loadEncryptedNodeIdentityRecord({ ...record, nonce: 'AA==' }, keystore), /lengths/);
+  await assert.rejects(() => loadEncryptedNodeIdentityRecord({ ...record, wrappedDek: '!' }, keystore), /base64/);
+});
