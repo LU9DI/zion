@@ -162,3 +162,24 @@ Before production activation, add integration tests for:
 
 Abuse controls for compute hours, build minutes, and deploy frequency are
 intentionally deferred until the final implementation stage, as requested.
+
+## 8. Durable storage-accounting schema (migration 0003)
+
+Migration `0003_project_storage_accounting.sql` adds the persistence structures
+needed for the next enforcement layer:
+- content-addressed ciphertext blobs, uniquely keyed per project by SHA-256;
+- logical objects referencing a blob, with a composite foreign key that prevents
+  cross-project blob attachment;
+- idempotent upload event history with declared and independently verified byte
+  counts, outcomes, and bounded rejection categories;
+- expiring concurrent-upload leases;
+- project/owner/node quota records for unique bytes, object count, upload rate,
+  concurrent transfers, churn, and archive expansion;
+- immutable usage-audit snapshots with evidence digests.
+
+The migration deliberately defaults quota records to `enabled = false`. The
+schema alone does not enforce admission, count bytes, inspect archive contents,
+or prevent uploads. Those operations require transactional repository methods,
+a trusted storage read-back verifier, authenticated API integration, and
+concurrency tests. Apply migration 0003 only after migration 0002 has been
+reviewed and explicitly approved for the target database.
