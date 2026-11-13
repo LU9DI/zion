@@ -79,3 +79,10 @@ Required next gate before a libp2p adapter:
 5. Design decentralized membership and bootstrap replacement in parallel: the current launcher still requires PostgreSQL and a static peer trust list. A secure Noise transport alone does not remove those dependencies.
 
 No key files, private key bytes, deployment secrets, or external adapter configuration were accessed.
+
+
+## Follow-up: Ed25519 import API spike
+
+A separate compatibility spike now records the supported `@libp2p/crypto` import path and the exact bidirectional signature, stable PeerId, malformed-key, and restart assertions required before integration: [LIBP2P_ED25519_IDENTITY_COMPATIBILITY_SPIKE.md](./LIBP2P_ED25519_IDENTITY_COMPATIBILITY_SPIKE.md).
+
+The API path is documented from the published `@libp2p/crypto@5.0.6` source, but no dependency has been added and no compatibility test has been run. This does not close the identity persistence or Phase A gates.
