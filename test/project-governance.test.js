@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { createNodeIdentity } from '../src/peer-security.js';
 import {
   createProjectGovernanceState,
@@ -25,6 +26,17 @@ function approvals(identities, proposal) {
 }
 function commit(state, proposal, signers) {
   return applyGovernanceCertificate(state, { proposal, approvals: approvals(signers, proposal) }, { now: NOW });
+}
+
+function canonical(value) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
+  if (typeof value === 'number') return JSON.stringify(value);
+  if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
+  return '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + canonical(value[key])).join(',') + '}';
+}
+function stateHash(state) {
+  const { stateHash: ignored, ...value } = state;
+  return createHash('sha256').update('ZION-PROJECT-GOVERNANCE-V1\\0').update(canonical(value)).digest('hex');
 }
 
 test('project governance adds a governor only after threshold approvals', () => {
@@ -136,4 +148,28 @@ test('project governance rejects expired approval signatures', () => {
   assert.throws(() => applyGovernanceCertificate(state, {
     proposal, approvals: signed,
   }, { now: NOW + 180000, maxClockSkewMs: 120000 }), /unauthorized|invalid/i);
+});
+
+
+test('project governance refuses to advance into the terminal unsafe epoch', () => {
+  const { identities, state } = setup();
+  const terminal = {
+    schemaVersion: 1,
+    projectId: state.projectId,
+    epoch: Number.MAX_SAFE_INTEGER - 1,
+    threshold: state.threshold,
+    governors: state.governors,
+  };
+  terminal.stateHash = stateHash(terminal);
+  assert.throws(() => createGovernanceProposal(terminal, { action: 'SET_THRESHOLD', threshold: 3 }), /epoch space exhausted/);
+  const proposal = {
+    schemaVersion: 1,
+    projectId: terminal.projectId,
+    epoch: Number.MAX_SAFE_INTEGER,
+    previousStateHash: terminal.stateHash,
+    action: 'SET_THRESHOLD',
+    threshold: 3,
+  };
+  const signed = approvals(identities.slice(0, 2), proposal);
+  assert.throws(() => applyGovernanceCertificate(terminal, { proposal, approvals: signed }, { now: NOW }), /epoch space exhausted/);
 });
