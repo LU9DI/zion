@@ -5,13 +5,17 @@ import { verifySignedProjectEventRecord } from './signed-project-event-log.js';
 
 function acquireLock(lockPath) {
   const token = randomUUID();
+  let fd;
   try {
-    const fd = openSync(lockPath, 'wx', 0o600);
+    fd = openSync(lockPath, 'wx', 0o600);
     const bytes = Buffer.from(JSON.stringify({ pid: process.pid, token }) + '\n');
     writeSync(fd, bytes);
     fsyncSync(fd);
     return { fd, token };
   } catch (error) {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* Preserve the original lock acquisition error. */ }
+    }
     if (error?.code === 'EEXIST') {
       throw Object.assign(new Error('Replica lock already exists; automatic stale-lock removal is disabled and explicit recovery is required'), {
         code: 'ZION_REPLICA_LOCKED',
