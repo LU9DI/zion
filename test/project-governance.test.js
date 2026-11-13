@@ -201,10 +201,10 @@ test('project governance rotation requires the outgoing governor signature and r
   }, { now: NOW });
   assert.throws(() => applyGovernanceCertificate(state, {
     proposal, approvals: approvals(identities.slice(0, 2), proposal), newIdentityProof: wrongProof,
-  }, { now: NOW }), /Invalid replacement identity proof|does not bind/);
+  }, { now: NOW }), /Invalid new governor proof|does not bind/);
 });
 
-test('replacement identity cannot prove a different public key or a non-rotation proposal', () => {
+test('new governor cannot prove a different public key or a non-governor proposal', () => {
   const { identities, state } = setup();
   const replacement = createNodeIdentity();
   const proposal = createGovernanceProposal(state, {
@@ -213,11 +213,11 @@ test('replacement identity cannot prove a different public key or a non-rotation
     nodeId: replacement.nodeId,
     publicKeyPem: replacement.publicKeyPem,
   });
-  assert.throws(() => proveGovernanceKeyRotation(replacement, {
+  assert.throws(() => proveGovernanceKeyPossession(replacement, {
     ...proposal, publicKeyPem: identities[3].publicKeyPem,
   }, { now: NOW }), /does not match/);
   const ordinary = createGovernanceProposal(state, { action: 'SET_THRESHOLD', threshold: 3 });
-  assert.throws(() => proveGovernanceKeyRotation(replacement, ordinary, { now: NOW }), /Invalid/);
+  assert.throws(() => proveGovernanceKeyPossession(replacement, ordinary, { now: NOW }), /Invalid/);
 });
 
 test('adding a governor requires proof of possession of the proposed private key', () => {
