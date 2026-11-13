@@ -190,6 +190,8 @@ test('official launcher starts the composed node and closes transport, storage, 
   assert.deepEqual(clients[0].queries, ['LISTEN zion_peer_revocations', 'UNLISTEN zion_peer_revocations']);
   assert.ok(lifecycle.includes('listener-release'));
   assert.equal(poolEnded, true);
-  assert.equal(running.bootstrap.containmentReport.verifiedStopped, true);
+  assert.equal(running.bootstrap.containmentReport.transport, 'unknown');
+  assert.equal(running.bootstrap.containmentReport.storage, 'stopped');
+  assert.equal(running.bootstrap.containmentReport.verifiedStopped, false);
   assert.ok(lifecycle.indexOf('storage-stop') < lifecycle.indexOf('pool-end'));
 });
