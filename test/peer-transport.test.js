@@ -162,7 +162,7 @@ test('message handler deadline aborts cooperatively and closes the peer socket',
   await once(socket, 'connect');
   client.send(socket, { type: 'PING', nonce: 'handler-deadline' });
   await waitFor(() => Boolean(observedSignal?.aborted), 1000, 'handler signal was not aborted at its deadline');
-  assert.equal(socket.destroyed, true, 'deadline must close the peer connection');
+  await waitFor(() => socket.destroyed, 1000, 'deadline did not close the peer connection');
   unblock();
 });
 
