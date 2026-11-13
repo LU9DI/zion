@@ -40,7 +40,7 @@ function verifyRecord(record, { now, maxClockSkewMs }) {
  */
 export class SignedProjectEventLog {
   constructor(path, { identity, maxBytes = MAX_BYTES_DEFAULT, maxRecords = MAX_RECORDS_DEFAULT,
-    now = () => Date.now(), maxClockSkewMs = 365 * 24 * 60 * 60 * 1000 } = {}) {
+    now = () => Date.now(), maxClockSkewMs = Number.MAX_SAFE_INTEGER } = {}) {
     if (typeof path !== 'string' || !path.trim() || !identity?.privateKey ||
         !/^[a-f0-9]{64}$/.test(identity.nodeId ?? '') || typeof identity.publicKeyPem !== 'string' ||
         !Number.isSafeInteger(maxBytes) || maxBytes < 1024 || maxBytes > 1024 * 1024 * 1024 ||
