@@ -264,16 +264,28 @@ export class OfficialNodeBootstrap {
       // Start inactivity automation only after integrity, storage, and transport are healthy.
       // The scheduler must use real host adapters; bootstrap only owns its lifecycle.
       if (this.inactivityScheduler) {
-        this.inactivityScheduler.start({ runImmediately: false });
         this.inactivitySchedulerStarted = true;
+        const schedulerStart = Promise.resolve().then(() => this.inactivityScheduler.start({ runImmediately: false }));
+        this.pendingAdapterStarts.add(schedulerStart);
+        try { await schedulerStart; }
+        finally { this.pendingAdapterStarts.delete(schedulerStart); }
+        this.#assertLifecycle(epoch);
       }
       if (this.idleParticipationScheduler) {
-        this.idleParticipationScheduler.start({ runImmediately: false });
         this.idleParticipationSchedulerStarted = true;
+        const schedulerStart = Promise.resolve().then(() => this.idleParticipationScheduler.start({ runImmediately: false }));
+        this.pendingAdapterStarts.add(schedulerStart);
+        try { await schedulerStart; }
+        finally { this.pendingAdapterStarts.delete(schedulerStart); }
+        this.#assertLifecycle(epoch);
       }
       if (this.notificationDeliveryWorker) {
-        this.notificationDeliveryWorker.start({ runImmediately: false });
         this.notificationDeliveryWorkerStarted = true;
+        const workerStart = Promise.resolve().then(() => this.notificationDeliveryWorker.start({ runImmediately: false }));
+        this.pendingAdapterStarts.add(workerStart);
+        try { await workerStart; }
+        finally { this.pendingAdapterStarts.delete(workerStart); }
+        this.#assertLifecycle(epoch);
       }
       this.started = true;
       return Object.freeze({ ok: true, address, integrity: this.integrityGuard.status,
