@@ -59,7 +59,7 @@ A key rotation creates a new identity and therefore normally a new Zion node ID.
 
 For project-governor rotation:
 - The proposal binds the project ID, next epoch, previous committed state hash, old node ID, and new node ID/public key.
-- The old identity signs the transition and the new identity signs proof of possession of the new private key.
+- The old identity signs the transition and the new identity signs proof of possession of the new private key. Adding a governor also requires the proposed new identity to prove possession; threshold approval alone cannot enroll an unproven key.
 - The project's existing governance threshold approves the exact proposal hash.
 - The transition becomes authoritative only after the distributed consensus layer commits it. The current governance state-machine helper alone does not establish canonical commitment.
 - Nodes reject old-key authority after observing the committed revocation/rotation epoch, while retaining audit evidence.
