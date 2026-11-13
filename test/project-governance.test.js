@@ -6,7 +6,7 @@ import {
   createProjectGovernanceState,
   createGovernanceProposal,
   approveGovernanceProposal,
-  proveGovernanceKeyRotation,
+  proveGovernanceKeyPossession,
   applyGovernanceCertificate,
   verifyProjectGovernanceState,
 } from '../src/project-governance.js';
@@ -27,8 +27,8 @@ function approvals(identities, proposal) {
 }
 function commit(state, proposal, signers, replacementIdentity) {
   const certificate = { proposal, approvals: approvals(signers, proposal) };
-  if (proposal.action === 'ROTATE_GOVERNOR_KEY') {
-    certificate.newIdentityProof = proveGovernanceKeyRotation(replacementIdentity, proposal, { now: NOW });
+  if (['ADD_GOVERNOR', 'ROTATE_GOVERNOR_KEY'].includes(proposal.action)) {
+    certificate.newIdentityProof = proveGovernanceKeyPossession(replacementIdentity, proposal, { now: NOW });
   }
   return applyGovernanceCertificate(state, certificate, { now: NOW });
 }
@@ -49,7 +49,7 @@ test('project governance adds a governor only after threshold approvals', () => 
   const proposal = createGovernanceProposal(state, {
     action: 'ADD_GOVERNOR', nodeId: identities[3].nodeId, publicKeyPem: identities[3].publicKeyPem,
   });
-  const next = commit(state, proposal, identities.slice(0, 2));
+  const next = commit(state, proposal, identities.slice(0, 2), identities[3]);
   assert.equal(next.epoch, 1);
   assert.equal(Object.keys(next.governors).length, 4);
   assert.equal(next.governors[identities[3].nodeId], identities[3].publicKeyPem);
@@ -188,7 +188,7 @@ test('project governance rotation requires the outgoing governor signature and r
     nodeId: replacement.nodeId,
     publicKeyPem: replacement.publicKeyPem,
   });
-  const newIdentityProof = proveGovernanceKeyRotation(replacement, proposal, { now: NOW });
+  const newIdentityProof = proveGovernanceKeyPossession(replacement, proposal, { now: NOW });
   assert.throws(() => applyGovernanceCertificate(state, {
     proposal, approvals: approvals(identities.slice(1, 3), proposal), newIdentityProof,
   }, { now: NOW }), /outgoing governor/);
@@ -196,7 +196,7 @@ test('project governance rotation requires the outgoing governor signature and r
     proposal, approvals: approvals(identities.slice(0, 2), proposal),
   }, { now: NOW }), /newIdentityProof|missing or unknown/);
   const wrongIdentity = createNodeIdentity();
-  const wrongProof = proveGovernanceKeyRotation(wrongIdentity, {
+  const wrongProof = proveGovernanceKeyPossession(wrongIdentity, {
     ...proposal, nodeId: wrongIdentity.nodeId, publicKeyPem: wrongIdentity.publicKeyPem,
   }, { now: NOW });
   assert.throws(() => applyGovernanceCertificate(state, {
@@ -218,4 +218,19 @@ test('replacement identity cannot prove a different public key or a non-rotation
   }, { now: NOW }), /does not match/);
   const ordinary = createGovernanceProposal(state, { action: 'SET_THRESHOLD', threshold: 3 });
   assert.throws(() => proveGovernanceKeyRotation(replacement, ordinary, { now: NOW }), /Invalid/);
+});
+
+test('adding a governor requires proof of possession of the proposed private key', () => {
+  const { identities, state } = setup();
+  const proposal = createGovernanceProposal(state, {
+    action: 'ADD_GOVERNOR', nodeId: identities[3].nodeId, publicKeyPem: identities[3].publicKeyPem,
+  });
+  assert.throws(() => applyGovernanceCertificate(state, {
+    proposal, approvals: approvals(identities.slice(0, 2), proposal),
+  }, { now: NOW }), /newIdentityProof|missing or unknown/);
+  const proof = proveGovernanceKeyPossession(identities[3], proposal, { now: NOW });
+  const next = applyGovernanceCertificate(state, {
+    proposal, approvals: approvals(identities.slice(0, 2), proposal), newIdentityProof: proof,
+  }, { now: NOW });
+  assert.equal(next.governors[identities[3].nodeId], identities[3].publicKeyPem);
 });
