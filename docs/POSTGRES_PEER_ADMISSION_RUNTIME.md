@@ -10,11 +10,15 @@ The entrypoint deliberately requires a deployment-owned adapter module (`ZION_OF
 
 ## Required host dependencies and database
 
-The host must provide a node-postgres-compatible pool. The repository factory intentionally does not import or create `pg`, read credentials, or own the pool lifecycle. Install and pin a supported `pg` version in the host deployment and construct the pool there.
+The host must provide a node-postgres-compatible pool. The repository factory intentionally does not import or create `pg`, read credentials, or own the pool lifecycle. The PostgreSQL integration suite is pinned to `pg@8.23.1`; the deployment-owned adapter must pin that same version (or rerun the complete integration suite against its exact pinned version before release) and construct the pool there.
 
 The database must be PostgreSQL with permission to use transaction-scoped advisory locks, row locks, and `LISTEN/NOTIFY`. Apply the peer-admission schema/migrations before starting the node. Use a dedicated database role with only the privileges needed by the admission tables and notification channel.
 
-The listener holds one pool client for its dedicated `LISTEN` session. Admission-fenced message processing also checks out a client and holds its transaction/lock until the application callback finishes. The transport's handler deadline starts before fence acquisition: expiry closes the peer and prevents a callback that has not started from running later. It does not forcibly cancel a PostgreSQL pool checkout or advisory-lock wait; configure finite pool connection and PostgreSQL `lock_timeout`/`statement_timeout` values so abandoned waits eventually release their resources. Once an application callback has started, the transport continues awaiting it after abort to preserve the revocation fence. Set pool capacity above one; size it for the listener plus peak concurrent fenced callbacks and other application queries. Bound message-handler work and database/statement/connection timeouts: a slow callback intentionally delays a concurrent revocation or release.
+The listener holds one pool client for its dedicated `LISTEN` session. Admission-fenced message processing also checks out a client and holds its transaction/lock until the application callback finishes. Authenticated application-frame authorization preflight and dispatch-fence acquisition each have a transport deadline: expiry closes the peer and prevents a callback that has not started from running later. Concurrent preflight work is capped by `maxConcurrentAuthorizationPreflights` (default 8); configure this below the pool capacity reserved for admission reads after accounting for the listener and other application queries.
+
+With the pinned `pg@8.23.1` pool, `connectionTimeoutMillis` bounds both opening a new connection and a client checkout waiting in the pool queue. When that deadline expires, the pending checkout rejects; the admission store converts the failed read to `{ ok: false, reason: 'admission-state-unavailable' }`, and the transport fails closed. PostgreSQL `lock_timeout` and `statement_timeout` apply only after a query reaches the server, so they cover database lock/query execution rather than pool checkout. A pool queue timeout does not cancel a query that has already been dispatched to PostgreSQL.
+
+Keep admission reads on capacity-reserved pool slots (or a dedicated admission pool), keep `maxConcurrentAuthorizationPreflights` below that reserved capacity, and reserve at least one connection for the revocation listener. The launcher requires a pool size of at least two. Size remaining capacity for concurrent admission-fenced handlers and other application queries; set `maxConcurrentHandlers` and `maxConcurrentAuthorizationPreflights` to fit the actual pool budget rather than relying on defaults. Once an application callback has started, the transport continues awaiting it after abort to preserve the revocation fence. A slow callback intentionally delays a concurrent revocation or release and can retain a pool connection until the callback exits.
 
 ## Composition
 
@@ -28,7 +32,8 @@ import { OfficialNodeBootstrap } from './src/official-node-bootstrap.js';
 const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
   max: Number(process.env.PG_POOL_MAX ?? 12),
-  // Configure TLS, connection/idle timeouts, and certificate verification
+  connectionTimeoutMillis: 5000,
+  // Configure TLS, idle timeouts, and certificate verification
   // according to the deployment's database security policy.
 });
 

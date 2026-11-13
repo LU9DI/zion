@@ -113,7 +113,12 @@ export class PostgresPeerRevocationListener {
       this.minReconnectMs * (2 ** Math.min(this.reconnectAttempt++, 16)));
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      this.#connect(generation).catch(() => this.#scheduleReconnect(generation));
+      // A prior LISTEN attempt may still be settling. If this timer fires while
+      // #connect is coalescing onto that promise, retry again after it settles
+      // when no live session was established; otherwise the reconnect is lost.
+      this.#connect(generation).then(() => {
+        if (!this.client) this.#scheduleReconnect(generation);
+      }, () => this.#scheduleReconnect(generation));
     }, delay);
     this.reconnectTimer.unref?.();
   }

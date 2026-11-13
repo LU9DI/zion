@@ -1322,6 +1322,112 @@ test('destroyed socket stops frame processing after an asynchronous integrity ch
   assert.equal(handled, 0, 'a frame must not be processed after its socket is destroyed during an awaited health check');
 });
 
+test('authorization preflight deadline closes a peer before a delayed backend can dispatch', async t => {
+  const genesis = testGenesis();
+  const serverIdentity = createNodeIdentity(); const clientIdentity = createNodeIdentity();
+  let enterPreflight;
+  let releasePreflight;
+  let handled = 0;
+  const preflightEntered = new Promise(resolve => { enterPreflight = resolve; });
+  const preflightGate = new Promise(resolve => { releasePreflight = resolve; });
+  const integrityGuard = { async checkHealthy() {}, assertHealthy() {} };
+  let fences = 0;
+  const admissionController = {
+    async isAdmitted() { return true; },
+    async admit() { return { ok: true }; },
+    async isPeerAuthorized() {
+      enterPreflight();
+      await preflightGate;
+      return { ok: true, authorized: true };
+    },
+    async withPeerAuthorizationFence(_nodeId, _options, work) {
+      fences++;
+      return { ok: true, admitted: true, value: await work() };
+    },
+  };
+  const server = new PeerTransport({
+    identity: serverIdentity, networkMode: 'official', protocolGenesis: genesis, integrityGuard,
+    trustedPeerIds: [serverIdentity.nodeId, clientIdentity.nodeId], admissionController,
+    handlerTimeoutMs: 100,
+    onMessage: async () => { handled++; },
+  });
+  const address = await server.listen();
+  t.after(async () => { releasePreflight(); await server.close(); });
+  const client = new PeerTransport({ identity: clientIdentity, protocolGenesis: genesis });
+  t.after(() => client.close());
+  const clientSocket = await client.connect('127.0.0.1', address.port);
+  t.after(() => clientSocket.destroy());
+  await waitFor(() => clientSocket.__zionSession?.authenticated &&
+    [...server.connections][0]?.__zionSession?.authenticated);
+
+  client.send(clientSocket, { type: 'PING', nonce: 'preflight-deadline' });
+  await preflightEntered;
+  const serverSocket = [...server.connections][0];
+  assert.ok(serverSocket);
+  await waitFor(() => serverSocket.destroyed, 1000,
+    'the peer socket must close when authorization preflight exceeds its deadline');
+  releasePreflight();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(handled, 0, 'a late successful preflight must not dispatch after socket timeout');
+  assert.equal(fences, 0, 'a timed-out preflight must never acquire the dispatch fence');
+});
+
+
+test('authorization preflight concurrency is capped before backend work', async t => {
+  const genesis = testGenesis();
+  const serverIdentity = createNodeIdentity();
+  const clientIdentities = [createNodeIdentity(), createNodeIdentity()];
+  let enteredFirst;
+  let releaseFirst;
+  let preflightCalls = 0;
+  let handled = 0;
+  const firstEntered = new Promise(resolve => { enteredFirst = resolve; });
+  const firstGate = new Promise(resolve => { releaseFirst = resolve; });
+  const integrityGuard = { async checkHealthy() {}, assertHealthy() {} };
+  const admissionController = {
+    async isAdmitted() { return true; },
+    async admit() { return { ok: true }; },
+    async isPeerAuthorized() {
+      preflightCalls++;
+      if (preflightCalls === 1) {
+        enteredFirst();
+        await firstGate;
+      }
+      return { ok: true, authorized: true };
+    },
+    async withPeerAuthorizationFence(_nodeId, _options, work) {
+      return { ok: true, admitted: true, value: await work() };
+    },
+  };
+  const server = new PeerTransport({
+    identity: serverIdentity, networkMode: 'official', protocolGenesis: genesis, integrityGuard,
+    trustedPeerIds: [serverIdentity.nodeId, ...clientIdentities.map(x => x.nodeId)],
+    admissionController, maxConcurrentAuthorizationPreflights: 1,
+    onMessage: async () => { handled++; },
+  });
+  const address = await server.listen();
+  t.after(async () => { releaseFirst(); await server.close(); });
+  const clients = clientIdentities.map(identity => new PeerTransport({ identity, protocolGenesis: genesis }));
+  t.after(() => clients.forEach(client => client.close()));
+  const sockets = await Promise.all(clients.map(client => client.connect('127.0.0.1', address.port)));
+  t.after(() => sockets.forEach(socket => socket.destroy()));
+  await waitFor(() => sockets.every(socket => socket.__zionSession?.authenticated) &&
+    [...server.connections].length === 2 &&
+    [...server.connections].every(socket => socket.__zionSession?.authenticated));
+
+  clients[0].send(sockets[0], { type: 'PING', nonce: 'preflight-cap-first' });
+  await firstEntered;
+  clients[1].send(sockets[1], { type: 'PING', nonce: 'preflight-cap-second' });
+  const serverSockets = [...server.connections];
+  await waitFor(() => serverSockets.some(socket => socket.destroyed), 1000,
+    'the second peer must be rejected while the only preflight slot is occupied');
+  assert.equal(preflightCalls, 1, 'over-capacity peers must not start another backend authorization query');
+  releaseFirst();
+  await waitFor(() => handled === 1);
+  assert.equal(handled, 1);
+});
+
+
 test('authenticated application frames use the durable authorization fence', async t => {
   const genesis = testGenesis();
   const serverIdentity = createNodeIdentity(); const clientIdentity = createNodeIdentity();

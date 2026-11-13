@@ -39,7 +39,7 @@ export class PeerTransport {
     socketRateLimiter = new PeerRateLimiter({ capacity: 256, refillPerSecond: 200 }),
     // Global pre-verification budget caps CPU across rapid reconnects that obtain fresh socket IDs.
     globalRateLimiter = new PeerRateLimiter({ capacity: 4096, refillPerSecond: 2000, maxPeers: 1 }), transferScheduler = null,
-    protocolGenesis = null, networkMode = 'legacy', integrityGuard = null, admissionController = null, revocationListener = null, admissionVouchers = [], tlsOptions = null, tlsHandshakeTimeoutMs = 10_000, frameAssemblyTimeoutMs = 10_000, handlerTimeoutMs = 30_000, maxConcurrentHandlers = 16, now = () => Date.now() } = {}) {
+    protocolGenesis = null, networkMode = 'legacy', integrityGuard = null, admissionController = null, revocationListener = null, admissionVouchers = [], tlsOptions = null, tlsHandshakeTimeoutMs = 10_000, frameAssemblyTimeoutMs = 10_000, handlerTimeoutMs = 30_000, maxConcurrentHandlers = 16, maxConcurrentAuthorizationPreflights = 8, now = () => Date.now() } = {}) {
     if (!identity?.privateKey || typeof identity.nodeId !== 'string') throw new TypeError('A node identity is required');
     if (typeof host !== 'string' || !host || !Number.isInteger(port) || port < 0 || port > 65535) throw new RangeError('Invalid bind address');
     if (!Number.isSafeInteger(maxConnections) || maxConnections < 1 || !Number.isSafeInteger(maxFrameBytes) || maxFrameBytes < 256) throw new RangeError('Invalid transport limits');
@@ -47,6 +47,7 @@ export class PeerTransport {
     if (!Number.isSafeInteger(frameAssemblyTimeoutMs) || frameAssemblyTimeoutMs < 100 || frameAssemblyTimeoutMs > 60_000) throw new RangeError('Invalid frame assembly timeout');
     if (!Number.isSafeInteger(handlerTimeoutMs) || handlerTimeoutMs < 100 || handlerTimeoutMs > 300_000) throw new RangeError('Invalid message handler timeout');
     if (!Number.isSafeInteger(maxConcurrentHandlers) || maxConcurrentHandlers < 1 || maxConcurrentHandlers > 1024) throw new RangeError('Invalid concurrent message handler limit');
+    if (!Number.isSafeInteger(maxConcurrentAuthorizationPreflights) || maxConcurrentAuthorizationPreflights < 1 || maxConcurrentAuthorizationPreflights > 1024) throw new RangeError('Invalid concurrent authorization preflight limit');
     if (typeof onMessage !== 'function') throw new TypeError('onMessage must be a function');
     if (!['legacy', 'official'].includes(networkMode)) throw new TypeError('networkMode must be legacy or official');
     if (networkMode === 'official' && protocolGenesis === null) throw new Error('Official Zion network mode requires a reviewed protocol genesis');
@@ -65,6 +66,8 @@ export class PeerTransport {
     this.handlerTimeoutMs = handlerTimeoutMs;
     this.maxConcurrentHandlers = maxConcurrentHandlers;
     this.activeMessageHandlers = 0;
+    this.maxConcurrentAuthorizationPreflights = maxConcurrentAuthorizationPreflights;
+    this.activeAuthorizationPreflights = 0;
     this.identity = identity; this.host = host; this.port = port; this.maxConnections = maxConnections;
     this.networkMode = networkMode;
     this.genesis = protocolGenesis === null ? null : validateGenesisDocument(protocolGenesis);
@@ -411,35 +414,52 @@ export class PeerTransport {
     // Reject a durably revoked peer before it can consume replay-cache capacity.
     // The later fence still encloses dispatch and closes the preflight/dispatch race.
     if (socket.__zionSession?.authenticated && this.admissionController) {
-      let authorized;
-      try {
-        const preflight = typeof this.admissionController.isPeerAuthorized === 'function'
-          ? await this.admissionController.isPeerAuthorized(
-            checked.nodeId,
-            { allowUnadmitted: trustedByAllowlist },
-          )
-          : typeof this.admissionController.withPeerAuthorizationFence === 'function'
-            ? await this.admissionController.withPeerAuthorizationFence(
-              checked.nodeId,
-              { allowUnadmitted: trustedByAllowlist },
-              async () => true,
-            )
-            : {
-              ok: true,
-              admitted: await this.admissionController.isAdmitted(checked.nodeId) === true,
-              value: true,
-            };
-        authorized = preflight?.ok === true &&
-          (preflight.authorized === true ||
-            (preflight.admitted === true && preflight.value === true));
-      } catch {
+      // Bound concurrent preflight work before it can queue PostgreSQL pool
+      // checkouts. Configure this below the pool capacity reserved for admission
+      // reads after accounting for LISTEN and other application queries.
+      if (this.activeAuthorizationPreflights >= this.maxConcurrentAuthorizationPreflights) {
         socket.destroy();
         return;
       }
-      if (!authorized || socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
-          (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) {
-        socket.destroy();
-        return;
+      this.activeAuthorizationPreflights++;
+      // Destroying the socket cannot cancel an arbitrary backend promise; the
+      // admission store/pool must still enforce finite database-side timeouts.
+      const preflightTimer = setTimeout(() => socket.destroy(), this.handlerTimeoutMs);
+      preflightTimer.unref?.();
+      try {
+        let authorized;
+        try {
+          const preflight = typeof this.admissionController.isPeerAuthorized === 'function'
+            ? await this.admissionController.isPeerAuthorized(
+              checked.nodeId,
+              { allowUnadmitted: trustedByAllowlist },
+            )
+            : typeof this.admissionController.withPeerAuthorizationFence === 'function'
+              ? await this.admissionController.withPeerAuthorizationFence(
+                checked.nodeId,
+                { allowUnadmitted: trustedByAllowlist },
+                async () => true,
+              )
+              : {
+                ok: true,
+                admitted: await this.admissionController.isAdmitted(checked.nodeId) === true,
+                value: true,
+              };
+          authorized = preflight?.ok === true &&
+            (preflight.authorized === true ||
+              (preflight.admitted === true && preflight.value === true));
+        } catch {
+          socket.destroy();
+          return;
+        }
+        if (!authorized || socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
+            (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) {
+          socket.destroy();
+          return;
+        }
+      } finally {
+        clearTimeout(preflightTimer);
+        this.activeAuthorizationPreflights--;
       }
     }
     if (!trustedByAllowlist && !this.admissionController) { socket.destroy(); return; }
