@@ -261,6 +261,101 @@ test('PostgreSQL migration and independent-process admission races enforce capac
       throw new Error('released peer must not dispatch');
     }), { ok: true, admitted: false, status: 'released' });
 
+    // Scenario 1e: a bootstrap allowlist identity may have no admission row,
+    // but a durable inactive row overrides the allowlist and shares the revoke lock.
+    const trustedWithoutRow = await revocationStore.withPeerAuthorizationFence(
+      id('6'), { allowUnadmitted: true }, async () => 'trusted-bootstrap-frame',
+    );
+    assert.deepEqual(trustedWithoutRow, {
+      ok: true, admitted: true, status: 'trusted-allowlist', value: 'trusted-bootstrap-frame',
+    });
+    const untrustedWithoutRow = await revocationStore.withPeerAuthorizationFence(
+      id('6'), { allowUnadmitted: false }, async () => {
+        throw new Error('unadmitted peer must not dispatch');
+      },
+    );
+    assert.deepEqual(untrustedWithoutRow, { ok: true, admitted: false, status: null });
+
+    // A bootstrap allowlist peer with no admission row must be durably
+    // revocable. The tombstone survives process restart and blocks later
+    // invitation admission rather than silently restoring allowlist access.
+    const bootstrapTombstone = await revocationStore.revokeAdmission(id('5'));
+    assert.deepEqual(
+      { ok: bootstrapTombstone.ok, changed: bootstrapTombstone.changed,
+        status: bootstrapTombstone.status, tombstone: bootstrapTombstone.tombstone },
+      { ok: true, changed: true, status: 'revoked', tombstone: true },
+    );
+    assert.deepEqual(await revocationStore.getAdmissionStatus(id('5')), {
+      ok: true, subjectNodeId: id('5'), status: 'revoked',
+    });
+    assert.deepEqual(await revocationStore.withPeerAuthorizationFence(
+      id('5'), { allowUnadmitted: true }, async () => {
+        throw new Error('persistently revoked bootstrap peer must not dispatch');
+      },
+    ), { ok: true, admitted: false, status: 'revoked' });
+    assert.deepEqual(await revocationStore.commitAdmission(
+      admissionInput('5', ['1', '2'], ['c', 'd']),
+    ), { ok: false, reason: 'subject-already-admitted' });
+
+    // A first admission racing a bootstrap revocation must never leave the
+    // subject active: both paths serialize on the same per-subject advisory lock.
+    await Promise.all([
+      revocationStore.revokeAdmission(id('b')),
+      revocationStore.commitAdmission(admissionInput('b', ['1', '2'], ['e', 'f'])),
+    ]);
+    assert.deepEqual(await revocationStore.getAdmissionStatus(id('b')), {
+      ok: true, subjectNodeId: id('b'), status: 'revoked',
+    });
+    assert.deepEqual(await revocationStore.withPeerAuthorizationFence(
+      id('b'), { allowUnadmitted: true }, async () => {
+        throw new Error('racing bootstrap revocation must win over admission');
+      },
+    ), { ok: true, admitted: false, status: 'revoked' });
+
+    const trustedAdmission = await revocationStore.commitAdmission(
+      admissionInput('6', ['5', '4'], ['a', 'b']),
+    );
+    assert.equal(trustedAdmission.ok, true);
+    let trustedDispatchGateOpen;
+    let markTrustedDispatchStarted;
+    const trustedDispatchStarted = new Promise(resolve => { markTrustedDispatchStarted = resolve; });
+    const trustedDispatchGate = new Promise(resolve => { trustedDispatchGateOpen = resolve; });
+    const trustedDispatch = revocationStore.withPeerAuthorizationFence(
+      id('6'), { allowUnadmitted: true }, async () => {
+        markTrustedDispatchStarted();
+        await trustedDispatchGate;
+        return 'allowlisted-frame-dispatched';
+      },
+    );
+    await trustedDispatchStarted;
+    let trustedRevocationFinished = false;
+    const trustedRevocation = revocationStore.revokeAdmission(id('6')).then(result => {
+      trustedRevocationFinished = true;
+      return result;
+    });
+    let trustedRevocationWaiting = false;
+    const trustedWaitDeadline = Date.now() + 2000;
+    while (!trustedRevocationWaiting && Date.now() < trustedWaitDeadline) {
+      const { rows: waiters } = await pool.query(
+        "SELECT count(*)::integer AS count FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE 'SELECT pg_advisory_xact_lock(hashtextextended%'",
+      );
+      trustedRevocationWaiting = Number(waiters[0]?.count ?? 0) > 0;
+      if (!trustedRevocationWaiting) await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    const trustedFenceSerialized = trustedRevocationWaiting && !trustedRevocationFinished;
+    trustedDispatchGateOpen();
+    assert.deepEqual(await trustedDispatch, {
+      ok: true, admitted: true, status: 'active', value: 'allowlisted-frame-dispatched',
+    });
+    assert.equal(trustedFenceSerialized, true,
+      'trusted allowlist dispatch must serialize against durable revocation');
+    assert.equal((await trustedRevocation).status, 'revoked');
+    assert.deepEqual(await revocationStore.withPeerAuthorizationFence(
+      id('6'), { allowUnadmitted: true }, async () => {
+        throw new Error('revoked bootstrap peer must not dispatch');
+      },
+    ), { ok: true, admitted: false, status: 'revoked' });
+
     // Scenario 2: the same invitation nonces cannot be consumed by two subjects.
     await clearAdmissions(pool);
     await pool.query(
