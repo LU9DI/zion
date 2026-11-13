@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { createNodeIdentity, signPeerMessage, verifyPeerMessage, ReplayGuard, PeerRateLimiter } from '../src/peer-security.js';
+import { createEncryptedNodeIdentityRecord, loadEncryptedNodeIdentityRecord } from '../src/node-identity-record.js';
 
 test('Ed25519 peer messages verify and bind the node ID to its public key', () => {
   const id = createNodeIdentity();
@@ -201,11 +203,6 @@ test('rate limiter fails closed on clock rollback without granting duplicate ref
   assert.equal(limiter.allow('peer'), true, 'tokens refill after genuinely advancing beyond the prior timestamp');
 });
 
-import {
-  createEncryptedNodeIdentityRecord,
-  loadEncryptedNodeIdentityRecord,
-} from '../src/node-identity-record.js';
-
 function fakeIdentityKeystore() {
   const wrappingKey = Buffer.alloc(32, 0x5a);
   return {
@@ -214,15 +211,15 @@ function fakeIdentityKeystore() {
       assert.equal(purpose, 'zion-node-identity-dek-v1');
     },
     async wrapKey({ plaintextKey }) {
-      const nonce = Buffer.alloc(12, 0x31);
-      const cipher = (await import('node:crypto')).createCipheriv('aes-256-gcm', wrappingKey, nonce);
+      const nonce = randomBytes(12);
+      const cipher = createCipheriv('aes-256-gcm', wrappingKey, nonce);
       return Buffer.concat([nonce, cipher.update(plaintextKey), cipher.final(), cipher.getAuthTag()]);
     },
     async unwrapKey({ wrappedKey }) {
       const bytes = Buffer.from(wrappedKey);
       const nonce = bytes.subarray(0, 12);
       const tag = bytes.subarray(bytes.length - 16);
-      const decipher = (await import('node:crypto')).createDecipheriv('aes-256-gcm', wrappingKey, nonce);
+      const decipher = createDecipheriv('aes-256-gcm', wrappingKey, nonce);
       decipher.setAuthTag(tag);
       return Buffer.concat([decipher.update(bytes.subarray(12, -16)), decipher.final()]);
     },
