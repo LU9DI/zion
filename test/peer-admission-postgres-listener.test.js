@@ -57,6 +57,49 @@ test('listener reconnects after a dedicated session ends and stops without leavi
   assert.equal(listener.running, false);
 });
 
+
+test('listener retries after reconnect timer fires while a failed LISTEN attempt is still pending', async () => {
+  const clients = [];
+  let finishFirstListen;
+  const pool = {
+    async connect() {
+      const client = new EventEmitter();
+      client.queries = [];
+      client.releaseCount = 0;
+      client.query = async sql => {
+        client.queries.push(sql);
+        if (sql === 'LISTEN zion_peer_revocations' && clients.length === 1) {
+          return new Promise(resolve => { finishFirstListen = () => resolve({ rows: [] }); });
+        }
+        return { rows: [] };
+      };
+      client.release = () => { client.releaseCount++; };
+      clients.push(client);
+      return client;
+    },
+  };
+  const listener = new PostgresPeerRevocationListener({
+    pool, onRevocation: () => {}, minReconnectMs: 10, maxReconnectMs: 20,
+  });
+  const startPromise = listener.start();
+  while (!finishFirstListen) await new Promise(resolve => setImmediate(resolve));
+
+  clients[0].emit('error', new Error('connection lost during pending LISTEN'));
+  // Let the reconnect timer fire while the original #connect promise is pending.
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(clients.length, 1);
+
+  finishFirstListen();
+  await startPromise;
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(clients.length, 2, 'listener must retry after the in-flight LISTEN settles');
+  assert.deepEqual(clients[1].queries, ['LISTEN zion_peer_revocations']);
+
+  await listener.stop();
+  assert.equal(clients[0].releaseCount, 1);
+  assert.equal(clients[1].releaseCount, 1);
+});
+
 test('listener detaches its event handlers before returning a client to the pool', async () => {
   const pool = fakePool();
   const listener = new PostgresPeerRevocationListener({
