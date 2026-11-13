@@ -104,6 +104,26 @@ export function approveGovernanceProposal(identity, proposal, { now = Date.now()
       !Number.isSafeInteger(proposal.epoch) || proposal.epoch < 1) throw new TypeError('Invalid governance approval input');
   return signPeerMessage(identity, { type: APPROVAL_TYPE, projectId: proposal.projectId, epoch: proposal.epoch, proposalHash: digest(proposal) }, { now });
 }
+
+/** Proof that the proposed replacement governor controls the private key for its new node ID. */
+export function proveGovernanceKeyRotation(identity, proposal, { now = Date.now() } = {}) {
+  if (!identity || !identity.privateKey || !HEX64.test(identity.nodeId || '') ||
+      !proposal || proposal.action !== 'ROTATE_GOVERNOR_KEY' || proposal.nodeId !== identity.nodeId ||
+      !HEX64.test(proposal.projectId || '') || !HEX64.test(proposal.previousStateHash || '') ||
+      !Number.isSafeInteger(proposal.epoch) || proposal.epoch < 1) {
+    throw new TypeError('Invalid governance key-rotation proof input');
+  }
+  validatePublicKey(identity.nodeId, identity.publicKeyPem);
+  if (proposal.publicKeyPem !== identity.publicKeyPem) throw new Error('Replacement identity does not match the proposed public key');
+  return signPeerMessage(identity, {
+    type: 'PROJECT_GOVERNANCE_ROTATION_PROOF',
+    projectId: proposal.projectId,
+    epoch: proposal.epoch,
+    proposalHash: digest(proposal),
+    oldNodeId: proposal.oldNodeId,
+    newNodeId: proposal.nodeId,
+  }, { now });
+}
 function validateProposalShape(proposal) {
   if (!proposal || typeof proposal !== 'object' || Array.isArray(proposal) ||
       proposal.schemaVersion !== 1 || !HEX64.test(proposal.projectId || '') ||
@@ -136,9 +156,12 @@ function validateProposalShape(proposal) {
 export function applyGovernanceCertificate(stateInput, certificate, { now = Date.now(), maxClockSkewMs = 120000 } = {}) {
   const state = validateState(stateInput);
   if (state.epoch >= Number.MAX_SAFE_INTEGER - 1) throw new RangeError('Project governance epoch space exhausted');
-  exactKeys(certificate, ['proposal', 'approvals'], 'Governance certificate');
+  if (!certificate || typeof certificate !== 'object' || Array.isArray(certificate)) throw new TypeError('Governance certificate must be an object');
   const proposal = certificate.proposal;
   validateProposalShape(proposal);
+  exactKeys(certificate, proposal.action === 'ROTATE_GOVERNOR_KEY'
+    ? ['proposal', 'approvals', 'newIdentityProof']
+    : ['proposal', 'approvals'], 'Governance certificate');
   if (proposal.projectId !== state.projectId ||
       proposal.epoch !== state.epoch + 1 || proposal.previousStateHash !== state.stateHash ||
       !Array.isArray(certificate.approvals) || certificate.approvals.length > 256) throw new Error('Governance proposal is stale, malformed, or for another project');
@@ -155,6 +178,20 @@ export function applyGovernanceCertificate(stateInput, certificate, { now = Date
     signers.add(checked.nodeId);
   }
   if (signers.size < state.threshold) throw new Error('Governance threshold not reached');
+  if (proposal.action === 'ROTATE_GOVERNOR_KEY') {
+    if (!signers.has(proposal.oldNodeId)) throw new Error('Key rotation requires approval from the outgoing governor identity');
+    const proof = certificate.newIdentityProof;
+    const checkedProof = verifyPeerMessage(proof, { now, maxClockSkewMs, maxBytes: 4096 });
+    if (!checkedProof.ok || checkedProof.nodeId !== proposal.nodeId) throw new Error('Invalid replacement identity proof of possession');
+    const payload = checkedProof.payload;
+    if (payload.type !== 'PROJECT_GOVERNANCE_ROTATION_PROOF' ||
+        payload.projectId !== state.projectId || payload.epoch !== proposal.epoch ||
+        payload.proposalHash !== proposalHash || payload.oldNodeId !== proposal.oldNodeId ||
+        payload.newNodeId !== proposal.nodeId) {
+      throw new Error('Replacement identity proof does not bind to this rotation proposal');
+    }
+    if (proof.publicKeyPem !== proposal.publicKeyPem) throw new Error('Replacement identity proof uses a different public key');
+  }
   const next = { projectId: state.projectId, epoch: proposal.epoch, threshold: state.threshold, governors: { ...state.governors } };
   switch (proposal.action) {
     case 'ADD_GOVERNOR':
