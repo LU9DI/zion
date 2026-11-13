@@ -426,6 +426,11 @@ test('inactivity scheduler async shutdown completes before transport and storage
 
 test('quarantine waits for asynchronous inactivity scheduler startup before stopping it', async () => {
   const state = fixture();
+  // fixture() creates a bootstrap of its own. This test constructs a separate
+  // bootstrap below using the same guard and transport, so detach the unused
+  // fixture instance to ensure quarantine exercises only the instance under test.
+  state.bootstrap.removeQuarantineListener?.();
+  state.bootstrap.removeQuarantineListener = null;
   const lifecycle = state.events;
   let releaseStart;
   const startGate = new Promise(resolve => { releaseStart = resolve; });
