@@ -423,6 +423,40 @@ test('inactivity scheduler async shutdown completes before transport and storage
   assert.ok(state.events.indexOf('close') < lifecycle.indexOf('storage-stop'));
 });
 
+test('quarantine waits for asynchronous inactivity scheduler startup before stopping it', async () => {
+  const state = fixture();
+  const lifecycle = state.events;
+  let releaseStart;
+  const startGate = new Promise(resolve => { releaseStart = resolve; });
+  let signalStart;
+  const startEntered = new Promise(resolve => { signalStart = resolve; });
+  const bootstrap = new OfficialNodeBootstrap({
+    integrityGuard: state.guard,
+    transport: state.transport,
+    async startStorage() { lifecycle.push('storage-start'); },
+    async stopStorage() { lifecycle.push('storage-stop'); },
+    inactivityScheduler: {
+      async start() {
+        lifecycle.push('scheduler-start-entered');
+        signalStart();
+        await startGate;
+        lifecycle.push('scheduler-start-finished');
+      },
+      async stop() { lifecycle.push('scheduler-stop'); },
+    },
+  });
+  const starting = bootstrap.start();
+  await startEntered;
+  const quarantining = state.guard.quarantine();
+  releaseStart();
+  await quarantining;
+  await assert.rejects(starting, /cancelled|quarantined|healthy/i);
+  assert.ok(lifecycle.indexOf('scheduler-start-finished') < lifecycle.indexOf('scheduler-stop'));
+  assert.ok(lifecycle.indexOf('scheduler-stop') < lifecycle.indexOf('close'));
+  assert.ok(lifecycle.indexOf('close') < lifecycle.indexOf('stopStorage'));
+  assert.equal(bootstrap.inactivitySchedulerStarted, false);
+});
+
 test('inactivity scheduler is not started when integrity verification fails', async () => {
   const state = fixture({ verifyOk: false });
   let starts = 0;
