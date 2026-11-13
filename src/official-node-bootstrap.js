@@ -298,20 +298,16 @@ export class OfficialNodeBootstrap {
       // Quarantine owns containment once its listener has latched the operation.
       // Do not race it with a second rollback: quarantine drains pending adapter
       // starts, then stops schedulers before transport and storage.
-      if (this.containmentStatus === 'contained') {
-        // The quarantine listener may finish and clear its in-flight promise
-        // before this startup continuation resumes. Its completed status is
-        // the durable signal that adapter cleanup has already run.
-      } else if (this.containmentPromise) {
-        await this.containmentPromise.catch(() => {});
+      if (this.integrityGuard.status.quarantined === true) {
+        // Route every quarantined startup failure through the same idempotent
+        // containment entry point. This closes the race where the listener
+        // has been scheduled but has not yet published containmentPromise.
+        await this.#contain().catch(() => {});
       } else {
         const cleanupErrors = await this.#cleanupAdapters();
         if (cleanupErrors.length) {
           this.containmentStatus = 'failed';
           this.containmentErrors = cleanupErrors.map(item => String(item?.message ?? item).slice(0, 240));
-        } else if (this.integrityGuard.status.quarantined === true) {
-          this.containmentStatus = 'contained';
-          this.containmentErrors = [];
         }
       }
       this.started = false;
