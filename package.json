@@ -26,6 +26,7 @@
     "content:screen-local": "node scripts/screen-content-local.js",
     "content:verify-uploader": "node scripts/verify-uploader-attribution.js",
     "client:demo": "node scripts/demo-consumer-client.js",
-    "start:official": "node scripts/start-official-node.js"
+    "start:official": "node scripts/start-official-node.js",
+    "resource:sweep": "node scripts/run-project-resource-sweep.js"
   }
 }

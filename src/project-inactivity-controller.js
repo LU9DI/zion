@@ -30,7 +30,7 @@ function assertId(value, name) {
  * Repository contract:
  *   withProjectLock(projectId, async tx => ...)
  *   tx.getProject(projectId)
- *   tx.recordActivity(event) -> { inserted: boolean }
+ *   tx.recordActivity(event) -> boolean (true only when inserted)
  *   tx.updateLastMeaningfulActivity(projectId, at)
  *   tx.pauseProject(projectId, at)
  *   tx.markStorageReleasePending(projectId, at)
@@ -63,16 +63,17 @@ export class ProjectInactivityController {
     this.id = id;
   }
 
-  async recordMeaningfulActivity({ projectId, actorId, actorKind, activityType, idempotencyKey, at = this.now() }) {
+  async recordMeaningfulActivity({ projectId, actorId, actorKind, activityType, idempotencyKey }) {
     assertId(projectId, 'projectId');
     assertId(actorId, 'actorId');
     assertId(idempotencyKey, 'idempotencyKey');
     if (!['owner', 'collaborator'].includes(actorKind)) throw new TypeError('Invalid actorKind');
+    const at = this.now();
     if (!MEANINGFUL_TYPES.has(activityType)) {
       if (NON_MEANINGFUL_TYPES.has(activityType)) return Object.freeze({ accepted: false, reason: 'non-meaningful-activity' });
       throw new TypeError('Unsupported activityType');
     }
-    if (!Number.isSafeInteger(at) || at < 0 || at > this.now() + 60_000) throw new TypeError('Invalid activity timestamp');
+    if (!Number.isSafeInteger(at) || at < 0) throw new TypeError('Invalid server activity timestamp');
 
     return this.repository.withProjectLock(projectId, async tx => {
       const project = await tx.getProject(projectId);

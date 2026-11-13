@@ -112,7 +112,7 @@ test('valid activity is recorded with idempotency key and server timestamp', asy
   h.setNow(20 * DAY);
   const result = await h.controller.recordMeaningfulActivity({
     projectId: 'project-1', actorId: 'owner-1', actorKind: 'owner',
-    activityType: 'configuration_committed', idempotencyKey: 'config-change-000001',
+    activityType: 'configuration_committed', idempotencyKey: 'config-change-000001', at: 0,
   });
   assert.equal(result.accepted, true);
   assert.equal(h.state.lastMeaningfulActivityAt, new Date(20 * DAY).toISOString());
