@@ -165,6 +165,7 @@ export class OfficialNodeBootstrap {
   }
 
   async #contain() {
+    if (this.containmentStatus === 'contained') return;
     if (this.containmentPromise) return this.containmentPromise;
     this.lifecycleEpoch++;
     this.started = false;
