@@ -56,6 +56,8 @@ export class SignedProjectEventLog {
     this.maxClockSkewMs = maxClockSkewMs;
     this.records = [];
     this.lastHash = '0'.repeat(64);
+    this.byteLength = 0;
+    this.persistenceFailed = false;
     this.queue = Promise.resolve();
     this.closed = false;
     this.lockPath = `${this.path}.lock`;
@@ -96,6 +98,7 @@ export class SignedProjectEventLog {
     }
     this.records = records;
     this.lastHash = previousHash;
+    this.byteLength = bytes.length;
   }
 
   append({ projectId, eventType, data } = {}) {
@@ -106,6 +109,7 @@ export class SignedProjectEventLog {
 
   #append({ projectId, eventType, data }) {
     if (this.closed) throw Object.assign(new Error('Event log is closed'), { code: 'ZION_EVENT_LOG_CLOSED' });
+    if (this.persistenceFailed) throw Object.assign(new Error('Event log persistence is unavailable after a failed append'), { code: 'ZION_EVENT_LOG_UNAVAILABLE' });
     if (!PROJECT_ID.test(projectId ?? '') || !EVENT_TYPE.test(eventType ?? '') || !validatePayload(data)) {
       throw new TypeError('Invalid project event');
     }
@@ -122,14 +126,22 @@ export class SignedProjectEventLog {
     const envelope = signPeerMessage(this.identity, event, { now: this.now() });
     const recordHash = hash(Buffer.from(JSON.stringify({ envelope, previousHash: event.previousHash })));
     const line = Buffer.from(JSON.stringify({ envelope, recordHash }) + '\n');
-    const currentBytes = existsSync(this.path) ? readFileSync(this.path).length : 0;
-    if (currentBytes + line.length > this.maxBytes) throw Object.assign(new Error('Event log byte limit reached'), { code: 'ZION_EVENT_LOG_TOO_LARGE' });
+    if (this.byteLength + line.length > this.maxBytes) throw Object.assign(new Error('Event log byte limit reached'), { code: 'ZION_EVENT_LOG_TOO_LARGE' });
+    const existed = existsSync(this.path);
     const fd = openSync(this.path, 'a', 0o600);
     try {
       let offset = 0;
       while (offset < line.length) offset += writeSync(fd, line, offset, line.length - offset);
       fsyncSync(fd);
+      if (!existed) {
+        const dirFd = openSync(dirname(this.path), 'r');
+        try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
+      }
+    } catch (error) {
+      this.persistenceFailed = true;
+      throw error;
     } finally { closeSync(fd); }
+    this.byteLength += line.length;
     this.records.push(Object.freeze({ ...event }));
     this.lastHash = recordHash;
     return Object.freeze({ ...event, recordHash, signerNodeId: this.identity.nodeId });
