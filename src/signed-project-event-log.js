@@ -43,11 +43,11 @@ function validatePayload(payload) {
     (Object.getPrototypeOf(payload) === Object.prototype || Object.getPrototypeOf(payload) === null);
 }
 
-function verifyRecord(record, { now, maxClockSkewMs }) {
+export function verifySignedProjectEventRecord(record, { now = Date.now(), maxClockSkewMs = 120_000, maxBytes = 1024 * 1024 } = {}) {
   if (!record || typeof record !== 'object' || !record.envelope || typeof record.recordHash !== 'string' ||
       !/^[a-f0-9]{64}$/.test(record.recordHash)) return { ok: false, reason: 'invalid-record' };
   const { envelope } = record;
-  const verified = verifyPeerMessage(envelope, { now, maxClockSkewMs, maxBytes: 1024 * 1024 });
+  const verified = verifyPeerMessage(envelope, { now, maxClockSkewMs, maxBytes });
   if (!verified.ok) return verified;
   const event = verified.payload;
   if (event.type !== 'PROJECT_EVENT' || !PROJECT_ID.test(event.projectId ?? '') ||
@@ -84,6 +84,7 @@ export class SignedProjectEventLog {
     this.now = now;
     this.maxClockSkewMs = maxClockSkewMs;
     this.records = [];
+    this.signedRecords = [];
     this.lastHash = '0'.repeat(64);
     this.byteLength = 0;
     this.persistenceFailed = false;
@@ -114,12 +115,13 @@ export class SignedProjectEventLog {
       let record;
       try { record = JSON.parse(line); }
       catch { throw Object.assign(new Error('Event log contains invalid JSON'), { code: 'ZION_EVENT_LOG_CORRUPT' }); }
-      const checked = verifyRecord(record, { now: this.now(), maxClockSkewMs: this.maxClockSkewMs });
+      const checked = verifySignedProjectEventRecord(record, { now: this.now(), maxClockSkewMs: this.maxClockSkewMs });
       if (!checked.ok || checked.nodeId !== this.identity.nodeId ||
           checked.event.sequence !== records.length + 1 || checked.event.previousHash !== previousHash) {
         throw Object.assign(new Error(`Event log integrity validation failed: ${checked.reason ?? 'chain-or-identity-mismatch'}`), { code: 'ZION_EVENT_LOG_CORRUPT' });
       }
       records.push(Object.freeze({ ...checked.event }));
+      this.signedRecords.push(Object.freeze({ envelope: record.envelope, recordHash: record.recordHash }));
       previousHash = record.recordHash;
     }
     this.records = records;
@@ -169,6 +171,7 @@ export class SignedProjectEventLog {
     } finally { closeSync(fd); }
     this.byteLength += line.length;
     this.records.push(Object.freeze({ ...event }));
+    this.signedRecords.push(Object.freeze({ envelope, recordHash }));
     this.lastHash = recordHash;
     return Object.freeze({ ...event, recordHash, signerNodeId: this.identity.nodeId });
   }
@@ -176,6 +179,18 @@ export class SignedProjectEventLog {
   snapshot() {
     return Object.freeze({ count: this.records.length, lastHash: this.lastHash,
       events: Object.freeze(this.records.map(event => Object.freeze({ ...event }))) });
+  }
+
+  /** Signed journal records for authenticated replication; receivers must still commit via quorum. */
+  snapshotRecords({ afterSequence = 0, limit = 256 } = {}) {
+    if (!Number.isSafeInteger(afterSequence) || afterSequence < 0 ||
+        !Number.isSafeInteger(limit) || limit < 1 || limit > 256) {
+      throw new RangeError('Invalid signed event replication cursor or limit');
+    }
+    const records = this.signedRecords.slice(afterSequence, afterSequence + limit)
+      .map(record => Object.freeze(JSON.parse(JSON.stringify(record))));
+    return Object.freeze({ fromSequence: afterSequence + 1, nextSequence: afterSequence + records.length + 1,
+      lastSequence: this.signedRecords.length, records: Object.freeze(records) });
   }
 
   close() {
