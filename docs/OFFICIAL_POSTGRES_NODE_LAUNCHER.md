@@ -1,6 +1,6 @@
 # Official PostgreSQL node launcher
 
-The repository now exposes `npm run start:official`. It composes the current
+The repository exposes `npm run start:official`. It composes the current
 `createPostgresPeerAdmissionRuntime()` with `OfficialNodeBootstrap`; it does
 not reuse the older pre-runtime admission transport.
 
@@ -26,6 +26,11 @@ ES module. The module must export:
     storage initialization has begun.
   - Optional `storeOptions`, `listenerOptions`, `bootstrapOptions`,
     `getStorageStatus()`, and `recordContainmentEvent()`.
+
+The adapter must install and pin `pg@8.23.1`, the exact driver version used by
+the repository's PostgreSQL integration suite. If it uses a different
+node-postgres version, rerun the complete real-PostgreSQL resilience suite
+against that exact version and retain the resulting CI evidence before release.
 
 Example adapter shape (illustrative only; all values and implementations must
 come from the deployment's reviewed configuration):
@@ -54,7 +59,10 @@ Set `ZION_POSTGRES_URL` (or `DATABASE_URL`) and optionally
 revocation listener holds one dedicated pool connection for `LISTEN`; a pool of
 one would starve admission queries. Size the pool above two for concurrent
 admission-fenced handlers. Apply the PostgreSQL admission migration as a
-separate, reviewed release operation before starting the node.
+separate, reviewed release operation before starting the node. The adapter's
+`createPool()` must actually apply the supplied finite
+`connectionTimeoutMillis` value; the launcher cannot introspect or prove that
+a third-party pool factory honored its options.
 
 ## Security and lifecycle requirements
 
@@ -97,8 +105,8 @@ it is not the authorization source and is not relied on to enforce the next
 application frame after a listener reconnect gap.
 
 Revoking an allowlisted identity that has never had an admission row creates a
-durable `revoked` tombstone in `peer_admissions`. The tombstone does not consume
-active capacity or issuer quota, but it overrides the bootstrap allowlist after
-process restart and prevents a later invitation admission from silently
-re-enabling that identity. Removing such a ban requires an explicit, reviewed
-administrative operation; do not delete tombstones as routine cleanup.
+durable `revoked` tombstone in `peer_admissions`. The tombstone does not
+consume active capacity or issuer quota, but it overrides the bootstrap
+allowlist after process restart and prevents a later invitation admission from
+silently re-enabling that identity. Removing such a ban requires an explicit,
+reviewed administrative operation; do not delete tombstones as routine cleanup.
