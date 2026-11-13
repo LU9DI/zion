@@ -708,6 +708,11 @@ test('handler deadline covers authorization-fence wait and prevents late dispatc
   const delayedController = {
     admit: input => localController.admit(input),
     isAdmitted: nodeId => localController.isAdmitted(nodeId),
+    // Keep preflight independent; this test targets the dispatch fence only.
+    isPeerAuthorized: async nodeId => ({
+      ok: true,
+      authorized: await localController.isAdmitted(nodeId),
+    }),
     withAdmissionFence: (nodeId, work) => localController.withAdmissionFence(nodeId, work),
     async withPeerAuthorizationFence(nodeId, _options, work) {
       enterFence();
