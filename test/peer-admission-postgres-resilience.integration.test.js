@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { Pool } from 'pg';
 import { PostgresPeerAdmissionStore } from '../src/peer-admission-postgres-store.js';
 
 const connectionString = process.env.ZION_POSTGRES_TEST_URL;
@@ -33,6 +32,7 @@ async function within(promise, message, ms = 2500) {
 test('PostgreSQL authorization read fails closed when the pool is exhausted', {
   skip: !enabled && 'set ZION_POSTGRES_TEST_URL to run real PostgreSQL integration tests',
 }, async () => {
+  const { Pool } = await import('pg');
   const pool = new Pool({
     connectionString,
     max: 1,
