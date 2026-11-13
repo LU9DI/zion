@@ -7,6 +7,30 @@ const connectionString = process.env.ZION_POSTGRES_TEST_URL;
 const enabled = Boolean(connectionString);
 const subjectNodeId = 'a'.repeat(64);
 
+async function createIsolatedPool(schema, poolOptions = {}) {
+  const { Pool } = await import('pg');
+  const admin = new Pool({ connectionString });
+  try {
+    await admin.query(`CREATE SCHEMA ${schema}`);
+  } finally {
+    await admin.end();
+  }
+  const options = [`-c search_path=${schema}`, poolOptions.options].filter(Boolean).join(' ');
+  const pool = new Pool({ connectionString, ...poolOptions, options });
+  return {
+    pool,
+    async cleanup() {
+      await pool.end();
+      const cleanupPool = new Pool({ connectionString });
+      try {
+        await cleanupPool.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+      } finally {
+        await cleanupPool.end();
+      }
+    },
+  };
+}
+
 async function applyMigration(pool) {
   const migration = await readFile(
     new URL('../migrations/postgres/0001_peer_admission.sql', import.meta.url),
@@ -32,13 +56,12 @@ async function within(promise, message, ms = 2500) {
 test('PostgreSQL authorization checkout remains queued until a pool slot is released', {
   skip: !enabled && 'set ZION_POSTGRES_TEST_URL to run real PostgreSQL integration tests',
 }, async () => {
-  const { Pool } = await import('pg');
-  const pool = new Pool({
-    connectionString,
+  const isolated = await createIsolatedPool('zion_pool_queue_timeout_test', {
     max: 1,
     connectionTimeoutMillis: 150,
     idleTimeoutMillis: 1000,
   });
+  const { pool } = isolated;
   let held;
   try {
     await applyMigration(pool);
@@ -50,6 +73,8 @@ test('PostgreSQL authorization checkout remains queued until a pool slot is rele
       settled = true;
       return result;
     });
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(pool.waitingCount, 1, 'the authorization checkout must be queued');
     await new Promise(resolve => setTimeout(resolve, 300));
     assert.equal(settled, false,
       'connectionTimeoutMillis must not be assumed to time out a queued pool checkout');
@@ -62,20 +87,20 @@ test('PostgreSQL authorization checkout remains queued until a pool slot is rele
     assert.deepEqual(result, { ok: true, subjectNodeId, status: null });
   } finally {
     held?.release();
-    await pool.end();
+    await isolated.cleanup();
   }
 });
 
 test('PostgreSQL authorization preflight fails closed on real table-lock contention', {
   skip: !enabled && 'set ZION_POSTGRES_TEST_URL to run real PostgreSQL integration tests',
 }, async () => {
-  const pool = new Pool({
-    connectionString,
+  const isolated = await createIsolatedPool('zion_lock_contention_test', {
     max: 2,
     connectionTimeoutMillis: 1000,
     idleTimeoutMillis: 1000,
     options: '-c lock_timeout=150ms -c statement_timeout=2000ms',
   });
+  const { pool } = isolated;
   let blocker;
   try {
     await applyMigration(pool);
@@ -98,13 +123,14 @@ test('PostgreSQL authorization preflight fails closed on real table-lock content
       try { await blocker.query('ROLLBACK'); } catch { /* preserve the test result */ }
       blocker.release();
     }
-    await pool.end();
+    await isolated.cleanup();
   }
 });
 
 test('PostgreSQL authorization read fails closed when the configured endpoint is unreachable', {
   skip: !enabled && 'set ZION_POSTGRES_TEST_URL to run real PostgreSQL integration tests',
 }, async () => {
+  const { Pool } = await import('pg');
   const unreachable = new URL(connectionString);
   unreachable.port = '1';
   const pool = new Pool({
