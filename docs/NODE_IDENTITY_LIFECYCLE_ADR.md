@@ -1,6 +1,6 @@
 # Node identity lifecycle ADR
 
-Status: **design selected for implementation; implementation and platform validation pending**  
+Status: **encrypted identity-record core implemented; filesystem persistence and platform-keystore adapters pending**  
 Scope: PR #68, branch `architecture/fully-decentralized-core`
 
 ## Context and verified current behavior
@@ -90,14 +90,17 @@ The production adapter must document its OS/TPM/HSM boundary, access controls, b
 9. CI exercises at least two independent Node.js processes; in-process mocks alone are insufficient.
 10. Threat-model review covers malware with local user privileges, disk theft, backup theft, OS compromise, TPM reset, and device replacement. Hardware-backed storage does not protect a key from a fully compromised running endpoint.
 
-## Implementation sequencing
+## Implementation status and sequencing
 
-1. Implement and test the platform-keystore interface and encrypted identity record in isolation.
-2. Add a local fake adapter for deterministic tests and at least one real supported OS adapter, with platform limitations documented.
-3. Integrate the identity store with the official launcher without changing admission/transport behavior.
-4. Prove restart continuity and recovery before testing libp2p key import.
-5. Add the libp2p PeerId compatibility spike only after the above tests pass.
-6. Keep PostgreSQL admission, static trusted-peer bootstrap, and existing transport clearly marked transitional until their decentralized replacements independently pass their own gates.
+The PR now contains `src/node-identity-record.js`, a cryptographic core that creates and restores a versioned AES-256-GCM identity record through an injected local-keystore interface. It verifies the Ed25519 private/public key match and recomputed Zion node ID on restore, binds record metadata as AEAD associated data, enforces exact record fields and bounded encodings, and clears temporary DEK/private-key DER buffers where Node permits. Tests use a local fake keystore only; this is not a production OS adapter and is not accepted by the official launcher.
+
+1. Add and validate at least one real OS-backed adapter (Windows credential/DPAPI boundary or Linux Secret Service/TPM/HSM) with platform-specific access-control checks.
+2. Implement crash-safe, exclusive filesystem persistence, process coordination, atomic publication, fsync, symlink/reparse-point protection, and recovery semantics.
+3. Add separate-process restart and concurrent first-start tests using the real adapter on supported CI platforms.
+4. Integrate the identity store with the official launcher only after those gates pass, without changing admission/transport behavior in the same change.
+5. Prove backup/recovery and interrupted rotation behavior before testing libp2p key import.
+6. Add the libp2p PeerId compatibility spike only after stable identity persistence passes.
+7. Keep PostgreSQL admission, static trusted-peer bootstrap, and existing transport clearly marked transitional until their decentralized replacements independently pass their own gates.
 
 ## Explicit limitations
 
