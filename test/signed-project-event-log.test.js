@@ -126,6 +126,9 @@ test('event log exposes bounded signed records that remote peers can verify', as
     assert.equal(verified.ok, true);
     assert.equal(verified.nodeId, f.identity.nodeId);
     assert.equal(verified.event.sequence, 1);
+    const tampered = JSON.parse(JSON.stringify(page.records[0]));
+    tampered.recordHash = 'f'.repeat(64);
+    assert.equal(verifySignedProjectEventRecord(tampered, { now, maxClockSkewMs: 120_000 }).ok, false);
     assert.equal(log.snapshotRecords({ afterSequence: 1, limit: 256 }).records.length, 1);
     assert.throws(() => log.snapshotRecords({ afterSequence: -1 }), /replication cursor/);
     log.close();
