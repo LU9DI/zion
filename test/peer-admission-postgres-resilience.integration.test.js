@@ -287,3 +287,134 @@ test('revocation serializes with an in-flight trusted-allowlist dispatch', {
     await isolated.cleanup();
   }
 });
+
+
+test('official transport dispatch is fenced against PostgreSQL revocation for a trusted bootstrap peer', {
+  skip: !enabled && 'set ZION_POSTGRES_TEST_URL to run real PostgreSQL integration tests',
+}, async () => {
+  const { createNodeIdentity } = await import('../src/peer-security.js');
+  const { createPostgresPeerAdmissionRuntime } = await import('../src/postgres-peer-admission-runtime.js');
+  const { PeerTransport } = await import('../src/peer-transport.js');
+  const isolated = await createIsolatedPool('zion_official_transport_revoke_race_test', {
+    max: 4,
+    connectionTimeoutMillis: 1000,
+    idleTimeoutMillis: 1000,
+  });
+  const { pool } = isolated;
+  const serverIdentity = createNodeIdentity();
+  const peerIdentity = createNodeIdentity();
+  const genesis = {
+    schemaVersion: 1, networkName: 'Zion PostgreSQL integration', protocolMajor: 1,
+    genesisTime: 1800000000, serialization: 'canonical-json-v1',
+    crypto: { identity: 'Ed25519', signature: 'Ed25519', hash: 'SHA-256', aead: 'AES-256-GCM' },
+    contentAddress: { algorithm: 'SHA-256', encoding: 'lowercase-hex' },
+    erasureCoding: { algorithm: 'Reed-Solomon', dataShards: 10, parityShards: 20 },
+    limits: { maxFrameBytes: 262144, maxMessageBytes: 262144, maxTtlMs: 600000, maxHops: 16 },
+    replay: { maxClockSkewMs: 120000, nonceBytes: 32, retentionMs: 120000 },
+    rules: { gossipIsDiscoveryOnly: true, localResourceLimitsAreAuthoritative: true, breakingChangesRequireNewNetwork: true },
+  };
+  const quarantineListeners = new Set();
+  const integrityGuard = {
+    status: { verified: true, quarantined: false },
+    async checkHealthy() {},
+    assertHealthy() {
+      if (this.status.quarantined) throw new Error('integrity quarantined');
+    },
+    addQuarantineListener(listener) {
+      quarantineListeners.add(listener);
+      return () => quarantineListeners.delete(listener);
+    },
+  };
+  let markDispatchStarted;
+  let releaseDispatch;
+  const dispatchStarted = new Promise(resolve => { markDispatchStarted = resolve; });
+  const dispatchGate = new Promise(resolve => { releaseDispatch = resolve; });
+  let dispatchCount = 0;
+  let runtime;
+  let clientSocket;
+
+  try {
+    await applyMigration(pool);
+    runtime = createPostgresPeerAdmissionRuntime({
+      pool,
+      controllerOptions: {
+        trustedIssuerNodeIds: [],
+        capacityProvider: async () => ({ activePeers: 0, maxPeers: 10, storageHeadroomRatio: 1 }),
+      },
+      transportOptions: {
+        identity: serverIdentity,
+        protocolGenesis: genesis,
+        integrityGuard,
+        trustedPeerIds: [peerIdentity.nodeId],
+        host: '127.0.0.1',
+        port: 0,
+        handlerTimeoutMs: 5000,
+        onMessage: async () => {
+          dispatchCount++;
+          markDispatchStarted();
+          await dispatchGate;
+        },
+      },
+    });
+
+    const address = await runtime.transport.listen();
+    const client = new PeerTransport({ identity: peerIdentity, protocolGenesis: genesis });
+    clientSocket = await client.connect('127.0.0.1', address.port);
+    const handshakeDeadline = Date.now() + 2000;
+    while ((!clientSocket.__zionSession?.authenticated ||
+      ![...runtime.transport.connections].some(socket => socket.__zionSession?.authenticated)) &&
+      Date.now() < handshakeDeadline) {
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    assert.equal(clientSocket.__zionSession?.authenticated, true, 'trusted bootstrap peer must complete handshake');
+
+    client.send(clientSocket, { type: 'PING', nonce: 'official-revoke-race' });
+    await within(dispatchStarted, 'official transport did not enter the application handler');
+
+    let revocationFinished = false;
+    const revocation = runtime.admissionController.revoke(peerIdentity.nodeId).then(result => {
+      revocationFinished = true;
+      return result;
+    });
+
+    let observedLockWait = false;
+    const waitDeadline = Date.now() + 2000;
+    while (!observedLockWait && Date.now() < waitDeadline) {
+      const { rows } = await pool.query(
+        "SELECT count(*)::integer AS count FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE 'SELECT pg_advisory_xact_lock(hashtextextended%'",
+      );
+      observedLockWait = Number(rows[0]?.count ?? 0) > 0;
+      if (!observedLockWait) await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(observedLockWait, true,
+      'official transport revocation must wait on the dispatch shared advisory lock');
+    assert.equal(revocationFinished, false,
+      'durable revocation must not commit while the application handler is in flight');
+
+    releaseDispatch();
+    const revoked = await within(revocation, 'official transport revocation did not finish');
+    assert.deepEqual(
+      { ok: revoked.ok, changed: revoked.changed, status: revoked.status, tombstone: revoked.tombstone },
+      { ok: true, changed: true, status: 'revoked', tombstone: true },
+    );
+    assert.equal(dispatchCount, 1, 'the already-authorized handler runs exactly once');
+
+    // Reconnect using the same static bootstrap identity. The durable tombstone
+    // must override the allowlist even if the notification path raced or was missed.
+    clientSocket.destroy();
+    const reconnectingClient = new PeerTransport({ identity: peerIdentity, protocolGenesis: genesis });
+    clientSocket = await reconnectingClient.connect('127.0.0.1', address.port);
+    const closeDeadline = Date.now() + 2000;
+    while (!clientSocket.destroyed && Date.now() < closeDeadline) {
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    assert.equal(clientSocket.destroyed, true,
+      'a revoked bootstrap identity must not complete a later authenticated session');
+    assert.equal(dispatchCount, 1, 'revoked peer must never reach the application handler again');
+  } finally {
+    releaseDispatch();
+    clientSocket?.destroy();
+    if (runtime) await runtime.transport.close().catch(() => {});
+    await isolated.cleanup();
+  }
+});
