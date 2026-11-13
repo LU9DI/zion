@@ -85,3 +85,10 @@ test('rejects invalid project identifiers before acquiring a connection', async 
 test('rejects invalid pool configuration', () => {
   assert.throws(() => new PostgresProjectResourceRepository(), /configuration/);
 });
+
+test('pending release preserves each lease original reservation state', async () => {
+  const h = poolHarness();
+  const repository = new PostgresProjectResourceRepository({ pool: h.pool });
+  await repository.withProjectLock(PROJECT_ID, tx => tx.markStorageReleasePending(PROJECT_ID, 1_700_000_000_000));
+  assert.equal(h.calls.some(x => x.sql.startsWith('UPDATE project_storage_leases')), false);
+});
