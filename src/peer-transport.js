@@ -630,31 +630,30 @@ export class PeerTransport {
         return;
       }
       this.activeMessageHandlers++;
+      const controller = new AbortController();
+      const abortForClose = () => {
+        if (!controller.signal.aborted) controller.abort(new Error('Peer socket closed'));
+      };
+      socket.once('close', abortForClose);
+      // Start the deadline before acquiring the durable authorization fence. If
+      // the fence is delayed, the peer is closed and the callback must not start
+      // later when the database lock finally becomes available.
+      const timer = setTimeout(() => {
+        if (!controller.signal.aborted) controller.abort(new Error('Message handler deadline exceeded'));
+        socket.destroy();
+      }, this.handlerTimeoutMs);
+      timer.unref?.();
       const dispatch = async () => {
-        const controller = new AbortController();
-        const abortForClose = () => {
-          if (!controller.signal.aborted) controller.abort(new Error('Peer socket closed'));
-        };
-        socket.once('close', abortForClose);
-        const timer = setTimeout(() => {
-          if (!controller.signal.aborted) controller.abort(new Error('Message handler deadline exceeded'));
-          socket.destroy();
-        }, this.handlerTimeoutMs);
-        timer.unref?.();
-        try {
-          // The handler must observe signal and stop its own work. We deliberately
-          // continue awaiting it after abort so the PostgreSQL authorization fence
-          // is never released while application work is still running.
-          await this.onMessage(Object.freeze({
-            nodeId: checked.nodeId,
-            payload: checked.payload,
-            envelope: message,
-            signal: controller.signal,
-          }), socket);
-        } finally {
-          clearTimeout(timer);
-          socket.off('close', abortForClose);
-        }
+        if (controller.signal.aborted || socket.destroyed) return false;
+        // Continue awaiting an already-started handler after abort so the
+        // PostgreSQL authorization fence is not released while work is running.
+        await this.onMessage(Object.freeze({
+          nodeId: checked.nodeId,
+          payload: checked.payload,
+          envelope: message,
+          signal: controller.signal,
+        }), socket);
+        return true;
       };
       try {
         if (socket.__zionSession?.admissionRequired) {
@@ -669,12 +668,12 @@ export class PeerTransport {
               // The PostgreSQL shared advisory lock is held across this callback.
               // Revocation/release takes the exclusive lock, so it cannot commit
               // between this durable authorization check and application dispatch.
-              if (socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
+              if (controller.signal.aborted || socket.destroyed ||
+                  this.revokedPeerIds.has(checked.nodeId) ||
                   (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) {
                 return { dispatched: false };
               }
-              await dispatch();
-              return { dispatched: true };
+              return { dispatched: await dispatch() };
             },
           );
           if (!fenced?.ok || !fenced.admitted || !fenced.value?.dispatched) {
@@ -685,6 +684,8 @@ export class PeerTransport {
           await dispatch();
         }
       } finally {
+        clearTimeout(timer);
+        socket.off('close', abortForClose);
         this.activeMessageHandlers--;
       }
     } catch {
