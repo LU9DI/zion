@@ -103,3 +103,37 @@ test('project governance binds approvals to exact proposal contents', () => {
   const altered = { ...proposal, threshold: 1 };
   assert.throws(() => applyGovernanceCertificate(state, { proposal: altered, approvals: signed }, { now: NOW }), /does not bind/);
 });
+
+
+test('project governance rejects oversized key material before cryptographic verification', () => {
+  const { identities, state } = setup();
+  const proposal = createGovernanceProposal(state, { action: 'SET_THRESHOLD', threshold: 3 });
+  const approvalsWithOversizedKey = [{
+    version: 1,
+    nodeId: identities[0].nodeId,
+    timestamp: NOW,
+    nonce: 'a'.repeat(32),
+    payload: { type: 'PROJECT_GOVERNANCE_APPROVAL', projectId: PROJECT, epoch: 1, proposalHash: 'd'.repeat(64) },
+    publicKeyPem: 'x'.repeat(5000),
+    signature: 'x',
+  }];
+  assert.throws(() => applyGovernanceCertificate(state, { proposal, approvals: approvalsWithOversizedKey }, { now: NOW }), /Oversized/);
+});
+
+test('project governance rejects unknown proposal fields before hashing untrusted input', () => {
+  const { identities, state } = setup();
+  const proposal = createGovernanceProposal(state, { action: 'SET_THRESHOLD', threshold: 3 });
+  const malformed = { ...proposal, untrustedNestedField: { arbitrary: ['large', 'nested', 'data'] } };
+  assert.throws(() => applyGovernanceCertificate(state, {
+    proposal: malformed, approvals: approvals(identities.slice(0, 2), proposal),
+  }, { now: NOW }), /unknown fields/);
+});
+
+test('project governance rejects expired approval signatures', () => {
+  const { identities, state } = setup();
+  const proposal = createGovernanceProposal(state, { action: 'SET_THRESHOLD', threshold: 3 });
+  const signed = approvals(identities.slice(0, 2), proposal);
+  assert.throws(() => applyGovernanceCertificate(state, {
+    proposal, approvals: signed,
+  }, { now: NOW + 180000, maxClockSkewMs: 120000 }), /unauthorized|invalid/i);
+});
