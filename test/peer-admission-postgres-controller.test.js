@@ -29,6 +29,14 @@ function fixture() {
       if (state.get(nodeId) !== 'active') return { ok: true, admitted: false, status: state.get(nodeId) ?? null };
       return { ok: true, admitted: true, status: 'active', value: await work() };
     },
+    async withPeerAuthorizationFence(nodeId, { allowUnadmitted = false } = {}, work) {
+      calls.push(['peer-fence', nodeId, allowUnadmitted]);
+      const status = state.get(nodeId) ?? null;
+      if (status !== 'active' && !(status === null && allowUnadmitted)) {
+        return { ok: true, admitted: false, status };
+      }
+      return { ok: true, admitted: true, status: status ?? 'trusted-allowlist', value: await work() };
+    },
     async revokeAdmission(nodeId) {
       calls.push(['revoke', nodeId]);
       if (state.get(nodeId) !== 'active') return { ok: false, reason: 'admission-not-found' };
@@ -57,6 +65,24 @@ test('Postgres controller checks authoritative status and denies revoked peers',
   assert.equal((await x.controller.revoke(x.subject.nodeId)).changed, true);
   assert.equal(await x.controller.isAdmitted(x.subject.nodeId), false);
   assert.equal(x.store.calls.filter(call => call[0] === 'status').length, 3);
+});
+
+test('Postgres controller preflights allowlist authorization without a dispatch transaction', async () => {
+  const x = fixture();
+  assert.deepEqual(await x.controller.isPeerAuthorized(id('f'), { allowUnadmitted: true }), {
+    ok: true, authorized: true, status: null,
+  });
+  assert.deepEqual(await x.controller.isPeerAuthorized(id('f'), { allowUnadmitted: false }), {
+    ok: true, authorized: false, status: null,
+  });
+  await x.controller.admit({ subjectNodeId: x.subject.nodeId, vouchers: x.vouchers });
+  assert.deepEqual(await x.controller.isPeerAuthorized(x.subject.nodeId), {
+    ok: true, authorized: true, status: 'active',
+  });
+  await x.controller.revoke(x.subject.nodeId);
+  assert.deepEqual(await x.controller.isPeerAuthorized(x.subject.nodeId, { allowUnadmitted: true }), {
+    ok: true, authorized: false, status: 'revoked',
+  });
 });
 
 test('Postgres controller fails closed when authoritative status is unavailable', async () => {
@@ -97,6 +123,15 @@ test('Postgres controller delegates the final application dispatch fence to its 
   }), { ok: true, admitted: false, status: 'revoked' });
 });
 
+
+test('Postgres controller delegates trusted allowlist authorization with explicit no-row policy', async () => {
+  const x = fixture();
+  const result = await x.controller.withPeerAuthorizationFence(id('f'), { allowUnadmitted: true }, async () => 'trusted');
+  assert.deepEqual(result, {
+    ok: true, admitted: true, status: 'trusted-allowlist', value: 'trusted',
+  });
+  assert.ok(x.store.calls.some(call => call[0] === 'peer-fence' && call[1] === id('f') && call[2] === true));
+});
 
 test('Postgres controller exposes administrative release through the store fence', async () => {
   const x = fixture();
