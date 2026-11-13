@@ -62,6 +62,7 @@ export function createProjectGovernanceState({ projectId, governors, threshold }
 }
 export function createGovernanceProposal(stateInput, change) {
   const state = validateState(stateInput);
+  if (state.epoch >= Number.MAX_SAFE_INTEGER - 1) throw new RangeError('Project governance epoch space exhausted');
   if (!change || typeof change !== 'object' || Array.isArray(change)) throw new TypeError('Invalid governance change');
   const base = { schemaVersion: 1, projectId: state.projectId, epoch: state.epoch + 1, previousStateHash: state.stateHash, action: change.action };
   let proposal;
@@ -134,6 +135,7 @@ function validateProposalShape(proposal) {
 /** Verify threshold approval and deterministically apply one epoch. Caller must commit it through distributed BFT. */
 export function applyGovernanceCertificate(stateInput, certificate, { now = Date.now(), maxClockSkewMs = 120000 } = {}) {
   const state = validateState(stateInput);
+  if (state.epoch >= Number.MAX_SAFE_INTEGER - 1) throw new RangeError('Project governance epoch space exhausted');
   exactKeys(certificate, ['proposal', 'approvals'], 'Governance certificate');
   const proposal = certificate.proposal;
   validateProposalShape(proposal);
