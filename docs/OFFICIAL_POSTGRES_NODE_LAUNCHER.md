@@ -21,7 +21,9 @@ ES module. The module must export:
     application message handler. Identity, genesis, trust allowlist, integrity
     guard, admission controller, and revocation listener are launcher-owned;
   - `startStorage()` and `stopStorage()` backed by the deployment's real
-    storage service.
+    storage service. `stopStorage()` must be safe to call after a partially
+    completed or failed `startStorage()`; startup rollback invokes it whenever
+    storage initialization has begun.
   - Optional `storeOptions`, `listenerOptions`, `bootstrapOptions`,
     `getStorageStatus()`, and `recordContainmentEvent()`.
 
@@ -48,8 +50,11 @@ export async function createOfficialNodeDependencies({ env, pool }) {
 ```
 
 Set `ZION_POSTGRES_URL` (or `DATABASE_URL`) and optionally
-`ZION_POSTGRES_POOL_MAX` (1–100; default 10). Apply the PostgreSQL admission
-migration as a separate, reviewed release operation before starting the node.
+`ZION_POSTGRES_POOL_MAX` (2–100; default 10). The minimum is two because the
+revocation listener holds one dedicated pool connection for `LISTEN`; a pool of
+one would starve admission queries. Size the pool above two for concurrent
+admission-fenced handlers. Apply the PostgreSQL admission migration as a
+separate, reviewed release operation before starting the node.
 
 ## Security and lifecycle requirements
 
