@@ -16,6 +16,9 @@ export function createSignedProjectEventReplicationHandler({ replica, transport,
     if (message?.payload?.type !== 'PROJECT_EVENT_REPLICATION') return false;
     if (message.signal?.aborted || socket?.destroyed) return false;
     const { requestId, record } = message.payload;
+    if (typeof requestId !== 'string' || !/^[a-f0-9]{32}$/.test(requestId)) {
+      throw Object.assign(new Error('Invalid project event replication request ID'), { code: 'ZION_REPLICATION_INVALID_REQUEST' });
+    }
     const checked = verifySignedProjectEventRecord(record, { now: now(), maxClockSkewMs });
     if (!checked.ok || checked.nodeId !== message.nodeId) {
       throw Object.assign(new Error('Replicated event signer must match the authenticated transport peer'), {
