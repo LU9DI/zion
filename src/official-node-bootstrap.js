@@ -61,6 +61,7 @@ export class OfficialNodeBootstrap {
     this.adapterCleanupPromise = null;
     // Cleanup waits for asynchronous adapter starts to settle before stopping them.
     this.pendingAdapterStarts = new Set();
+    this.adapterCleanupHistory = [];
     this.closePromise = null;
     // Explicit close is terminal for this instance; create a new bootstrap to restart.
     this.closed = false;
@@ -127,6 +128,21 @@ export class OfficialNodeBootstrap {
   }
 
   async #cleanupAdapters() {
+    // Record every caller, including callers that join an in-flight pass, so
+    // lifecycle races can be diagnosed without guessing from adapter events.
+    this.adapterCleanupHistory.push(Object.freeze({
+      at: new Date().toISOString(),
+      joined: Boolean(this.adapterCleanupPromise),
+      containmentStatus: this.containmentStatus,
+      transportStarted: this.transportState,
+      storageStarted: this.storageStarted,
+      inactivitySchedulerStarted: this.inactivitySchedulerStarted,
+      idleParticipationSchedulerStarted: this.idleParticipationSchedulerStarted,
+      notificationDeliveryWorkerStarted: this.notificationDeliveryWorkerStarted,
+      notificationApiStarted: this.notificationApiStarted,
+      pendingStarts: this.pendingAdapterStarts.size,
+      caller: new Error('adapter cleanup caller').stack?.split('\\n').slice(1, 5).map(line => line.trim()) ?? []
+    }));
     // Coalesce concurrent shutdown requests. A failed pass is not cached, so
     // retryContainment() can make another attempt after an adapter failure.
     if (this.adapterCleanupPromise) return this.adapterCleanupPromise;
