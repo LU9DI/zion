@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, writeSync, unlinkSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { verifySignedProjectEventRecord } from './signed-project-event-log.js';
