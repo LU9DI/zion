@@ -129,6 +129,7 @@ test('encrypted identity rejects malformed and oversized encoded fields before k
 
   const malformedRecords = [
     { ...record, publicKeyDer: '!!!!' },
+    { ...record, publicKeyDer: 'A'.repeat(1024 * 1024) },
     { ...record, nonce: 'abc' },
     { ...record, ciphertext: Buffer.alloc(16 * 1024 + 1, 0x41).toString('base64') },
     { ...record, authTag: Buffer.from([0x01]).toString('base64') },
