@@ -294,14 +294,20 @@ export class OfficialNodeBootstrap {
         notificationDelivery: this.notificationDeliveryWorker ? 'scheduled' : 'not-configured',
         notificationApi: this.notificationApi ? 'listening' : 'not-configured' });
     } catch (error) {
-      // Serialize rollback with quarantine/close so storage is never stopped twice concurrently.
-      const cleanupErrors = await this.#cleanupAdapters();
-      if (cleanupErrors.length) {
-        this.containmentStatus = 'failed';
-        this.containmentErrors = cleanupErrors.map(item => String(item?.message ?? item).slice(0, 240));
-      } else if (this.integrityGuard.status.quarantined === true) {
-        this.containmentStatus = 'contained';
-        this.containmentErrors = [];
+      // Quarantine owns containment once its listener has latched the operation.
+      // Do not race it with a second rollback: quarantine drains pending adapter
+      // starts, then stops schedulers before transport and storage.
+      if (this.containmentPromise) {
+        await this.containmentPromise.catch(() => {});
+      } else {
+        const cleanupErrors = await this.#cleanupAdapters();
+        if (cleanupErrors.length) {
+          this.containmentStatus = 'failed';
+          this.containmentErrors = cleanupErrors.map(item => String(item?.message ?? item).slice(0, 240));
+        } else if (this.integrityGuard.status.quarantined === true) {
+          this.containmentStatus = 'contained';
+          this.containmentErrors = [];
+        }
       }
       this.started = false;
       throw error;
