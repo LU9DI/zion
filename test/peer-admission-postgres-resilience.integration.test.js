@@ -209,3 +209,81 @@ test('a revocation notification missed during listener downtime cannot authorize
     await isolated.cleanup();
   }
 });
+
+
+test('revocation serializes with an in-flight trusted-allowlist dispatch', {
+  skip: !enabled && 'set ZION_POSTGRES_TEST_URL to run real PostgreSQL integration tests',
+}, async () => {
+  const isolated = await createIsolatedPool('zion_allowlist_revoke_fence_race_test', {
+    max: 3,
+    connectionTimeoutMillis: 1000,
+    idleTimeoutMillis: 1000,
+  });
+  const { pool } = isolated;
+  const store = new PostgresPeerAdmissionStore({ pool });
+  const trustedNodeId = 'c'.repeat(64);
+  let markDispatchStarted;
+  let releaseDispatch;
+  const dispatchStarted = new Promise(resolve => { markDispatchStarted = resolve; });
+  const dispatchGate = new Promise(resolve => { releaseDispatch = resolve; });
+
+  try {
+    await applyMigration(pool);
+
+    // This identity has no admission row and is authorized only by the
+    // bootstrap allowlist. Its dispatch must still share the durable fence.
+    const inFlightDispatch = store.withPeerAuthorizationFence(
+      trustedNodeId,
+      { allowUnadmitted: true },
+      async () => {
+        markDispatchStarted();
+        await dispatchGate;
+        return 'trusted-frame-dispatched';
+      },
+    );
+    await within(dispatchStarted, 'trusted dispatch did not acquire its authorization fence');
+
+    let revocationFinished = false;
+    const revocation = store.revokeAdmission(trustedNodeId).then(result => {
+      revocationFinished = true;
+      return result;
+    });
+
+    let observedLockWait = false;
+    const waitDeadline = Date.now() + 2000;
+    while (!observedLockWait && Date.now() < waitDeadline) {
+      const { rows } = await pool.query(
+        "SELECT count(*)::integer AS count FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE 'SELECT pg_advisory_xact_lock(hashtextextended%'",
+      );
+      observedLockWait = Number(rows[0]?.count ?? 0) > 0;
+      if (!observedLockWait) await new Promise(resolve => setTimeout(resolve, 10));
+    }
+
+    assert.equal(observedLockWait, true,
+      'revocation must wait for the trusted-allowlist dispatch shared advisory lock');
+    assert.equal(revocationFinished, false,
+      'revocation must not commit while the authorized dispatch is still running');
+
+    releaseDispatch();
+    assert.deepEqual(await within(inFlightDispatch, 'trusted dispatch did not finish'), {
+      ok: true,
+      admitted: true,
+      status: 'trusted-allowlist',
+      value: 'trusted-frame-dispatched',
+    });
+    assert.deepEqual(
+      { ...(await within(revocation, 'revocation did not finish')) },
+      { ok: true, changed: true, subjectNodeId: trustedNodeId, status: 'revoked', tombstone: true },
+    );
+
+    const laterFrame = await store.withPeerAuthorizationFence(
+      trustedNodeId,
+      { allowUnadmitted: true },
+      async () => 'must-not-dispatch',
+    );
+    assert.deepEqual(laterFrame, { ok: true, admitted: false, status: 'revoked' });
+  } finally {
+    releaseDispatch();
+    await isolated.cleanup();
+  }
+});
