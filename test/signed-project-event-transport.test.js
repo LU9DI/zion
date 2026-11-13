@@ -25,7 +25,8 @@ test('replicates a signed project event over authenticated P2P transport and ack
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const sourceIdentity = createNodeIdentity();
   const receiverIdentity = createNodeIdentity();
-  const sourceLog = new SignedProjectEventLog(join(dir, 'source.events'), { identity: sourceIdentity });
+  const historicalTimestamp = Date.now() - 10 * 60 * 1000;
+  const sourceLog = new SignedProjectEventLog(join(dir, 'source.events'), { identity: sourceIdentity, now: () => historicalTimestamp });
   t.after(() => sourceLog.close());
   await sourceLog.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: { name: 'p2p' } });
   const record = sourceLog.snapshotRecords().records[0];
