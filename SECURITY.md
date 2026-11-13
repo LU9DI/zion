@@ -39,3 +39,8 @@ Challenge responses are Ed25519-signed and bind a fresh random nonce, validity w
 ## Response and disclosure
 
 Security reports should be triaged, reproduced safely, and linked to a fix and regression test where possible. Public advisories should describe affected versions, impact, mitigations, and fixed versions without exposing unnecessary exploit detail or secrets.
+
+
+## Fully decentralized security target
+
+The mandatory security and attack-resilience requirements for the decentralized network are tracked in [docs/DECENTRALIZED_SECURITY_REQUIREMENTS.md](docs/DECENTRALIZED_SECURITY_REQUIREMENTS.md). The target includes decentralized key rotation/revocation, BFT authorization, peer/eclipsing/Sybil defenses, bounded DoS resource budgets, OS isolation, storage verification, supply-chain protection, incident recovery, and adversarial release gates. These are requirements and work items, not a statement that all protections are already operational.
