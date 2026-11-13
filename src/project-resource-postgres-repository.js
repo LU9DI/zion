@@ -124,11 +124,7 @@ export class PostgresProjectResourceRepository {
               WHERE project_id = $1 AND lifecycle_status IN ('paused', 'storage_release_pending')`,
             [id, at],
           );
-          await client.query(
-            `UPDATE project_storage_leases SET lease_status = 'release_pending'
-              WHERE project_id = $1 AND lease_status IN ('reserved', 'active')`,
-            [id],
-          );
+
         },
 
         cancelStorageReleasePending: async id => {
@@ -138,11 +134,7 @@ export class PostgresProjectResourceRepository {
               WHERE project_id = $1 AND lifecycle_status = 'storage_release_pending'`,
             [id],
           );
-          await client.query(
-            `UPDATE project_storage_leases SET lease_status = 'active'
-              WHERE project_id = $1 AND lease_status = 'release_pending'`,
-            [id],
-          );
+
         },
 
         listLiveStorageLeases: async id => {
