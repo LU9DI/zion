@@ -51,6 +51,21 @@ test('event log rejects a second process opening the same journal', () => {
   } finally { f.cleanup(); }
 });
 
+test('event log recovers a stale lock written by a terminated process', async () => {
+  const f = fixture();
+  try {
+    writeFileSync(f.path + '.lock', JSON.stringify({ pid: 2147483647, token: 'stale-lock-token' }) + '\n');
+    const log = new SignedProjectEventLog(f.path, { identity: f.identity });
+    await log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: { recovered: true } });
+    assert.equal(log.snapshot().count, 1);
+    log.close();
+    assert.equal(readFileSync(f.path + '.lock', 'utf8').length, 0);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return;
+    throw error;
+  } finally { f.cleanup(); }
+});
+
 test('event log fails closed on a truncated trailing record', async () => {
   const f = fixture();
   try {
