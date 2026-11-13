@@ -657,33 +657,33 @@ export class PeerTransport {
         }
       };
       try {
-      if (socket.__zionSession?.admissionRequired) {
-        if (typeof this.admissionController?.withPeerAuthorizationFence !== 'function') {
-          socket.destroy();
-          return;
+        if (socket.__zionSession?.admissionRequired) {
+          if (typeof this.admissionController?.withPeerAuthorizationFence !== 'function') {
+            socket.destroy();
+            return;
+          }
+          const fenced = await this.admissionController.withPeerAuthorizationFence(
+            checked.nodeId,
+            { allowUnadmitted: socket.__zionSession.trustedByAllowlist === true },
+            async () => {
+              // The PostgreSQL shared advisory lock is held across this callback.
+              // Revocation/release takes the exclusive lock, so it cannot commit
+              // between this durable authorization check and application dispatch.
+              if (socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
+                  (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) {
+                return { dispatched: false };
+              }
+              await dispatch();
+              return { dispatched: true };
+            },
+          );
+          if (!fenced?.ok || !fenced.admitted || !fenced.value?.dispatched) {
+            socket.destroy();
+            return;
+          }
+        } else {
+          await dispatch();
         }
-        const fenced = await this.admissionController.withPeerAuthorizationFence(
-          checked.nodeId,
-          { allowUnadmitted: socket.__zionSession.trustedByAllowlist === true },
-          async () => {
-            // The PostgreSQL shared advisory lock is held across this callback.
-            // Revocation/release takes the exclusive lock, so it cannot commit
-            // between this durable authorization check and application dispatch.
-            if (socket.destroyed || this.revokedPeerIds.has(checked.nodeId) ||
-                (this.peerAdmissionEpochs.get(checked.nodeId) ?? 0) !== admissionEpoch) {
-              return { dispatched: false };
-            }
-            await dispatch();
-            return { dispatched: true };
-          },
-        );
-        if (!fenced?.ok || !fenced.admitted || !fenced.value?.dispatched) {
-          socket.destroy();
-          return;
-        }
-      } else {
-        await dispatch();
-      }
       } finally {
         this.activeMessageHandlers--;
       }
