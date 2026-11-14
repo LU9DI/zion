@@ -2272,3 +2272,38 @@ First-party references:
 - https://tailscale.com/docs/reference/syntax/policy-file (tag owners, grant policy, and policy tests)
 - https://tailscale.com/docs/features/tags (exact-match tag ownership behavior and tag semantics)
 - https://tailscale.com/docs/features/workload-identity-federation (federated identity scope and tag restrictions)
+
+
+## 52. API-only tailnet tag ownership and exact-match federation (2026-11-14)
+
+### Correction and clarification to section 51
+
+The candidate policy's `tagOwners: { "tag:zion-ci": [] }` is not, by itself, a blocker for an API-only tailnet.
+
+Tailscale's current tag documentation makes two distinct rules clear:
+
+1. An empty tag-owner list means the tag has no delegated tag owners; in an ordinary tailnet, Owners, Admins, and Network admins can apply it.
+2. For OAuth clients and auth keys, when the requested device tags exactly match the full tag set on the authenticating credential, Tailscale's exact-match check does not consult `tagOwners`. The owner hierarchy is consulted for other combinations, such as requesting a subset or a different tag.
+
+The GitHub workload identity flow registers the runner using the federated identity's configured tags. Therefore, the intended Zion arrangement is exact-match:
+- Federated identity allowed tags: exactly [`tag:zion-ci`].
+- GitHub Action requested tags: exactly [`tag:zion-ci`].
+- No additional tag and no subset request.
+- Federated identity scope: `auth_keys` only.
+
+This avoids relying on a human Owner/Admin/Network admin being present in an API-only tailnet, which by design has no human users and no admin console. The API-only tailnet still needs the tag to be defined in its policy before the grant and workload identity can use it.
+
+### Required verification remains
+
+This is a documented authorization path, not runtime evidence. Before setting `ZION_ISOLATED_TAILNET_READY=true`:
+1. Confirm the child tailnet policy was accepted with the `tag:zion-ci` definition and the narrow TCP `26656` grant.
+2. Read back the federated identity and verify the exact single tag, `auth_keys` scope, issuer, subject, workflow claim, and audience.
+3. Run the workflow in the isolated tailnet and verify both ephemeral nodes register with only `tag:zion-ci`, establish bidirectional TCP `26656`, and disappear after the job.
+4. Verify the complete effective policy has no broad grants. A narrow grant cannot subtract permissions from another grant.
+
+No Tailscale API request was made. No tailnet, policy, trust credential, secret, variable, device, or runner was created or changed. The personal tailnet remains untouched. Keep the readiness gate closed until the checks above have evidence.
+
+First-party references:
+- https://tailscale.com/docs/features/tags (exact-match tag behavior does not consult tagOwners)
+- https://tailscale.com/docs/features/workload-identity-federation (runner tags must match the federated identity; auth_keys scope)
+- https://tailscale.com/docs/features/tailnets-api (API-only tailnets have no human users or admin console)
