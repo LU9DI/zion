@@ -277,3 +277,21 @@ Execution outcome:
 The next valid execution environment must provide a full disposable checkout, outbound access to the pinned Go module sources (or a verified offline module cache), and enough process/network isolation to run eight validator processes. Docker is convenient but not intrinsically mandatory if the harness uses separate native processes, isolated data directories, and distinct P2P/RPC/ABCI ports. Before the PoC begins, the harness must also define CPU, memory, disk, file-descriptor and port budgets; do not infer acceptable scale after seeing the results.
 
 This blocker must not be bypassed by copying a partial subset of upstream source files, silently changing the pinned release, weakening the two-project matrix, or treating source inspection as a successful build/test.
+
+
+## 13. Additional in-process isolation blocker found by source inspection
+
+A follow-up read-only inspection found a concrete obstacle to running multiple ordinary CometBFT `Node` objects in one process with the default Prometheus instrumentation enabled:
+
+- CometBFT `v0.38.26/node/setup.go` implements `DefaultMetricsProvider` by constructing each subsystem's metrics through `PrometheusMetrics` when `config.Prometheus` is enabled.
+- The pinned `github.com/go-kit/kit v0.13.0` implementation of `metrics/prometheus.NewGaugeFrom`, `NewCounterFrom`, and `NewHistogramFrom` calls `prometheus.MustRegister`, which registers collectors in the package's default global registry.
+- CometBFT `v0.38.26/node/node.go` serves metrics through `prometheus.DefaultRegisterer` and `prometheus.DefaultGatherer`.
+- Consequently, two nodes in one process using the ordinary default metrics provider and the same metric descriptors can collide during collector registration (and the MustRegister path can panic). A per-chain label value does not by itself create an independent registry.
+
+This is a source-derived integration risk, not a reproduced runtime failure in this session. It means the in-process topology must explicitly test at least:
+1. two `Node` objects with Prometheus enabled and the unmodified default provider (expected to expose the registration collision);
+2. two nodes with metrics disabled, to determine whether other shared package-level state remains;
+3. a custom per-instance metrics provider/registry design, if the upstream API permits it without a fork, including independent HTTP exposition and shutdown;
+4. concurrent start/stop/restart and registry cleanup, ensuring one node cannot unregister, mutate, or hide another node's metrics.
+
+Disabling metrics or patching instrumentation would remove only this identified obstacle; it would not establish safe isolation of consensus, WAL, databases, listeners, global state, goroutines, or crash recovery. The separate-process topology remains the first PoC target.
