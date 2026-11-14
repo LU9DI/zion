@@ -1988,3 +1988,45 @@ Until those checks pass, keep `ZION_ISOLATED_TAILNET_READY` unset/false and the 
 - Tailscale trust credential scopes (`tailnets`, `policy_file`, `devices:core:read`, `devices:posture_attributes`, `auth_keys`, and `federated_keys`): https://tailscale.com/docs/reference/trust-credentials
 - Tailscale workload identity federation and ephemeral node registration: https://tailscale.com/docs/features/workload-identity-federation
 - Tailscale GitHub Action: https://tailscale.com/docs/integrations/github/github-action
+
+
+## 46. Least-privilege scope map and prevent accidental use of the personal tailnet (2026-11-14)
+
+### Verified scope boundaries
+
+The current Tailscale trust-credential reference explicitly documents these endpoint permissions:
+
+| Purpose | Minimum documented scope | Endpoint capability |
+|---|---|---|
+| Create/list API-only tailnets from the organization tailnet | `tailnets` | `GET /api/v2/organizations/:organization/tailnets`, `POST /api/v2/organizations/:organization/tailnets` |
+| Create a child-tailnet federated identity | `federated_keys` | `POST /api/v2/tailnet/:tailnet/keys` for federated identities |
+| Read child-tailnet device inventory for cleanup verification | `devices:core:read` | `GET /api/v2/tailnet/:tailnet/devices`, `GET /api/v2/device/:deviceID` |
+| Remove a specific child-tailnet device if an explicitly authorized cleanup controller is later added | `devices:core` | Includes `DELETE /api/v2/device/:deviceID`; this is write authority and is not needed by the read-only verifier |
+| Read/validate policy | `policy_file:read` plus `devices:posture_attributes:read` and `devices:core:read` | Policy read/validation endpoints |
+| Write policy during one-time bootstrap only | `policy_file` plus `devices:posture_attributes` and `devices:core:read` | Policy write endpoint; keep separate from CI node registration |
+
+The scope reference documents `tailnets` as list/create only; it does not list a delete-tailnet operation under that scope. The general `all` scope grants all current and future API endpoints. Therefore the design must not infer that `tailnets` can delete a tailnet, and must not grant `all` merely to make deletion possible.
+
+### Credential separation correction
+
+The existing repository secrets `TS_OAUTH_CLIENT_ID` and `TS_AUDIENCE` were configured during the earlier direct-tailnet setup. That setup used the user's existing personal tailnet, whose default policy was found to contain a broad allow-all grant. Those credentials must never be treated as proof of, or credentials for, the dedicated API-only Zion CI tailnet.
+
+The workflow has therefore been changed to read only these distinct repository secrets:
+- `ZION_CI_TS_OAUTH_CLIENT_ID`
+- `ZION_CI_TS_AUDIENCE`
+
+This is a fail-closed separation by secret name. It does not create or populate those secrets. Until they contain the identifiers for a child-tailnet federated identity that has been independently verified, the workflow must report NOT RUN. Do not copy the existing personal-tailnet values into the new names.
+
+The workflow still requires both `ZION_ENABLE_COMETBFT_NETWORK_SMOKE=true` and `ZION_ISOLATED_TAILNET_READY=true`. The readiness variable is an operator assertion only; it must not be set until the API-only tailnet, child federated identity, restricted tag, and effective policy have been verified.
+
+### Remaining uncertainty
+
+The Tailnets API guide states that the create-tailnet response contains an OAuth client that permits access to the new tailnet, but the accessible documentation does not specify the exact effective scopes assigned to that returned client. The supported bootstrap route must therefore be verified from the actual response schema and a controlled non-production API test before relying on that credential to create a child federated identity. Do not assume it has `federated_keys`, `all`, or any other scope without evidence.
+
+The trust-credential scope table does not document a least-privilege organization-level delete-tailnet scope. This is not a blocker for the selected persistent-tailnet design because routine CI does not delete the tailnet. Device cleanup verification is read-only and can use `devices:core:read`; automated device deletion would require the stronger `devices:core` scope and is deliberately not included in the runner workflow.
+
+### Current state
+
+The workflow now uses distinct `ZION_CI_*` secret names and no longer references the generic direct-tailnet secret names. No new secret values have been created or populated. No tailnet or credential has been created, no API request has been made, no policy has been written, and no runtime network test has been run.
+
+Official reference: https://tailscale.com/docs/reference/trust-credentials and https://tailscale.com/docs/features/tailnets-api
