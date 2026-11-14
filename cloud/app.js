@@ -25,7 +25,7 @@
   const fileClass = f => f.type === 'imagem' ? 'image' : f.type === 'video' ? 'video' : f.type === 'outro' ? 'other' : '';
   const iconFor = f => f.icon || (f.type === 'imagem' ? '▧' : f.type === 'video' ? '▶' : f.type === 'outro' ? '▤' : 'DOC');
   function renderRecentFiles(){
-    $('recent-files').innerHTML = files.slice(0,4).map(f=>`<div class="file-row"><span class="file-type-icon ${fileClass(f)}">${safe(iconFor(f))}</span><div class="file-info"><strong>${safe(f.name)}</strong><small>${safe(f.modified)}</small></div><span class="file-size">${fmtSize(f.size)}</span></div>`).join('') || '<p class="subheading">Nenhum file por enquanto.</p>';
+    $('recent-files').innerHTML = files.slice(0,4).map(f=>`<div class="file-row"><span class="file-type-icon ${fileClass(f)}">${safe(iconFor(f))}</span><div class="file-info"><strong>${safe(f.name)}</strong><small>${safe(f.modified)}</small></div><span class="file-size">${fmtSize(f.size)}</span></div>`).join('') || '<p class="subheading">Nenhum arquivo por enquanto.</p>';
     $('file-count').textContent = String(128 + Math.max(0, files.length - demoFiles.length));
   }
   function renderFiles(){
@@ -38,7 +38,7 @@
     $('all-files').closest('.file-table-wrap').classList.toggle('compact', gridView);
   }
   function renderActivity(target='recent-activity', items=activity.slice(0,3)){
-    $(target).innerHTML = items.map(a=>`<div class="activity-row"><span class="activity-icon">${safe(a.icon)}</span><div class="activity-copy"><strong>${safe(a.title)}</strong><p>${safe(a.detail)}</p></div><span class="activity-time">${safe(a.time)}</span></div>`).join('') || '<p class="subheading">Nenhuma activity nesta visualização.</p>';
+    $(target).innerHTML = items.map(a=>`<div class="activity-row"><span class="activity-icon">${safe(a.icon)}</span><div class="activity-copy"><strong>${safe(a.title)}</strong><p>${safe(a.detail)}</p></div><span class="activity-time">${safe(a.time)}</span></div>`).join('') || '<p class="subheading">Nenhuma atividade nesta visualização.</p>';
   }
   let toastTimer;
   function toast(message){const el=$('toast');el.textContent=message;el.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('show'),2800)}
@@ -48,8 +48,8 @@
     document.querySelectorAll('.nav-item[data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===page));
     $('current-crumb').textContent=target.dataset.title;
     $('sidebar').classList.remove('open');
-    if(page==='files') renderFiles();
-    if(page==='activity') renderActivity('all-activity',activity);
+    if(page==='arquivos') renderFiles();
+    if(page==='atividade') renderActivity('all-activity',activity);
     if(page==='notificacoes') void loadNotifications();
     window.scrollTo({top:0,behavior:'smooth'});
   }
@@ -61,12 +61,12 @@
       const type=['png','jpg','jpeg','gif','webp','svg','heic'].includes(ext)?'imagem':['mp4','mov','webm','mkv'].includes(ext)?'video':['pdf','doc','docx','txt','md','ppt','pptx','xls','xlsx','odt','rtf'].includes(ext)?'documento':'outro';
       files.unshift({name:f.name,type,size:f.size,modified:now,icon:({pdf:'PDF',doc:'W',docx:'W',pptx:'P',xlsx:'X'})[ext] || (type==='imagem'?'▧':type==='video'?'▶':type==='outro'?'▤':'DOC')});
     });
-    activity.unshift({icon:'↥',title:`${incoming.length} file${incoming.length===1?'':'s'} selecionado${incoming.length===1?'':'s'}`,detail:'Adicionado(s) à visualização local; não enviado(s) para a nuvem.',time:now});
+    activity.unshift({icon:'↥',title:`${incoming.length} arquivo${incoming.length===1?'':'s'} selecionado${incoming.length===1?'':'s'}`,detail:'Adicionado(s) à visualização local; não enviado(s) para a nuvem.',time:now});
     renderRecentFiles();renderFiles();renderActivity();renderActivity('all-activity',activity);
-    toast(`${incoming.length} file${incoming.length===1?'':'s'} adicionado${incoming.length===1?'':'s'} added to the local preview.`);
+    toast(`${incoming.length} arquivo${incoming.length===1?'':'s'} adicionado${incoming.length===1?'':'s'} added to the local preview.`);
   }
   const people = [
-    {id:'ana',name:'Ana Costa',handle:'@anacosta',bio:'Design e files abertos',avatar:'A',tone:'teal',following:true},
+    {id:'ana',name:'Ana Costa',handle:'@anacosta',bio:'Design e arquivos abertos',avatar:'A',tone:'teal',following:true},
     {id:'marcos',name:'Marcos Lima',handle:'@marcoslima',bio:'Distributed development',avatar:'M',tone:'',following:false},
     {id:'bia',name:'Beatriz Souza',handle:'@biasouza',bio:'Fotografia e comunidade',avatar:'B',tone:'rose',following:false},
     {id:'rafa',name:'Rafael Alves',handle:'@rafaalves',bio:'Privacidade digital',avatar:'R',tone:'gold',following:true}
@@ -156,7 +156,7 @@
   let notificationRecords = [];
   let notificationsLoading = false;
   const notificationTypes = {
-    'pause-warning': { title: 'Aviso de pausa por inactivity', icon: '◷', style: 'warning' },
+    'pause-warning': { title: 'Aviso de pausa por inatividade', icon: '◷', style: 'warning' },
     'contribution-paused': { title: 'Contribution paused', icon: 'Ⅱ', style: 'paused' },
     'capacity-reduction-warning': { title: 'Capacity reduction warning', icon: '↓', style: 'warning' },
     'capacity-reduction-pending': { title: 'Capacity reduction pending', icon: '⌛', style: 'warning' },
@@ -186,7 +186,7 @@
       const type = notificationTypes[item.type] || { title: 'Aviso do Zion', icon: '•', style: '' };
       const delivery = item.deliveryStatus === 'delivered' ? 'Entregue' : 'Entrega pendente';
       const unread = !item.viewedAt;
-      return `<article class="notification-card"><span class="notification-symbol ${type.style}">${type.icon}</span><div class="notification-main"><strong>${safe(type.title)}</strong><p>${safe(item.message || 'O Zion registrou um evento de inactivity.')}</p><div class="notification-meta"><span>${safe(notificationDate(item.createdAt))}</span><span class="notification-state ${item.deliveryStatus === 'delivered' ? 'delivered' : ''}">${delivery}</span><span class="notification-state ${unread ? 'unread' : ''}">${unread ? 'Não visualizada' : 'Visualizada'}</span></div>${unread ? `<div class="notification-actions"><button type="button" data-notification-view="${safe(item.id)}">Marcar como visualizada</button></div>` : ''}</div></article>`;
+      return `<article class="notification-card"><span class="notification-symbol ${type.style}">${type.icon}</span><div class="notification-main"><strong>${safe(type.title)}</strong><p>${safe(item.message || 'O Zion registrou um evento de inatividade.')}</p><div class="notification-meta"><span>${safe(notificationDate(item.createdAt))}</span><span class="notification-state ${item.deliveryStatus === 'delivered' ? 'delivered' : ''}">${delivery}</span><span class="notification-state ${unread ? 'unread' : ''}">${unread ? 'Não visualizada' : 'Visualizada'}</span></div>${unread ? `<div class="notification-actions"><button type="button" data-notification-view="${safe(item.id)}">Marcar como visualizada</button></div>` : ''}</div></article>`;
     }).join('');
   }
   async function loadNotifications() {
