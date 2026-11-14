@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { constants as bufferConstants } from 'node:buffer';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -67,6 +68,17 @@ test('journal refuses a symbolic-link path without modifying its target', {
       { code: 'ZION_JOURNAL_SYMLINK' },
     );
     assert.equal(readFileSync(target, 'utf8'), 'do-not-modify');
+    assert.equal(existsSync(f.path + '.lock'), false);
+  } finally { f.cleanup(); }
+});
+
+test('journal byte limit cannot exceed the runtime Buffer maximum', () => {
+  const f = fixture();
+  try {
+    assert.throws(
+      () => new DurableCommittedBlockJournal(f.path, { maxBytes: bufferConstants.MAX_LENGTH }),
+      TypeError,
+    );
     assert.equal(existsSync(f.path + '.lock'), false);
   } finally { f.cleanup(); }
 });
