@@ -296,3 +296,34 @@ The test-only harness was hardened after review:
 - Added a regression test asserting these keys are rejected and do not mutate object prototypes.
 
 These are harness correctness/security fixes only. They do not change the previously stated persistence or consensus limitations.
+
+
+## 12. Existing durable journal reuse assessment (2026-11-14)
+
+Inspected the current `src/signed-project-event-log.js`, `src/signed-project-event-replica.js`, and `test/signed-project-event-log.test.js`.
+
+### Reusable engineering mechanisms
+
+The local event log already provides useful, tested mechanisms:
+
+- A single-writer lock that fails closed when a lock exists; automatic stale-lock deletion is disabled.
+- Serialized appends within one process.
+- Bounded journal size and record count.
+- Hash-chained, signed records and startup verification.
+- Full-write loops, file `fsync`, directory `fsync` when the journal is first created.
+- Rollback to the descriptor's original size after append I/O errors, followed by poisoning the instance until close/recovery.
+- Startup rejection of incomplete trailing records, malformed JSON, identity mismatch, sequence gaps, and hash-chain mismatch.
+
+The replica has analogous durable receiver mechanics, but it is explicitly a replication journal and not a commitment authority.
+
+### Why direct reuse is not approved
+
+The existing log is scoped to one node identity and one local sequence. It is not a transaction manager for the committed application projection, does not atomically coordinate multiple projection indexes, and does not establish quorum commitment. Its replica accepts authenticated contiguous events but does not decide which events are final.
+
+A possible future adapter could append one complete, canonical block-commit envelope per height (including state delta or snapshot reference, app hash, operation results, and outbox entries) as a single durable record, then rebuild projections by replay. That would require a separate record schema, application-level validation, replay rules, compaction/snapshot protocol, key-lifecycle decision, and dedicated fault-injection tests. Reusing the existing event type or treating its local sequence as a consensus height would be incorrect.
+
+### Decision
+
+Reuse only the journal's proven low-level durability patterns as implementation references. Do not directly wire `SignedProjectEventLog` or `SignedProjectEventReplica` into ABCI `Commit`, do not relabel replicated events as committed state, and do not change production startup paths.
+
+Next gate: prototype a separate append-only committed-block journal in the test area, or select a transactional embedded store after a dependency/runtime compatibility review. The prototype must be tested with real process termination and restart; in-memory fault injection is insufficient.
