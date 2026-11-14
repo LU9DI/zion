@@ -2337,3 +2337,49 @@ Keep `ZION_ISOLATED_TAILNET_READY` unset/false. Do not enable the workflow or cr
 First-party reference:
 - https://tailscale.com/docs/features/tailnets-api (child OAuth client and child-tailnet federated identity flow)
 - https://tailscale.com/docs/reference/trust-credentials (credential scope and revocation semantics)
+
+
+## 54. API-only child-tailnet provisioning sequence and credential lifecycle (2026-11-14)
+
+### Verified constraints from current Tailscale documentation
+
+- API-only tailnets are an alpha feature and do not appear in the organization admin console or contain human users.
+- The organization limit is ten total tailnets, including the original tailnet.
+- Creating a child tailnet requires a trust credential in the parent/original tailnet with the `tailnets` scope.
+- The create response contains an OAuth client for the child tailnet.
+- A federated identity for the child must be created using that returned child-tailnet OAuth client. Parent federated identity token exchange cannot select the child tailnet.
+- `federated_keys` is the scope that permits creating federated identities through the Tailscale API.
+- Revoking a trust credential revokes its active access tokens, but does not revoke child trust credentials or auth keys it created. Those must be inventoried and revoked separately.
+
+### Safe provisioning sequence
+
+1. **Preflight:** check the organization's existing tailnet count; do not attempt creation if the total would exceed ten. Confirm the organization accepts the API-only alpha limitations and that no human device must join the child tailnet.
+2. **Parent bootstrap:** use a dedicated, temporary parent-tailnet OAuth client with only `tailnets` to create the child. Do not use an `all`-scope credential merely for convenience.
+3. **Capture child credential once:** securely capture the child OAuth client returned by the create response. Never print its secret in logs, terminal transcripts, issues, or chat.
+4. **Inspect before use:** determine the returned child OAuth client's actual scopes and tag restrictions. The current public Tailnets API guide documents that the response contains an OAuth client but does not enumerate its exact scopes. Historical reports of `all` must not be treated as current proof.
+5. **Create child federation:** only if the child credential has the required and acceptable authority, create the Zion GitHub OIDC federated identity in the child tailnet with exactly `auth_keys` and exactly `tag:zion-ci`; use the exact issuer, subject, workflow claim, and generated audience already documented in section 50.
+6. **Policy and read-back:** write/validate the child policy using a separately scoped and explicitly authorized policy-management credential; read back the policy and federated identity. Do not broaden the runner identity to manage policy.
+7. **Credential cleanup:** revoke the temporary parent bootstrap credential and any temporary child OAuth credential that is no longer required. Separately inventory and revoke any child credentials created by them; parent revocation alone does not cascade.
+8. **Readiness proof:** only after policy and identity read-back, run the opt-in smoke workflow. Verify two ephemeral nodes, exact tag, bidirectional TCP 26656, and node removal after completion. Only then set `ZION_ISOLATED_TAILNET_READY=true`.
+
+### Authority separation
+
+| Actor | Required authority | Must not receive |
+|---|---|---|
+| Parent bootstrap | `tailnets` in parent tailnet | Runner credentials; ongoing policy authority |
+| Child identity provisioner | `federated_keys` in child tailnet, plus only explicitly required setup scopes | Parent-wide `all` credential in workflow |
+| Policy administrator | `policy_file` and its documented dependencies, only during setup | GitHub runner OIDC identity |
+| GitHub runner identity | `auth_keys`, tag exactly `tag:zion-ci` | `all`, `federated_keys`, `tailnets`, `policy_file`, device-admin scopes |
+
+### Explicit unresolved question
+
+The current public Tailnets API guide does not publish the exact scopes of the child OAuth client returned by tailnet creation. Do not assume it is least-privileged or that it is currently `all`. Verify the actual credential response and current behavior in a disposable authorized test or obtain written confirmation from Tailscale Support before using it. If the returned child credential is broader than needed, use it only as a tightly controlled, one-time bootstrap credential, create the narrow child federated identity, then revoke it and separately inspect/revoke any child credentials it created.
+
+### Current execution state
+
+No tailnet was created. No OAuth or federated credential was created, read, or revoked by this work. No organization tailnet count was queried. The existing user's tailnet remains untouched. The GitHub repository has no child-tailnet Client ID/Audience evidence from Tailscale. Keep the workflow readiness gate closed.
+
+First-party references:
+- https://tailscale.com/docs/features/tailnets-api
+- https://tailscale.com/docs/reference/trust-credentials
+- https://tailscale.com/docs/features/workload-identity-federation
