@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
+import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -34,7 +35,6 @@ for (const kind of ['event log', 'replica']) {
     let source;
     let journal;
     const originalWrite = fs.writeSync.bind(fs);
-    const originalTruncate = fs.ftruncateSync.bind(fs);
     let writeInjected = false;
     try {
       if (kind === 'event log') {
@@ -104,13 +104,13 @@ for (const kind of ['event log', 'replica']) {
 }
 
 for (const kind of ['event log', 'replica']) {
-  test(`${kind} rolls back a close failure and retries descriptor close`, async t => {
+  test(`${kind} rolls back a journal-file descriptor close failure and retries that close`, async t => {
     const f = fixture();
     const path = kind === 'event log' ? f.path : join(f.dir, 'replica.events');
     let source;
     let journal;
     const originalClose = fs.closeSync.bind(fs);
-    let closeCalls = 0;
+    let journalFdCloseAttempts = 0;
     try {
       let record;
       if (kind === 'event log') {
@@ -123,8 +123,12 @@ for (const kind of ['event log', 'replica']) {
       }
 
       t.mock.method(fs, 'closeSync', fd => {
-        closeCalls++;
-        if (closeCalls === 1) throw Object.assign(new Error('injected descriptor close failure'), { code: 'EIO' });
+        if (fs.fstatSync(fd).isFile()) {
+          journalFdCloseAttempts++;
+          if (journalFdCloseAttempts === 1) {
+            throw Object.assign(new Error('injected journal descriptor close failure'), { code: 'EIO' });
+          }
+        }
         return originalClose(fd);
       });
       syncBuiltinESMExports();
@@ -139,7 +143,7 @@ for (const kind of ['event log', 'replica']) {
       }
 
       restoreMocks(t);
-      assert.equal(closeCalls, 2);
+      assert.equal(journalFdCloseAttempts, 2);
       assert.equal(readFileSync(path).length, 0);
       if (kind === 'event log') {
         assert.equal(journal.snapshot().count, 0);
@@ -158,6 +162,71 @@ for (const kind of ['event log', 'replica']) {
     } finally {
       restoreMocks(t);
       try { journal?.close(); } catch { /* Preserve the test failure. */ }
+      try { source?.close(); } catch { /* Preserve the test failure. */ }
+      f.cleanup();
+    }
+  });
+}
+
+for (const kind of ['event log', 'replica']) {
+  test(`${kind} fails closed after an abrupt child-process exit during a partial append`, async t => {
+    const f = fixture();
+    const path = kind === 'event log' ? f.path : join(f.dir, 'replica.events');
+    let source;
+    try {
+      let recordArg = 'null';
+      let childSetup;
+      if (kind === 'event log') {
+        childSetup = `
+          import { createNodeIdentity } from './src/peer-security.js';
+          import { SignedProjectEventLog } from './src/signed-project-event-log.js';
+          const journal = new SignedProjectEventLog(path, { identity: createNodeIdentity() });
+          const append = () => journal.append({ projectId: '${PROJECT}', eventType: 'PROJECT_CREATED', data: {} });
+        `;
+      } else {
+        source = new SignedProjectEventLog(f.path, { identity: f.identity });
+        await source.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: {} });
+        recordArg = JSON.stringify(source.snapshotRecords().records[0]);
+        childSetup = `
+          import { SignedProjectEventReplica } from './src/signed-project-event-replica.js';
+          const journal = new SignedProjectEventReplica(path, { authorizePeer: () => true });
+          const record = JSON.parse(process.argv[2]);
+          const append = () => journal.ingest(record);
+        `;
+      }
+      const script = `
+        import fs from 'node:fs';
+        import { syncBuiltinESMExports } from 'node:module';
+        const path = process.argv[1];
+        ${childSetup}
+        const originalWrite = fs.writeSync.bind(fs);
+        let injected = false;
+        fs.writeSync = (...args) => {
+          if (!injected) {
+            injected = true;
+            originalWrite(args[0], args[1], args[2], Math.min(7, args[3]));
+            process.exit(86);
+          }
+          return originalWrite(...args);
+        };
+        syncBuiltinESMExports();
+        await append();
+        process.exit(87);
+      `;
+      const args = kind === 'event log'
+        ? ['--input-type=module', '-e', script, path]
+        : ['--input-type=module', '-e', script, path, recordArg];
+      const child = spawnSync(process.execPath, args, { encoding: 'utf8', timeout: 15_000 });
+      assert.equal(child.status, 86, child.stderr || child.stdout);
+      // The lock is intentionally left by a crashed process. This test performs
+      // explicit operator recovery before validating the journal bytes.
+      rmSync(`${path}.lock`, { force: true });
+      assert.equal(readFileSync(path).length, 7);
+      assert.throws(() => kind === 'event log'
+        ? new SignedProjectEventLog(path, { identity: f.identity })
+        : new SignedProjectEventReplica(path, { authorizePeer: () => true }),
+      error => error.code === (kind === 'event log' ? 'ZION_EVENT_LOG_CORRUPT' : 'ZION_REPLICA_CORRUPT'));
+    } finally {
       try { source?.close(); } catch { /* Preserve the test failure. */ }
       f.cleanup();
     }
