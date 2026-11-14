@@ -373,3 +373,35 @@ The stale-lock cleanup API requires an explicit caller assertion that no writer 
 ### Gate
 
 Do not wire this prototype into ABCI `Commit`, production startup, invitation redemption, or network membership. Before considering an adapter, run the full test suite and syntax checks on supported Node versions and operating systems; extend fault injection to actual short-write and filesystem-error conditions, disk-full behavior, process termination at every write boundary, and restart after each boundary; define snapshot/compaction and retention; and obtain independent review of filesystem and lock semantics.
+
+
+### CI execution evidence and follow-up review (2026-11-14)
+
+The prototype's tests are now executed by GitHub Actions at commit
+`3412fb896d028ddbd520eac34256a3657266d084`:
+
+- Zion validation run `43636390722`, validation job `132574012941`, completed
+  successfully on the Ubuntu 26.04 GitHub-hosted runner.
+- The Node test step reported 839 tests: 836 passed, 0 failed, and 3 skipped.
+  The durable-journal cases, including the child-process exit immediately after
+  `fsync`, ran and passed in that job.
+- The same validation run's real ClamAV integration job completed successfully.
+- CodeQL run `43636390771` completed successfully for JavaScript/TypeScript and
+  Rust.
+
+This is evidence for that exact commit and Linux runner only. It is not a
+Windows/macOS compatibility result, a power-loss test, or a production
+readiness/security certification. In particular, the deliberate
+`O_NOFOLLOW` fail-closed behavior still requires a supported-platform policy
+before this prototype can be used outside its test scope.
+
+A further lock-path limitation was identified during source review: `close()`
+reads the lock's token/PID and then unlinks the pathname. The sequential
+replacement-lock test proves that a replacement already present at read time
+is preserved, but it does not close the race in which another process replaces
+the path between the ownership read and `unlinkSync`. Node's current path-based
+unlink operation does not provide an atomic "unlink only if this directory
+entry still refers to the verified inode" guarantee. Parent-directory
+replacement and hostile directory traversal are also outside this prototype's
+proven guarantees. These limitations must remain explicit; do not describe
+lock cleanup or path handling as race-free.
