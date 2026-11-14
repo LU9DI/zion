@@ -830,3 +830,59 @@ A per-run Compose project name remains useful for ordinary Compose lifecycle ope
 - Cross-testnet deletion on one shared daemon: directly implied by the global label selectors; not experimentally exercised.
 - No runner, Docker command, VM, container, network, or volume was executed, provisioned, or modified.
 - No Zion runtime, consensus implementation, dependency, launcher, database, migration, or production configuration was changed.
+
+## 24. Cleanup path derivation, writable bind mount, and partial-failure states
+
+A further read-only inspection of the pinned CometBFT v0.38.26 sources identifies a second cleanup boundary: the runner derives the deletion target from the caller-supplied manifest filename, then uses a writable Docker bind mount before recursively removing that path.
+
+### 24.1 Exact source behavior
+
+The upstream file `test/e2e/pkg/testnet.go` shows:
+
+- `LoadTestnet(file, ...)` calls `LoadManifest(file)` and passes the same `file` string to `NewTestnetFromManifest`.
+- `NewTestnetFromManifest` sets `dir := strings.TrimSuffix(file, filepath.Ext(file))`, then assigns that value directly to `Testnet.Dir`.
+- This derivation does not itself canonicalize the path, constrain it to a dedicated scratch root, or reject symlinked path components.
+
+The upstream file `test/e2e/runner/cleanup.go` shows:
+
+- `cleanupDir` rejects an empty path, calls `os.Stat(dir)`, and returns early only when the path does not exist.
+- It then computes `filepath.Abs(dir)` and runs Docker with `-v <absolute-path>:/network`, without a read-only mount option, executing `rm -rf /network/*/`.
+- Only after that Docker command succeeds does it call `os.RemoveAll(dir)`.
+- The bind-mounted directory is therefore intentionally writable by the cleanup container. Docker documents that bind mounts are writable by default and can modify or delete host files through the mount.
+
+These observations establish the path flow and write capability. They do not, by themselves, prove a remotely exploitable path traversal: the manifest path is a runner invocation input, and exploitability depends on who controls that input, filesystem layout, daemon privileges, and execution environment.
+
+### 24.2 Cleanup partial-failure states
+
+The ordering in `Cleanup` and `cleanupDocker` creates non-atomic outcomes:
+
+1. Container removal runs before network removal. If container removal succeeds but network removal fails, the function returns before directory cleanup; some Docker resources may already be gone while the testnet directory remains.
+2. If both global Docker cleanup steps succeed but the temporary cleanup-container invocation fails, `cleanupDir` returns before `os.RemoveAll`; the directory remains, although the global labeled containers and networks have already been removed.
+3. If the cleanup container succeeds but `os.RemoveAll(dir)` fails, the contents selected by the container-side glob may already have been deleted while the directory itself or entries not matched by that glob remain.
+4. There is no transaction or rollback across Docker container removal, network removal, container-side file deletion, and host-side `os.RemoveAll`. Retrying cleanup repeats the global label-based Docker deletion.
+
+The exact surviving state after a failure depends on which command completed and on the directory contents. The runner does not provide an atomic cleanup guarantee.
+
+### 24.3 Required path and privilege controls
+
+Before any controlled runner experiment:
+
+1. Use a dedicated, pre-created scratch root inside the disposable VM. Require the manifest and derived testnet directory to be strict descendants of that root; reject empty, root, home, repository, shared, and otherwise sensitive paths.
+2. Canonicalize and validate the manifest and target paths before runner invocation. Reject symlinks/reparse points in every relevant path component and verify the target's filesystem identity immediately before destructive cleanup; string-prefix checks alone are insufficient.
+3. Ensure the derived target is a dedicated per-run directory, not a parent directory, mount point, shared workspace, or path containing unrelated data. Keep evidence outside the target.
+4. Treat the cleanup container as a privileged file-deletion helper: the writable bind mount must expose only the disposable per-run directory. Never mount a home directory, repository root, host root, credentials, Docker socket, or production data.
+5. Keep one disposable VM and one Docker daemon per concurrent testnet while the upstream global label cleanup remains unchanged. The path controls do not mitigate cross-testnet Docker resource deletion.
+6. Record the exact manifest path, derived `Testnet.Dir`, canonical target, filesystem identity, Docker context/daemon identity, and pre-cleanup inventories. On any mismatch or uncertainty, block before invoking the runner.
+7. Exercise container-removal failure, network-removal failure, cleanup-container failure, host-side removal failure, interrupted cleanup, and repeated cleanup only with disposable scratch data and sentinel files/resources outside the owned target. Preserve evidence of each intermediate state.
+
+A future source-level cleanup redesign should use an explicitly owned experiment root and scoped resource ownership, with path-safe deletion primitives appropriate to the target operating systems. Do not treat a simple canonical-path string check or a lock file as a substitute for filesystem identity and race-resistant containment.
+
+### 24.4 Evidence and status
+
+- Manifest-to-directory derivation: source-inspected in the pinned v0.38.26 `test/e2e/pkg/testnet.go`.
+- Writable bind mount and deletion order: source-inspected in the pinned v0.38.26 `test/e2e/runner/cleanup.go`.
+- Partial-failure ordering: directly follows the inspected sequential error-return paths; not experimentally exercised.
+- Exploitability against an untrusted manifest or attacker-controlled filesystem: not established by this source review and remains environment-dependent.
+- No manifest was executed, no cleanup was invoked, and no filesystem or Docker resource was deleted or modified.
+- No VM, Docker daemon, container, network, or volume was provisioned or changed.
+- No Zion runtime, consensus implementation, dependency, launcher, database, migration, or production configuration was changed.
