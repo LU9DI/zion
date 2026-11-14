@@ -47,6 +47,17 @@ function canonical(value) {
   throw new TypeError('Journal values must be canonical JSON');
 }
 
+function writeAllSync(fd, bytes) {
+  let offset = 0;
+  while (offset < bytes.length) {
+    const written = writeSync(fd, bytes, offset, bytes.length - offset);
+    if (!Number.isInteger(written) || written <= 0) {
+      throw new Error('Journal write made no forward progress');
+    }
+    offset += written;
+  }
+}
+
 const digestWithDomain = (domain, value) => createHash('sha256').update(domain).update(canonical(value)).digest('hex');
 const digest = value => digestWithDomain(DOMAIN, value);
 const stateDigest = value => digestWithDomain('ZION-COMMITTED-STATE-HARNESS-V1\0', value);
@@ -118,7 +129,7 @@ export class DurableCommittedBlockJournal {
     try {
       lockFd = openSync(this.lockPath, 'wx', 0o600);
       this.lockToken = randomUUID();
-      writeSync(lockFd, Buffer.from(JSON.stringify({ pid: process.pid, token: this.lockToken }) + '\n'));
+      writeAllSync(lockFd, Buffer.from(JSON.stringify({ pid: process.pid, token: this.lockToken }) + '\n'));
       fsyncSync(lockFd);
       this.lockFd = lockFd;
       syncDirectory(this.lockPath);
@@ -284,7 +295,6 @@ export class DurableCommittedBlockJournal {
 
   close() {
     if (this.closed) return;
-    this.closed = true;
     if (this.lockFd !== undefined) {
       closeSync(this.lockFd);
       this.lockFd = undefined;
@@ -298,6 +308,7 @@ export class DurableCommittedBlockJournal {
     } catch (error) {
       if (error?.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
     }
+    this.closed = true;
   }
 }
 
