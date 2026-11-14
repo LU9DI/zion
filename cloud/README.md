@@ -1,6 +1,6 @@
 # Zion Cloud web interface preview
 
-A responsive, dependency-free web interface prototype for Zion. All user-facing text in the invitation entry page is in English.
+A responsive, dependency-free web interface prototype for Zion. The main dashboard and invitation entry page use English for user-facing text.
 
 ## Run locally
 
@@ -16,7 +16,7 @@ Open `http://127.0.0.1:4173` in the same computer. Set `PORT` to change the port
 
 Zion is invitation-only. The first 1,000 admitted users form the founding cohort. Every admitted user, including users who joined through an invitation after the founding cohort, may issue an unlimited number of invitations. Each invitation is intended for one successful redemption.
 
-The invitation page is currently a visual/interaction preview only. It does not validate, transmit, redeem, or consume invitation codes and does not create accounts. Do not enter a real invitation secret into this preview.
+Both the main dashboard and invitation entry page are previews only. The dashboard labels simulated data and local-only interactions; it is not connected to a production cloud service. The invitation page is currently a visual/interaction preview only. It does not validate, transmit, redeem, or consume invitation codes and does not create accounts. Do not enter a real invitation secret into this preview.
 
 ## Scope and safety
 
