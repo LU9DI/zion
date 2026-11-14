@@ -1859,7 +1859,7 @@ This is a viable alternative for a bounded CI experiment, not a Zion runtime dep
 
 ### Workflow implementation boundary
 
-The accompanying `.github/workflows/cometbft-private-network-smoke.yml` is deliberately limited to a manually dispatchable or branch-push network smoke test:
+The accompanying `.github/workflows/cometbft-private-network-smoke.yml` is deliberately limited to a branch-push network smoke test. Its `workflow_dispatch` trigger becomes available only after the workflow file exists on the repository's default branch; while PR #68 remains a draft, the branch-push trigger is the usable path:
 
 - It creates two independent matrix jobs (`zion-ci-alpha` and `zion-ci-beta`) on separate `ubuntu-24.04` hosted runners; the matrix allows both jobs to run concurrently and does not share a Docker socket.
 - It uses the Tailscale GitHub Action pinned to the verified v4.4.0 commit and Tailscale client 1.104.4.
@@ -1867,7 +1867,7 @@ The accompanying `.github/workflows/cometbft-private-network-smoke.yml` is delib
 - Each job binds a minimal HTTP health responder only to its own Tailscale IPv4 address in `100.64.0.0/10`; it does not bind to the runner's public interface.
 - Each job resolves the other runner through MagicDNS, verifies that the destination IPv4 address is in the Tailscale CGNAT range, and makes a TCP request on port 26656. Both matrix jobs perform the check, so the smoke test verifies both directions.
 - The health responder returns one fixed string and exposes no workspace files, credentials, or general-purpose proxy.
-- The workflow is not a CometBFT testnet run. It proves only that two independent hosted jobs can establish the intended private path.
+- The workflow is not a CometBFT testnet run. It proves only that two independent hosted jobs can establish the intended private path. It will not create ephemeral tailnet nodes until the explicit opt-in variable and both OIDC values are present.
 
 The workflow intentionally does not run the upstream CometBFT E2E root command, `cleanup`, `benchmark`, or any testnet lifecycle command. The previously documented global Docker cleanup and failure-path hazards remain relevant. Actual CometBFT setup must be a later, separately reviewed step inside each runner's exclusive Docker daemon, with test-only keys and explicit resource limits.
 
@@ -1894,7 +1894,8 @@ Before the network smoke test can run, configure the Tailscale tailnet:
      ]
    }
    ```
-6. Add GitHub Actions repository secrets `TS_OAUTH_CLIENT_ID` and `TS_AUDIENCE`. These identify the federated identity; they are not a reusable Tailscale auth key. The workflow skips the network check and writes an explicit **NOT RUN** summary if either value is absent.
+6. Add GitHub Actions repository secrets `TS_OAUTH_CLIENT_ID` and `TS_AUDIENCE`. These identify the federated identity; they are not a reusable Tailscale auth key.
+7. Add the repository Actions variable `ZION_ENABLE_COMETBFT_NETWORK_SMOKE=true` as an explicit opt-in. Without this variable and both OIDC values, the workflow skips the network check and writes an explicit **NOT RUN** summary; it does not create a Tailscale node.
 
 The same tag is acceptable only for this isolated smoke test because the rule permits just TCP 26656 between these ephemeral nodes. Before the real experiment, review whether distinct alpha/beta tags and narrower direction-specific rules are needed for the exact CometBFT ports and test cases. Do not expose RPC, metrics, or profiling ports to the public Internet.
 
@@ -1902,7 +1903,7 @@ The same tag is acceptable only for this isolated smoke test because the rule pe
 
 - GitHub-hosted jobs use separate GitHub-managed runner VMs; no nested virtualization, external VM API token, or paid cloud VM is required for this smoke test.
 - The Tailscale Action performs logout in its post-job phase and the nodes are ephemeral. GitHub is responsible for decommissioning the hosted runner VM after the job. This is platform-managed lifecycle evidence, not an independently queried cloud-provider VM deletion record.
-- A runner cancellation or abrupt platform failure must not be represented as a successful test. The workflow has a finite job timeout and the experiment remains bounded to the lifetime of the hosted jobs.
+- A runner cancellation or abrupt platform failure must not be represented as a successful test. The workflow has a finite job timeout and the experiment remains bounded to the lifetime of the hosted jobs. The opt-in variable prevents a branch push from joining the tailnet unless the repository owner explicitly enables this experiment.
 - GitHub Actions usage is subject to the repository's plan, visibility, and included-minute limits. No external cloud resource or provider charge is created by this workflow, but GitHub Actions quota/billing must still be respected.
 - This workflow is not authorized to access production secrets, production node keys, Neon, or any Zion runtime environment.
 
