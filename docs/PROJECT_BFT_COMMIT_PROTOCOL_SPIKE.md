@@ -227,3 +227,17 @@ Sources inspected:
 - https://github.com/cometbft/cometbft/blob/v0.38.26/README.md
 
 This re-check does not alter the protocol-selection gate: CometBFT is still not selected, no topology has passed the two-project isolation matrix, and no BFT implementation or dependency has been added.
+## 13. Validator-membership product decision accepted (2026-11-14)
+
+The project decision recorded in [DECENTRALIZED_VALIDATOR_SYBIL_MODEL.md](DECENTRALIZED_VALIDATOR_SYBIL_MODEL.md) is now accepted: Zion uses **project-permissioned validator eligibility under each project's governance policy**, and does not require permissionless validator admission in the current product scope.
+
+This resolves the product-level membership choice that previously blocked comparative BFT evaluation. It does not resolve genesis trust, operator-independence evidence, recovery ceremony, randomness, committee size, or fault threshold. The following constraints now apply to every candidate and PoC:
+
+- Each project has its own validator committee, committee epoch, genesis trust ceremony, and committed membership transitions.
+- Governance approvals authorize a membership change; only the selected BFT protocol can order and commit it.
+- Test reports must distinguish validator keys from actual modeled control domains. Include collocated keys under one adversarial operator and common-host/common-account failure scenarios.
+- No candidate may claim operator uniqueness from public keys, IP addresses, hosts, VRFs, or signatures alone.
+- Quorum loss halts critical project writes. No founder, maintainer, local leader, or hosted service has a bypass.
+- No token, mining, stake, proof-of-personhood provider, centralized identity service, or mandatory hardware attestation is introduced by this decision.
+
+**Effect on the gate:** BFT candidates may now proceed to comparative implementation/isolation evaluation under these assumptions. Production protocol selection remains blocked until the two-project isolation, durable vote recovery, safe reconfiguration, dependency/security, and independent review gates pass. CometBFT remains an evaluation candidate only; no dependency, PoC, or production topology is selected by this decision.
