@@ -2243,16 +2243,13 @@ This is a minimal policy shape to validate in the Tailscale policy editor before
     {
       "src": "tag:zion-ci",
       "proto": "udp",
-      "deny": [
-        "tag:zion-ci:53",
-        "tag:zion-ci:41641"
-      ]
+      "deny": ["tag:zion-ci:53"]
     }
   ]
 }
 ```
 
-The empty tag-owner list leaves tag assignment to tailnet Owners/Admins/Network admins; Tailscale documents that an OAuth/workload identity whose requested tag exactly matches its configured tag can use that tag without a broader tag-owner hierarchy. The federated identity must still be restricted to the single `tag:zion-ci` tag and `auth_keys` scope. Do not add a second deployment/owner tag merely to make tag assignment work.
+The empty tag-owner list is valid: Tailscale treats the tag as assignable by tailnet Owners, Admins, and Network admins. Tailscale also documents exact-tag matching for OAuth clients and auth keys; the GitHub workload identity must separately be configured with the single `tag:zion-ci` tag, and the GitHub Action must request that exact tag. Keep the federated identity at `auth_keys` only. Do not add a second deployment/owner tag merely to make tag assignment work.
 
 ### Required preflight checks
 
@@ -2265,7 +2262,7 @@ The empty tag-owner list leaves tag assignment to tailnet Owners/Admins/Network 
 
 ### Important limits
 
-- The `tests` entries above are regression assertions for representative allowed and denied ports, not a proof over every possible protocol/port. The deny-by-default grant model and inspection of the complete effective policy remain mandatory.
+- The `tests` entries above are regression assertions for representative allowed and denied application ports, not a proof over every possible protocol/port. They do not constrain the underlying WireGuard transport port; they test traffic addressed to the peers over their Tailscale IPs. The deny-by-default grant model and inspection of the complete effective policy remain mandatory.
 - Tailscale grants are additive. If a broad grant exists elsewhere in the same policy, these tests must be expanded to detect the exposure and the broad grant must be removed in the isolated tailnet; adding this narrow grant cannot override it.
 - The workflow currently runs a fixed TCP health responder, not CometBFT. This policy only creates the network boundary for that smoke test.
 - No policy was saved, no tailnet was created, no credential was changed, and no runner/network test was executed in this step.
