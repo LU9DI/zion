@@ -2030,3 +2030,55 @@ The trust-credential scope table does not document a least-privilege organizatio
 The workflow now uses distinct `ZION_CI_*` secret names and no longer references the generic direct-tailnet secret names. No new secret values have been created or populated. No tailnet or credential has been created, no API request has been made, no policy has been written, and no runtime network test has been run.
 
 Official reference: https://tailscale.com/docs/reference/trust-credentials and https://tailscale.com/docs/features/tailnets-api
+
+
+## 47. API-only tailnet bootstrap: exact documented scope boundaries (2026-11-14)
+
+### Confirmed from the current Tailscale trust-credential reference
+
+The current scope table explicitly maps the relevant operations as follows:
+
+| Operation | Scope | Documented endpoint |
+|---|---|---|
+| List organization tailnets | `tailnets:read` | `GET /api/v2/organizations/:organization/tailnets` |
+| Create an API-only tailnet | `tailnets` | `POST /api/v2/organizations/:organization/tailnets` |
+| Create a federated identity in a tailnet | `federated_keys` | `POST /api/v2/tailnet/:tailnet/keys` (federated identities) |
+| Read federated identities | `federated_keys:read` | `GET /api/v2/tailnet/:tailnet/keys` (federated identities only) |
+| Create tagged auth keys | `auth_keys` | `POST /api/v2/tailnet/:tailnet/keys` (auth keys) |
+| Read device inventory | `devices:core:read` | `GET /api/v2/tailnet/:tailnet/devices`, `GET /api/v2/device/:deviceID` |
+| Delete a device | `devices:core` | `DELETE /api/v2/device/:deviceID` |
+| Read policy | `policy_file:read` plus `devices:posture_attributes:read` and `devices:core:read` | `GET /api/v2/tailnet/:tailnet/acl` |
+| Write policy | `policy_file` plus `devices:posture_attributes` and `devices:core:read` | `POST /api/v2/tailnet/:tailnet/acl` |
+
+This confirms that a node-joining identity can be limited to `auth_keys`, while a separate read-only verifier can use `devices:core:read`. The runner does not need device deletion or policy-write authority.
+
+### Bootstrap dependency that remains unverified
+
+The Tailnets API guide says that a create-tailnet response contains an OAuth client that permits access to that API-only tailnet. It also says that the returned OAuth client can be used to create additional credentials in the child tailnet. However, the guide does not publish the exact scopes granted to the returned client in the accessible response description.
+
+The child federated identity requires the `federated_keys` write capability. The documentation does not establish that the returned client has this capability. Do not infer it, and do not try to recover child-tailnet credentials by requesting a token from the parent with `tailnet=<child-id>`: that documented recovery path requires the parent's broad `all` scope and is explicitly rejected by this design.
+
+Therefore the one-time bootstrap is still blocked pending one of:
+1. a documented response schema that explicitly confirms the returned client's effective `federated_keys` (and any other necessary) scopes; or
+2. a controlled, disposable API-only tailnet experiment, using an explicitly authorized bootstrap credential, that records the create response's non-secret scope metadata and verifies the exact child operation; or
+3. written confirmation from Tailscale support of the supported least-privilege bootstrap path.
+
+No real Zion tailnet should be created merely to discover this behavior. If a disposable experiment is authorized later, it must use a separate test organization/tailnet context, no production secrets, and a documented deletion procedure whose required scope is verified before creation.
+
+### Delete-tailnet scope nuance
+
+The Tailnets API feature page lists a delete-tailnet endpoint, while the trust-credential scope table maps `tailnets` only to listing and creating. The accessible scope table does not identify a least-privilege delete scope for the organization-level endpoint. This design does not need per-run tailnet deletion, so the unresolved delete authorization is not a reason to grant `all`. The persistent child tailnet's eventual retirement remains a separate, manually authorized action.
+
+### Decision
+
+- Keep the personal tailnet unchanged.
+- Keep `ZION_CI_TS_OAUTH_CLIENT_ID` and `ZION_CI_TS_AUDIENCE` separate from the prior direct-tailnet values.
+- Keep `ZION_ISOLATED_TAILNET_READY` unset/false.
+- Do not add bootstrap code or broaden scopes until the child OAuth client's effective capabilities are proven.
+- The only authorized CI identity after bootstrap should be the child-tailnet federated identity restricted to `auth_keys` and `tag:zion-ci`; the verifier should be separately scoped read-only.
+- No API-only tailnet, OAuth client, federated identity, auth key, or device was created or modified in this audit.
+
+Official references:
+- https://tailscale.com/docs/reference/trust-credentials
+- https://tailscale.com/docs/features/tailnets-api
+- https://tailscale.com/docs/features/workload-identity-federation
