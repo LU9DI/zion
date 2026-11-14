@@ -1642,3 +1642,65 @@ Sources:
 - CometBFT v0.38.26 runner CLI and lifecycle: https://github.com/cometbft/cometbft/blob/v0.38.26/test/e2e/runner/main.go
 - CometBFT v0.38.26 setup and testnet key generation: https://github.com/cometbft/cometbft/blob/v0.38.26/test/e2e/runner/setup.go
 - CometBFT v0.38.26 Docker Compose provider: https://github.com/cometbft/cometbft/blob/v0.38.26/test/e2e/pkg/infra/docker/docker.go
+
+
+## 38. Existing repository infrastructure and disposable-VM feasibility
+
+### 38.1 Repository inventory
+
+The current branch's `.github/workflows/` directory contains only:
+- `codeql.yml`;
+- `dependency-audit.yml`;
+- `restore-preserved-source.yml`;
+- `validate.yml`.
+
+The current `validate.yml` defines a standard `ubuntu-latest` validation job with a PostgreSQL service container, plus a separate ClamAV integration job. It does not provision disposable VMs, configure a private network between independent guests, create a dedicated per-run Docker daemon outside the runner, or execute the CometBFT E2E runner.
+
+The inspected `scripts/` directory contains no VM provisioner, hypervisor controller, disposable Docker-daemon manager, or CometBFT testnet harness. No existing workflow or script can be reused as a verified disposable-VM controller. The normal repository validation workflow is not evidence for the CometBFT isolation gate.
+
+### 38.2 GitHub-hosted runner assessment
+
+GitHub's official documentation states that each standard GitHub-hosted Actions job runs on a fresh VM and that the VM is decommissioned after the job. This gives a useful per-job ephemeral compute boundary. However:
+
+- A single job supplies only one runner VM/daemon. Running both CometBFT projects in that same daemon is prohibited by sections 36–37 because the upstream cleanup selector is global to E2E-labeled resources.
+- Two separate jobs would obtain separate runner VMs, but the repository has no configured inter-runner private network or authenticated project-to-project transport for the two-project experiment.
+- GitHub documents optional private-network approaches, including an API gateway with OIDC, a WireGuard overlay, or an Azure VNET. None is configured in this repository. Selecting one would introduce a test-infrastructure dependency and a separate security review; it must not be silently assumed.
+- GitHub documents nested virtualization as technically possible but not officially supported on hosted runners. Therefore, do not treat a hosted runner as a reliable hypervisor for nested disposable VMs.
+- Hosted runner isolation is a useful candidate for one isolated single-project job, but it does not by itself satisfy the complete two-project, cross-network experiment.
+
+GitHub-hosted Actions may be considered as optional test infrastructure only. They must never become a runtime dependency of Zion or an authority for project state, membership, consensus, or storage.
+
+### 38.3 Options decision
+
+| Candidate | Current evidence | Decision |
+|---|---|---|
+| Existing repository CI workflow | One standard validation job plus a ClamAV job; no CometBFT harness or cross-VM network | Not suitable as-is |
+| One GitHub-hosted job | Fresh VM per job, but only one VM/daemon for this job | Insufficient for two isolated projects |
+| Two GitHub-hosted jobs | Separate ephemeral VMs; no inter-job network configured in this repository | Not approved until a private overlay and its trust/network model are designed and verified |
+| Nested VMs inside a hosted runner | Official documentation says nested virtualization is not officially supported | Rejected as a dependable isolation boundary |
+| Shared self-hosted runner or shared Docker host | Persistent/shared environment; upstream cleanup has global E2E label scope | Rejected |
+| Dedicated external hypervisor or disposable-VM service | No provider, account, policy, network, or lifecycle implementation has been selected or verified | Not implementable without inventing infrastructure |
+
+### 38.4 Required decision before implementation
+
+The next step is not to add a generic VM abstraction or a speculative workflow. First select an actually available test substrate and document:
+1. who controls the hypervisor and how a run obtains exclusive VM identities;
+2. how two VMs establish an authenticated, bounded test-only network without exposing either Docker daemon;
+3. how CPU, memory, disk, process, and network ceilings are enforced outside the guest;
+4. how immutable VM identifiers are obtained and how teardown is authorized;
+5. how source/build inputs are pinned and artifacts are exported without private keys;
+6. how the entire setup can be reproduced without adding any mandatory service to Zion's runtime.
+
+The test substrate may be operator-provided and used only for experiments. It must not become a centralized runtime dependency or an authoritative coordinator in the product architecture.
+
+### 38.5 Current decision
+
+**NO-GO. No VM controller is implemented and no provisioning option is verified.** The repository inventory and official runner documentation establish that the existing CI workflow cannot simply be repurposed for the required two-project experiment. No workflow, script, dependency, runtime code, secret, or infrastructure resource was created or changed in this step.
+
+The experiment remains blocked pending a concrete, available hypervisor/network substrate and a reviewed implementation plan. Do not substitute a GitHub Actions job, nested VM, shared Docker daemon, or generic provider interface for the missing evidence.
+
+Sources:
+- GitHub-hosted runners are fresh VMs per job and are decommissioned afterwards: https://docs.github.com/en/actions/how-tos/manage-runners/github-hosted-runners/use-github-hosted-runners
+- GitHub-hosted runner isolation and nested virtualization caveat: https://docs.github.com/en/actions/concepts/runners/github-hosted-runners
+- GitHub-hosted runner private-networking options: https://docs.github.com/en/actions/concepts/runners/private-networking
+- Current repository validation workflow: `.github/workflows/validate.yml` at the PR #68 head inspected for this section.
