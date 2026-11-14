@@ -180,10 +180,19 @@ export class DurableCommittedBlockJournal {
 
   commit(expectedHeight, nextState) {
     if (this.closed || this.poisoned) throw Object.assign(new Error('Committed block journal is unavailable'), { code: 'ZION_JOURNAL_UNAVAILABLE' });
-    if (!Number.isSafeInteger(expectedHeight) || expectedHeight !== this.height + 1) {
+    if (!Number.isSafeInteger(expectedHeight) || expectedHeight < 1) {
       throw Object.assign(new Error('Committed block height conflict'), { code: 'ZION_JOURNAL_HEIGHT_CONFLICT' });
     }
     const state = validateState(nextState, expectedHeight);
+    if (expectedHeight === this.height) {
+      if (this.state && state.appHash === this.state.appHash) {
+        return Object.freeze({ status: 'already-committed', ...this.info() });
+      }
+      throw Object.assign(new Error('Conflicting state at an already committed height'), { code: 'ZION_JOURNAL_COMMIT_CONFLICT' });
+    }
+    if (expectedHeight !== this.height + 1) {
+      throw Object.assign(new Error('Committed block height conflict'), { code: 'ZION_JOURNAL_HEIGHT_CONFLICT' });
+    }
     const recordBase = {
       height: expectedHeight,
       previousHash: this.lastHash,
