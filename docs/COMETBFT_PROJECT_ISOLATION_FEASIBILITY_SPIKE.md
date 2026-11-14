@@ -583,3 +583,51 @@ Retain: VM provisioning manifests; daemon identity/configuration; OS/kernel and 
 - No Zion runtime, consensus implementation, dependency, launcher, database, migration, or production configuration was changed.
 
 **Gate:** do not implement a Zion CometBFT adapter or claim project-isolation feasibility until the full experiment passes on the target disposable environment and its evidence bundle is reviewed.
+
+
+## 20. Compose project namespaces are not sufficient isolation
+
+A read-only cross-check against the current Docker Compose documentation confirms that a distinct Compose project name is useful namespace separation, but it is not a complete isolation boundary for this pinned runner.
+
+### 20.1 What a unique project name does provide
+
+- Compose uses the project name to group and isolate resources it manages, including its default project network.
+- A unique `-p` / `--project-name` value can allow the same Compose specification to be deployed more than once on one infrastructure, provided the specification does not override resource names and host-level resources do not collide.
+- Compose applies canonical project labels to managed resources, which can help inventory resources by project.
+
+### 20.2 Why it does not solve this runner's collisions
+
+The pinned CometBFT v0.38.26 runner has already been source-audited to generate explicit `container_name` values from node names, fixed IPv4/IPv6 network ranges, and proxy/monitoring host-port ranges. These are not all made unique merely by changing the Compose project name:
+
+1. An explicit `container_name` is a literal custom name, not a project-prefixed generated name. Two projects using the same literal name can still conflict on one daemon.
+2. The runner's fixed subnets remain a host/daemon network-allocation concern; a project name does not allocate a disjoint CIDR.
+3. Published host ports remain in the host's port namespace; separate Compose projects or Docker daemons on one host do not make duplicate host-port bindings safe.
+4. The stock runner's broad E2E-label cleanup remains broader than one Compose project. Project labels do not narrow a cleanup routine that explicitly selects resources by a different, shared label.
+5. Named volumes or networks declared with explicit top-level `name` values are used as-is rather than automatically project-scoped; any such resource must be inspected in the rendered configuration.
+
+### 20.3 Required static checks before any container creation
+
+For each independently generated A/B manifest and Compose configuration, the harness must record and compare:
+
+- Rendered service/container names, including explicit `container_name` values.
+- Project names and all rendered network, volume, and config/secret resource names.
+- IPv4 and IPv6 subnets, gateways, static addresses, and network modes.
+- Every published host IP/port/protocol tuple, including proxy and monitoring ports.
+- Bind mounts, named volumes, host paths, and writable directories.
+- All resource labels and the exact selectors used by setup, stop, and cleanup.
+- The effective Docker context/endpoint and daemon identity used by the runner.
+
+Reject the configuration before creating containers if any supposedly isolated host-level name, address, port, path, or cleanup selector overlaps. A rendered Compose configuration is a static preflight artifact, not runtime proof; the two-VM protocol and fault matrix in Section 19 remain mandatory.
+
+### 20.4 Revised isolation rule
+
+Do not accept “different Compose project names” as evidence of testnet isolation. For the first experiment, retain the two-disposable-VM / one-dedicated-daemon-per-VM boundary from Section 19. If a later same-daemon harness is evaluated, it must additionally rewrite and test all explicit resource names, allocate disjoint subnets and host ports, isolate writable paths, and replace broad cleanup with exact resource-ID ownership checks.
+
+### 20.5 Evidence status
+
+- Compose project-name resource grouping: verified against current official Docker documentation.
+- Explicit container names and fixed runner resource ranges: source-audited in Sections 17–19.
+- Unique project names alone preventing all runner collisions: **false**.
+- A fully namespaced same-daemon harness: not implemented or tested.
+- Two-VM isolation experiment: still not provisioned or executed.
+- No Zion runtime, consensus implementation, dependency, launcher, database, migration, or production configuration was changed by this documentation update.
