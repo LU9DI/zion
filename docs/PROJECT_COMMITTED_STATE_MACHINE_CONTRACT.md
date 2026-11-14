@@ -195,3 +195,79 @@ No shared PostgreSQL/Neon database may be the hidden source of truth for the fin
 - `src/peer-introduction-vouchers.js`
 - `docs/USER_INVITATION_PROTOCOL_ADR.md`
 - `docs/COMETBFT_PROJECT_ISOLATION_FEASIBILITY_SPIKE.md`
+
+
+## 10. Pinned CometBFT v0.38.26 ABCI++ source audit (2026-11-14)
+
+The exact tag `v0.38.26` was inspected through the upstream source files below. This is a source/API audit, not a compiled integration or crash-test result.
+
+### Interface and deterministic execution boundary
+
+The pinned `abci/types/application.go` declares the full `Application` interface:
+`Info`, `Query`, `CheckTx`, `InitChain`, `PrepareProposal`, `ProcessProposal`, `FinalizeBlock`, `ExtendVote`, `VerifyVoteExtension`, `Commit`, and the four snapshot methods.
+
+The application must treat these methods differently:
+
+- `PrepareProposal` and `ProcessProposal` may be called repeatedly across rounds for the same height. Any speculative execution must remain a candidate state; it must not mutate the canonical working state.
+- `ExtendVote` and `VerifyVoteExtension` must not mutate application state. Vote-extension data may influence a later proposal only through deterministic, explicitly supplied inputs.
+- `FinalizeBlock` receives the decided block and performs deterministic execution. It must not durably commit application state.
+- `Commit` is the only ABCI callback in which the application persists the resulting state. The application must retain the last successfully committed height so `Info` can report the correct recovery point.
+- `CheckTx` is a mempool admission check, not an authorization/commit decision. It must not be used as the canonical state transition.
+- Queries and any external RPC surface must not expose mutable state that can bypass the ABCI execution boundary.
+
+### Exact block/commit ordering in the pinned implementation
+
+In `state/execution.go`, `BlockExecutor.applyBlock` performs the following sequence:
+
+1. Calls application `FinalizeBlock` with the decided block.
+2. Checks that the number of transaction results matches the block transaction count.
+3. Saves the `FinalizeBlock` response in CometBFT's state store.
+4. Applies validator/consensus-parameter updates to the CometBFT state.
+5. Calls `BlockExecutor.Commit`.
+6. Inside `Commit`, locks the mempool, flushes outstanding mempool ABCI requests, invokes application `Commit`, then updates the mempool.
+7. After application commit succeeds, saves the updated CometBFT state (including the app hash from `FinalizeBlock` response).
+
+Important consequences:
+
+- In this release, `ResponseFinalizeBlock.app_hash` is the deterministic application state hash carried into CometBFT's next state/header. `ResponseCommit` supplies `retain_height`; do not design the application around a new app hash being returned by `Commit`.
+- The application must atomically persist its own state, committed height, operation-result index, and committed outbox entries before `Commit` returns. A partial success must be detected and recovered without serving writes from an ambiguous state.
+- CometBFT's block store, its saved finalize response/state, and the application's own commit are separate durable steps, not one cross-database transaction. Recovery behavior must explicitly handle crashes between them.
+- Never call synchronous `/broadcast_tx` or `/broadcast_tx_sync` from the sequential logic of application `Commit`: CometBFT holds the mempool lock and this can deadlock.
+- External notifications, email, webhooks, and other side effects must not execute as part of deterministic transition/commit. Persist an outbox item in the same application transaction and deliver it asynchronously with stable idempotency keys.
+
+### Recovery, replay, and candidate-state constraints
+
+The pinned `spec/abci/abci++_comet_expected_behavior.md` defines recovery as `Info` followed by consensus execution/replay. Each height follows zero or more consensus rounds, then `FinalizeBlock`, then `Commit`. A correct application must handle non-happy-path call sequences rather than assuming one proposal per height.
+
+The pinned `spec/abci/abci++_app_requirements.md` documents that:
+
+- `FinalizeBlock` transitions working state but must not persist it; persistence belongs in `Commit`.
+- Candidate states produced during proposal processing are separate from the canonical execution state. Their number can grow across rounds, so memory use must be bounded and candidates may be discarded and re-executed.
+- The application reports its last successfully committed height through `Info`; CometBFT replays blocks when its durable block/state records are ahead of the application.
+- CometBFT can detect several out-of-order height conditions and panic. The application must never claim a height newer than the last state it durably committed.
+- The application should not expose mutable state outside the ABCI connections; route authoritative reads through the application query boundary or a separately proven read-only snapshot.
+
+### Required Zion adapter contract
+
+Before implementation, the adapter design must now include these explicit rules:
+
+1. Keep three distinct state views: committed durable state; current deterministic execution state for the decided height; and bounded, disposable candidate states for proposal evaluation.
+2. Make `FinalizeBlock` deterministic and side-effect-free outside in-memory candidate/execution state. Use only prior committed state and values in the decided block/request. No local wall clock, network calls, environment-dependent reads, random generation, or external database reads may affect its result.
+3. Compute the application state root deterministically from the post-transition state in `FinalizeBlock`; persist the exact corresponding state during `Commit`.
+4. In one durable application transaction, persist the new state, height, operation IDs/results, and outbox records. Commit/flush that transaction before returning from ABCI `Commit`.
+5. On startup, `Info` must report exactly the application's last durable committed height and app hash. If durable records disagree, are corrupt, or are ambiguous, stop critical writes and require deterministic replay/recovery; never advance locally.
+6. Do not run side effects in `FinalizeBlock`, `Commit`, proposal callbacks, or vote-extension callbacks. A separate outbox worker may deliver effects after commit; it must tolerate duplicate delivery.
+7. Add process-kill fault injection at each boundary: before/after FinalizeBlock response persistence, before application transaction, during transaction, after durable app commit but before CometBFT state save, and after state save. Verify recovery always converges to one state root and never repeats a committed mutation.
+8. Test proposal-round churn and candidate eviction under memory limits; correctness must not depend on a candidate surviving until decision.
+9. Test snapshot import/export against app hash, committed height, operation-index retention, and outbox replay semantics.
+
+### Pinned upstream references
+
+- `abci/types/application.go`, blob `4ccfd229ebc798b0606d063dfdac3185c267b84a`: https://github.com/cometbft/cometbft/blob/v0.38.26/abci/types/application.go
+- `state/execution.go`, blob `489829fc51478bb25039f3c97e18a64a8cd6a94a`: https://github.com/cometbft/cometbft/blob/v0.38.26/state/execution.go
+- `spec/abci/abci++_app_requirements.md`, blob `3c5c5e1c775d0b8f140e212285f9704d447ca548`: https://github.com/cometbft/cometbft/blob/v0.38.26/spec/abci/abci%2B%2B_app_requirements.md
+- `spec/abci/abci++_comet_expected_behavior.md`, blob `092d49e0863b549748a9e6ae672c4b8655bc49f9`: https://github.com/cometbft/cometbft/blob/v0.38.26/spec/abci/abci%2B%2B_comet_expected_behavior.md
+
+### Audit conclusion
+
+The v0.38.26 interface is compatible with the planned deterministic state-machine boundary, but it does not provide an atomic transaction spanning CometBFT's block/state stores and the application's own database. Zion must implement and fault-test the application-side commit/replay contract described above. This audit does not select CometBFT for production, add a dependency, implement an ABCI application, prove two-project isolation, or authorize runtime integration.
