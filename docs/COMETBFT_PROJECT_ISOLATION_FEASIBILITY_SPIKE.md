@@ -281,17 +281,19 @@ This blocker must not be bypassed by copying a partial subset of upstream source
 
 ## 13. Additional in-process isolation blocker found by source inspection
 
-A follow-up read-only inspection found a concrete obstacle to running multiple ordinary CometBFT `Node` objects in one process with the default Prometheus instrumentation enabled:
+A follow-up read-only inspection identified a **conditional** obstacle to running multiple ordinary CometBFT `Node` objects in one process with Prometheus instrumentation enabled:
 
-- CometBFT `v0.38.26/node/setup.go` implements `DefaultMetricsProvider` by constructing each subsystem's metrics through `PrometheusMetrics` when `config.Prometheus` is enabled.
-- The pinned `github.com/go-kit/kit v0.13.0` implementation of `metrics/prometheus.NewGaugeFrom`, `NewCounterFrom`, and `NewHistogramFrom` calls `prometheus.MustRegister`, which registers collectors in the package's default global registry.
-- CometBFT `v0.38.26/node/node.go` serves metrics through `prometheus.DefaultRegisterer` and `prometheus.DefaultGatherer`.
-- Consequently, two nodes in one process using the ordinary default metrics provider and the same metric descriptors can collide during collector registration (and the MustRegister path can panic). A per-chain label value does not by itself create an independent registry.
+- CometBFT `v0.38.26/node/setup.go` selects the Prometheus metrics provider when `config.Prometheus` is true.
+- The CometBFT metrics Prometheus adapter uses constructors such as `NewGaugeFrom`, `NewCounterFrom`, and `NewHistogramFrom`. The inspected `go-kit/kit v0.13.0` adapter implementation registers collectors with `prometheus.MustRegister`, which targets the package's default global registry.
+- CometBFT exposes the default Prometheus registerer/gatherer in its standard metrics-serving path.
+- Therefore, two nodes in one process that both use the unmodified default provider and register identical metric descriptors may collide (including a panic from `MustRegister`). A chain-ID label alone does not create a separate registry.
 
-This is a source-derived integration risk, not a reproduced runtime failure in this session. It means the in-process topology must explicitly test at least:
-1. two `Node` objects with Prometheus enabled and the unmodified default provider (expected to expose the registration collision);
+**Important qualification:** CometBFT's instrumentation configuration defaults Prometheus to `false`. This is not an unconditional startup blocker and must not be described as a collision under the default disabled-metrics configuration. The risk applies when Prometheus is enabled and the standard global-registry path is used. See the upstream metrics documentation and configuration defaults.
+
+This is a source-derived integration risk, not a reproduced runtime failure in this session. The in-process topology must explicitly test:
+1. two `Node` objects with Prometheus enabled and the unmodified default provider, recording whether collector registration collides;
 2. two nodes with metrics disabled, to determine whether other shared package-level state remains;
-3. a custom per-instance metrics provider/registry design, if the upstream API permits it without a fork, including independent HTTP exposition and shutdown;
+3. a custom per-instance metrics provider/registry design, only if the upstream API permits it without a fork, including independent HTTP exposition and shutdown;
 4. concurrent start/stop/restart and registry cleanup, ensuring one node cannot unregister, mutate, or hide another node's metrics.
 
-Disabling metrics or patching instrumentation would remove only this identified obstacle; it would not establish safe isolation of consensus, WAL, databases, listeners, global state, goroutines, or crash recovery. The separate-process topology remains the first PoC target.
+Disabling metrics or changing instrumentation removes at most this identified conditional obstacle; it does not establish safe isolation of consensus, WAL, databases, listeners, package-level state, goroutines, or crash recovery. The separate-process topology remains the first PoC target.
