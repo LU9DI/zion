@@ -55,7 +55,13 @@ export class SignedProjectEventReplica {
     const lock = acquireLock(`${this.path}.lock`);
     this.lockFd = lock.fd;
     this.lockToken = lock.token;
-    try { this.#load(); } catch (error) { this.close(); throw error; }
+    try {
+      // Re-establish durability of the journal directory entry before accepting
+      // writes. This also covers recovery after an earlier directory-fsync error.
+      const dirFd = openSync(dirname(this.path), 'r');
+      try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
+      this.#load();
+    } catch (error) { this.close(); throw error; }
   }
 
   #load() {
