@@ -469,3 +469,37 @@ Run eight CometBFT processes with independent home directories, keys, ports, and
 - Separate Docker daemons: **candidate only, not evaluated in a target environment**.
 - Native process harness: **candidate only, not implemented**.
 - No CometBFT source, Zion runtime, dependency, launcher, database, or migration was changed by this investigation.
+
+
+## 18. Docker daemon targeting: a narrower isolation option, with host-level caveats
+
+The exact pinned v0.38.26 runner source provides one additional orchestration fact relevant to Option B:
+
+- test/e2e/pkg/exec/exec.go creates subprocesses with Go's os/exec.CommandContext and does not assign cmd.Env.
+- test/e2e/pkg/infra/docker/docker.go invokes the literal docker executable for both Docker Engine commands and docker compose.
+- With no explicit subprocess environment override, those Docker CLI processes inherit the runner process environment. Docker documents DOCKER_HOST as the daemon endpoint selector; the CLI also supports SSH daemon endpoints.
+- Consequently, two runner processes can, in principle, be directed to different Docker daemons by giving each process a different DOCKER_HOST value. This avoids the stock runner's daemon-wide e2e cleanup crossing from one daemon into the other, provided the endpoints truly identify distinct daemons and neither process overrides the endpoint through a higher-precedence Docker context/CLI setting.
+
+This is a source-and-documentation-derived orchestration capability, not an executed test. It narrows the feasibility question for Option B but does not make two daemons on one host automatically safe:
+
+1. The Compose template publishes fixed host ports derived from each manifest. Distinct daemons on the same host still share the host's port namespace; their published ports must be disjoint.
+2. Separate daemons on one Linux host may still interact with host routing, firewall/NAT rules, and overlapping bridge subnets. The stock runner's fixed IPv4/IPv6 ranges therefore remain an unresolved host-level risk even if daemon resource namespaces differ.
+3. Daemon lifecycle, data roots, PID files, sockets, storage drivers, firewall rules, and API endpoint permissions must be independently configured. Docker's own daemon guidance warns that multiple daemons require separate configuration and care around iptables/rules.
+4. A remote daemon reached over SSH or TLS adds an administration endpoint and credentials to the test environment. It is acceptable only as disposable test infrastructure, never as a Zion runtime dependency or correctness authority.
+5. Each runner must be pinned to its intended daemon endpoint for its entire lifetime; test logs must record the endpoint identity and verify it before every destructive command. A context or CLI flag that overrides DOCKER_HOST must be prohibited or detected.
+
+### Revised Option B recommendation
+
+For the first concurrency experiment, prefer two separate disposable Linux VMs/hosts, each with one Docker daemon and one runner process, rather than two daemons sharing one host. Give each VM its own network and host-port namespace, unique testnet directory, and isolated disposable credentials. Use the stock runner only inside its own daemon; do not run a full-run, benchmark, or cleanup command against a daemon containing another testnet.
+
+A same-host multi-daemon prototype remains a secondary experiment only after its port, subnet, route, firewall, storage, and daemon-lifecycle isolation are explicitly configured and tested. It must not be assumed safe merely because DOCKER_HOST differs.
+
+### Evidence and status update
+
+- Runner subprocess environment inheritance: verified by exact pinned source inspection (cmd.Env is not assigned).
+- Docker CLI daemon selection through DOCKER_HOST / SSH endpoint: documented by Docker.
+- Separate daemon targeting by two runner processes: feasible in principle; not executed.
+- Same-host multi-daemon network/port isolation: unverified.
+- Two-VM/two-daemon experiment: recommended; not provisioned or executed.
+- No Docker daemon, CometBFT node, PoC, or E2E test was run in this session.
+- No Zion runtime, dependency, launcher, database, migration, or production code was changed.
