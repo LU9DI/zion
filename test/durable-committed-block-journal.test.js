@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -68,6 +68,19 @@ test('journal refuses a symbolic-link path without modifying its target', {
     );
     assert.equal(readFileSync(target, 'utf8'), 'do-not-modify');
     assert.equal(existsSync(f.path + '.lock'), false);
+  } finally { f.cleanup(); }
+});
+
+test('journal refuses a directory as its data file and cleans up its owned lock', () => {
+  const f = fixture();
+  const directoryPath = join(f.dir, 'journal-directory');
+  try {
+    mkdirSync(directoryPath);
+    assert.throws(
+      () => new DurableCommittedBlockJournal(directoryPath),
+      { code: 'ZION_JOURNAL_NOT_REGULAR' },
+    );
+    assert.equal(existsSync(directoryPath + '.lock'), false);
   } finally { f.cleanup(); }
 });
 
