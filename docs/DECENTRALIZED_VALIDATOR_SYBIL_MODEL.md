@@ -113,3 +113,24 @@ Until these are answered, the validator committee algorithm and BFT engine selec
 - Peer discovery, signatures, storage receipts, reputation, and local event replication do not confer validator status.
 - No code dependency, runtime path, launcher, database, migration, or deployment is changed by this specification.
 - PostgreSQL/Neon remain transitional and untouched; PR #63/#64 and their bases remain untouched.
+
+## 10. Product decision recorded (2026-11-14)
+
+**Accepted direction:** Zion will use project-permissioned validator eligibility controlled by each project's threshold-governance policy. The project explicitly does not require permissionless validator admission for the current product direction.
+
+Consequences and boundaries:
+1. Validator membership is project-scoped and must be recorded in the project's BFT-committed state under an explicit committee epoch.
+2. Governance authorizes eligibility changes; the selected BFT engine orders and commits state transitions. Neither role substitutes for the other.
+3. Validator operators must be operationally independent to the extent the project can assess and document. Distinct keys, hosts, cloud accounts, or network addresses alone are not proof of independent control.
+4. The project must document its genesis ceremony, governance trust assumptions, suspected common-control handling, compromise response, and recovery limitations before production genesis.
+5. No token, mining, stake, proof-of-personhood provider, centralized identity service, or mandatory hardware attestation is introduced by this decision.
+6. The product must describe this accurately as **governance-controlled, project-permissioned validator membership**. It must not claim permissionless Sybil resistance or cryptographically proven operator uniqueness.
+7. A committee that cannot meet its selected BFT safety threshold must stop committing critical state. No local leader, hosted service, founder, or repository maintainer may bypass quorum.
+
+Decision status:
+- Open decision 1 (permissioned vs permissionless validators): **resolved — project-permissioned**.
+- Open decision 3 (scarcity/identity substrate): **resolved for current scope — none required or selected**.
+- Open decision 4 (accept governed membership without claiming permissionless Sybil resistance): **resolved — accepted**.
+- Open decisions 2, 5, and 6 remain open: genesis/governor trust ceremony, non-invasive independence evidence, and BFT-compatible randomness/beacon design.
+
+This product decision unblocks comparative BFT-engine evaluation and a two-project isolation proof of concept. It does not select CometBFT, a committee size/threshold, a random beacon, DKG, or a production topology. No implementation, runtime, dependency, launcher, database, migration, or deployment is authorized by this decision.
