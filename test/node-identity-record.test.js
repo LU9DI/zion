@@ -131,6 +131,49 @@ test('encrypted identity wipes keystore plaintext when authenticated decryption 
   assert.equal(wrongPlaintext.every(byte => byte === 0), true);
 });
 
+
+test('encrypted identity wipes retained wrap input aliases after adapter settlement', async () => {
+  const identity = createNodeIdentity();
+  const backingKeystore = new FakeKeystore();
+  let retainedInput;
+  const observingKeystore = {
+    async createOrGetWrappingKey(request) {
+      return backingKeystore.createOrGetWrappingKey(request);
+    },
+    async wrapKey(request) {
+      retainedInput = request.plaintextKey;
+      return backingKeystore.wrapKey(request);
+    },
+  };
+
+  const record = await createEncryptedNodeIdentityRecord(identity, observingKeystore);
+  assert.ok(Buffer.isBuffer(retainedInput));
+  assert.equal(retainedInput.every(byte => byte === 0), true);
+  const restored = await loadEncryptedNodeIdentityRecord(record, backingKeystore);
+  assert.equal(restored.nodeId, identity.nodeId);
+});
+
+test('encrypted identity wipes keystore plaintext despite an overridden instance fill method', async () => {
+  const identity = createNodeIdentity();
+  const backingKeystore = new FakeKeystore();
+  const record = await createEncryptedNodeIdentityRecord(identity, backingKeystore);
+  let returnedPlaintext;
+  const observingKeystore = {
+    async unwrapKey(request) {
+      returnedPlaintext = await backingKeystore.unwrapKey(request);
+      Object.defineProperty(returnedPlaintext, 'fill', {
+        configurable: true,
+        value() { throw new Error('overridden fill must not run'); },
+      });
+      return returnedPlaintext;
+    },
+  };
+
+  const restored = await loadEncryptedNodeIdentityRecord(record, observingKeystore);
+  assert.equal(restored.nodeId, identity.nodeId);
+  assert.equal(Buffer.prototype.every.call(returnedPlaintext, byte => byte === 0), true);
+});
+
 test('encrypted identity rejects non-byte keystore plaintext without masking the adapter error', async () => {
   const identity = createNodeIdentity();
   const record = await createEncryptedNodeIdentityRecord(identity, new FakeKeystore());
