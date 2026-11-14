@@ -353,7 +353,7 @@ The prototype is deliberately outside `src/` and is not imported by production s
 
 1. Append, close, reopen, and recover the complete snapshot; reject a concurrent writer.
 2. Terminate a separate Node process immediately after `fsync`, then recover the committed height and state after restart.
-3. Reject incomplete trailing bytes and a tampered state snapshot.
+3. Reject incomplete trailing bytes, a tampered state snapshot, and a modified journal-record hash.
 4. Reject height gaps and stale-lock cleanup without explicit no-writer verification.
 5. Retry an identical commit at the same height idempotently; reject a conflicting state at that height, including after reopen.
 6. Commit multiple heights and verify the full hash chain and latest recovered projection.
