@@ -1704,3 +1704,32 @@ Sources:
 - GitHub-hosted runner isolation and nested virtualization caveat: https://docs.github.com/en/actions/concepts/runners/github-hosted-runners
 - GitHub-hosted runner private-networking options: https://docs.github.com/en/actions/concepts/runners/private-networking
 - Current repository validation workflow: `.github/workflows/validate.yml` at the PR #68 head inspected for this section.
+
+
+## 39. CometBFT v0.38.26 stop lifecycle, Compose project identity, and cross-testnet name collisions
+
+This section narrows the earlier lifecycle assessment: the standalone `stop` command is not the same operation as the runner's global `Cleanup`.
+
+### Source-level findings
+
+- In `test/e2e/runner/main.go`, the `stop` subcommand calls `cli.infp.StopTestnet(context.Background())` directly. It does not call the root command's `RunE` callback and therefore does not enter that callback's pre/post `Cleanup` sequence.
+- In `test/e2e/pkg/infra/docker/docker.go`, `Provider.StopTestnet` delegates to `ExecCompose(ctx, p.Testnet.Dir, "down")`. The command is assembled as `docker compose -f <testnet-dir>/docker-compose.yml down`. This is a Compose project operation, not the E2E runner's global label-based Docker cleanup.
+- `LoadTestnet` / `NewTestnetFromManifest` in `test/e2e/pkg/testnet.go` derive `Testnet.Dir` by removing the manifest extension and derive `Testnet.Name` from the basename of that directory.
+- The generated Compose file in `docker.go` does not set a top-level Compose `name:`, pass `-p`, or set `COMPOSE_PROJECT_NAME`. Docker Compose therefore derives its project identity from the directory containing the Compose file. Two manifests whose resulting directories share the same basename can consequently resolve to the same default project name, even when their absolute paths differ.
+- More importantly, each generated node service sets `container_name: {{ .Name }}` (and upgrade services use `{{ .Name }}_u`). Those names are not namespaced with the Compose project. Distinct Compose project names do not make repeated explicit container names safe on a shared daemon; concurrent testnets that reuse node names can collide or fail to start.
+- The generated networks are named from `Testnet.Name`, and node service names are also supplied directly from the manifest. These names are not derived from a globally unique run identifier.
+- The upstream E2E README describes `stop` as stopping Docker containers and `cleanup` as removing configuration files and Docker containers/networks. This matches the command separation but does not remove the global-cleanup hazard documented in sections 36–38.
+
+### Decision and safe boundary
+
+- The standalone `stop` command is a narrower candidate than `cleanup`, root runner, or `benchmark`, but it is **not approved for shared-daemon use**. Project identity and explicit container names are insufficiently isolated for arbitrary concurrent runs.
+- The disposable-VM design remains mandatory for the proposed two-project experiment: one exclusive VM and dedicated Docker daemon per project/run, no shared Docker socket, and teardown by immutable VM identifier.
+- A future runner adaptation could use a unique, validated per-run Compose project name and unique container/service/network names, but that would be a separate code change requiring source review and collision/race tests. It is not implemented here and does not replace VM isolation while global cleanup paths remain in the upstream runner.
+- Do not infer that `docker compose down` is safe merely because it is project-scoped. Do not run two CometBFT testnets concurrently on one daemon using the unmodified v0.38.26 generator.
+- This is a source-level assessment only. No Compose command, Docker daemon, testnet, VM, or adversarial collision test was executed.
+
+### Evidence inspected
+
+- CometBFT tag `v0.38.26`: `test/e2e/runner/main.go`, `test/e2e/pkg/infra/docker/docker.go`, and `test/e2e/pkg/testnet.go`.
+- Docker's Compose project-name documentation confirms that the default project name comes from the Compose file's parent directory unless explicitly overridden.
+- Docker's service documentation defines `container_name` as a custom container name, separate from Compose's default project-prefixed naming convention.
