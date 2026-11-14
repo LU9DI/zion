@@ -40,7 +40,8 @@ function validateTransaction(tx) {
       Object.keys(tx).sort().join(',') !== 'key,operationId,type,value' ||
       tx.type !== 'SET' ||
       typeof tx.operationId !== 'string' || !/^[a-zA-Z0-9._:-]{16,128}$/.test(tx.operationId) ||
-      typeof tx.key !== 'string' || !/^[a-zA-Z0-9._:-]{1,128}$/.test(tx.key)) {
+      typeof tx.key !== 'string' || !/^[a-zA-Z0-9._:-]{1,128}$/.test(tx.key) ||
+      ['__proto__', 'constructor', 'prototype'].includes(tx.key)) {
     throw new TypeError('Invalid committed-state harness transaction');
   }
   canonical(tx.value);
