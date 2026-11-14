@@ -1331,3 +1331,75 @@ Pinned CometBFT v0.38.26 source inspected:
 
 No validator key was generated, loaded, reset, or used to sign. No filesystem crash, snapshot rollback, multi-process signing, or recovery experiment was run. These are source-level findings and architecture gates, not a demonstrated exploit or production certification. No Zion runtime, launcher, dependency, database, migration, or deployment configuration was changed.
 
+## 33. Distributed validator signing: threshold MPC, Raft coordination, and the Byzantine boundary
+
+A focused feasibility review was performed against the archived Horcrux CometBFT remote-signer project and its published MPC signing-flow documentation. This is a design comparison only. Horcrux is **not** selected, vendored, installed, or integrated into Zion.
+
+### 33.1 What the reference design actually provides
+
+The Horcrux documentation describes:
+- Ed25519 threshold key shares distributed among signer processes; no single signer is intended to hold the complete validator private key.
+- A strict threshold requirement `t > n/2`, intended to prevent two disjoint signer groups from independently assembling a full signature.
+- A Raft leader that serializes signing requests, with a replicated high-watermark used to reject already-signed or stale height/round/step requests.
+- Per-request MPC nonce-share exchange, partial signatures, combination and verification, followed by replication of the new high-watermark before the response is returned.
+- A recommended 2-of-3 configuration and a 3-of-5 alternative; availability requires both the threshold number of signers and a functioning Raft quorum.
+
+These are useful design elements, but the documentation is not an independent security proof or evidence that Zion's threat model is satisfied.
+
+### 33.2 Critical limitation: Raft is crash-fault tolerant, not Byzantine-fault tolerant
+
+Horcrux uses HashiCorp Raft for leader election and high-watermark consensus. Raft's normal safety model assumes crash/recovery faults, not arbitrary Byzantine behavior by a participant. A malicious Raft member may lie, equivocate, or deliberately violate the protocol; ordinary Raft quorum agreement does not turn that member into a correct participant.
+
+Therefore:
+- Raft cannot be Zion's project-wide BFT consensus protocol.
+- A threshold signature plus Raft high-watermark is not proof of Byzantine-safe project governance, validator admission, revocation, or epoch commitment.
+- The threshold condition `t > n/2` prevents two disjoint threshold subsets, but does not by itself make malicious signers honest, authenticate project membership, or provide deterministic BFT state-machine replication.
+- A quorum loss must stop signing; there must be no unsafe single-node or stale-leader fallback.
+- Signer membership changes, share refresh, key rotation, and recovery need their own authenticated, epoch-bound protocol and adversarial tests.
+
+The reference design can inform a validator-signing adapter only if its crash-fault coordination layer is isolated from, and subordinate to, Zion's separately specified BFT authorization and committed validator-set state.
+
+### 33.3 Lifecycle and supply-chain status of the reference
+
+The upstream `amygdala-labs/horcrux` repository is archived and read-only (archived 2026-08-17). Its README explicitly places security and management of key material outside the service's scope. This prevents treating it as a maintained, drop-in security dependency for Zion.
+
+Before any future reuse or fork could be considered, it would require:
+1. A pinned source and dependency audit, including cryptographic implementation, nonce lifecycle, network authentication, persistent high-watermark writes, snapshots, and recovery.
+2. Reproducible builds, vulnerability response ownership, and a maintained fork policy.
+3. Separate-process tests for leader crash at every signing phase, response loss, partition, stale snapshot restore, concurrent requests, and signer restart.
+4. Byzantine tests for a malicious leader, malicious cosigner, forged/stale messages, equivocation, nonce reuse, and conflicting signer histories.
+5. Verification that no signer can resume with an older watermark after backup restore or disk rollback.
+6. Explicit binding of every signing request to project ID, chain ID, validator public key, committed validator epoch, height, round, step, and canonical sign bytes.
+
+No Horcrux code was copied or run. No key shares, validator keys, or signing nonces were generated. No cluster, network, or signing experiment was performed.
+
+### 33.4 CometBFT validator-set changes are consensus-height transitions
+
+The ABCI++ application requirements specify that validator updates returned by `FinalizeBlock` after height `H` take effect at `H+2`. Consequently, a Zion key rotation or revocation must be represented as a deterministic committed validator-set transition with an explicit activation height. A local governance transition, peer event, signer configuration edit, or Raft log entry cannot independently revoke a validator in CometBFT.
+
+The protocol must define:
+- the old and new validator public keys and their project/chain binding;
+- the exact committed update and activation height;
+- how signers learn and verify the committed transition;
+- what a signer does while partitioned or behind the activation height (fail closed, never infer revocation from wall-clock time);
+- how the network rejects signatures from a removed key after activation; and
+- how recovery prevents a stale signer snapshot from resuming authority.
+
+A disconnected old signer cannot learn a new committed epoch without receiving authenticated chain evidence. The network's validator-set rules provide the authoritative acceptance boundary; local signer fencing is an additional safety layer, not a replacement for consensus.
+
+### 33.5 Architecture conclusion and gates
+
+**Decision: do not adopt Horcrux or Raft as Zion's BFT engine.** Keep threshold/MPC signing as a candidate implementation technique, not as the governance or project-consensus protocol.
+
+The next architecture gate is to select and verify a maintained BFT protocol/engine for project-scoped committed state, then specify the validator-signing interface against that engine. The interface must consume only committed validator-set/epoch evidence and must refuse stale, ambiguous, or uncommitted authority. A signer implementation must demonstrate rollback resistance and anti-equivocation across independent processes before launcher integration.
+
+This section does not select a BFT engine, prove threshold-MPC security, implement validator updates, or establish production readiness. No runtime, dependency, launcher, database, migration, or deployment configuration was changed.
+
+### 33.6 Evidence and references
+
+- Horcrux repository README: `https://github.com/strangelove-ventures/horcrux` (the upstream repository page redirects to the archived `amygdala-labs/horcrux` repository).
+- Horcrux MPC signing flow: `https://github.com/amygdala-labs/horcrux/blob/main/docs/signing.md`.
+- HashiCorp Raft protocol and failure model: `https://github.com/hashicorp/raft`.
+- CometBFT ABCI++ application requirements, “Updating the Validator Set”: `https://github.com/cometbft/cometbft/blob/main/spec/abci/abci%2B%2B_app_requirements.md`.
+
+The review is based on published source/documentation, not a reproduced signer test or an independent cryptographic audit.
