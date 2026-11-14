@@ -997,3 +997,61 @@ Required controls: validate every published host port as an integer in 1..65535 
 - YAML injection, malformed image references, actual Docker rejection, subnet collision behavior, and host-port races: not experimentally tested.
 - No manifest was executed; no Docker daemon, network, container, volume, VM, or host port was provisioned or changed.
 - No Zion runtime, consensus implementation, dependency, launcher, database, migration, or production configuration was changed.
+
+## 27. Genesis validator admission, voting-power bounds, and update activation
+
+A read-only review of the pinned v0.38.26 sources `test/e2e/pkg/testnet.go`, `test/e2e/runner/setup.go`, `test/e2e/app/app.go`, `types/genesis.go`, and `types/validator_set.go` found several important differences between manifest validation, genesis validation, and the runtime validator-set rules.
+
+### 27.1 Explicit genesis membership is not checked against node mode
+
+When `manifest.Validators` is present, `NewTestnetFromManifest` resolves each supplied name and adds that node to `Testnet.Validators`. It does not require the referenced node to have `ModeValidator`. The default path does select only nodes whose mode is validator.
+
+This matters because `MakeGenesis` uses the selected node's generated private-validator public key for the genesis entry, while `MakeConfig` selects the dummy private-validator key for `full`, `light`, and `seed` modes. A manifest can therefore place a node in the consensus validator set while configuring its process not to sign with the corresponding key. A light node also exits setup before its node and validator key files are written. Such a mismatch can leave voting power assigned to a process that cannot contribute valid votes and can prevent the network from reaching quorum.
+
+Required controls: require every positive-power genesis validator to be a node configured in validator mode; verify the configured signing protocol and key identity match the genesis public key; reject light/full/seed validator assignments before writing any files. If a test intentionally models an offline validator, express that as an explicit test scenario with expected liveness outcomes, not as an accidental mode mismatch.
+
+### 27.2 Manifest validator powers are not validated at the testnet boundary
+
+`Testnet.Validate` validates nodes and selected consensus parameters, but does not iterate through `Testnet.Validators` or `Testnet.ValidatorUpdates` to validate power values or aggregate voting power.
+
+`MakeGenesis` calls `GenesisDoc.ValidateAndComplete`. That function rejects zero voting power, but the inspected implementation does not reject negative power or enforce `MaxTotalVotingPower` for the genesis list. CometBFT's `NewValidatorSet` later validates changes through `processChanges` and total-power checks; its constructor panics when the change set cannot be applied. Thus negative or excessive manifest powers can pass the earlier manifest/genesis checks and reach a later failure path instead of being rejected as a normal validation error.
+
+The validator-set implementation also rejects duplicate validator addresses and invalid power values. The E2E manifest does not accept arbitrary public keys directly, so duplicate keys are not established as a user-controlled manifest exploit here; the generic genesis/validator-set boundary should nevertheless validate them before constructing a set.
+
+Required controls: validate every initial power as a positive integer within the protocol limit; use overflow-safe aggregation and enforce the total-power ceiling before genesis publication; validate public-key uniqueness; return structured errors rather than relying on constructor panics. Apply the same rules to each scheduled update set, accounting for the current set and removals.
+
+### 27.3 Empty genesis validator sets require an explicit height-zero bootstrap
+
+The manifest comments explicitly permit an empty `validators = {}` set only when the application returns a validator update at height 0. The E2E application calls `validatorUpdates(0)` from `InitChain`; if no such entry exists, it returns no initial updates and CometBFT falls back to the empty validator list from genesis.
+
+The manifest-to-testnet validation path does not enforce that the height-zero bootstrap exists or that it yields a nonempty valid set. This is a supported advanced scenario, but a missing or malformed bootstrap is not rejected at the earliest boundary.
+
+Required controls: when the explicit initial validator set is empty, require a nonempty height-zero update; validate that the resulting set is nonempty, unique, positive-power, within the aggregate limit, and composed of nodes with matching validator-mode signing identities before setup proceeds.
+
+### 27.4 Scheduled update heights and power types can silently diverge
+
+Manifest update heights are parsed with `strconv.Atoi` and stored as signed `int64`, but `Testnet.Validate` does not reject negative heights or heights below `InitialHeight`. The application only looks up key `"0"` during `InitChain`, then looks up the current positive block height during `FinalizeBlock`. Negative heights, and positive heights lower than a chain's configured initial height, are therefore not reached by those lookups and can remain silently unapplied.
+
+There is also a type mismatch: the manifest and `MakeAppConfig` carry update powers as `int64`, while the E2E application's `Config.ValidatorUpdates` decodes them as `uint8`. The CometBFT validator-update API and validator-set model use `int64`. Values above 255 cannot be represented by the app's current configuration type, even though the manifest accepts them and the protocol supports a much larger range. Such a configuration can fail during application config decoding rather than at manifest validation.
+
+Required controls: allow only height 0 or positive heights at/after `InitialHeight`; use one consistent signed 64-bit power type end-to-end; reject negative powers, values above the protocol maximum, and aggregate overflow before writing app configuration; test add/update/remove operations and invalid heights with deterministic vectors.
+
+### 27.5 Genesis time is wall-clock data, not reproducible fixture data
+
+`MakeGenesis` sets `GenesisTime` using `time.Now()`. Within one setup invocation it builds one genesis document and writes that document to each node, so this does not by itself show an intra-run mismatch. Repeating setup from the same manifest at a different time produces a different genesis timestamp and therefore a different genesis artifact.
+
+Required controls: for reproducible experiments, inject and record an explicit genesis timestamp or persist the generated genesis document as the experiment input; never let independent nodes independently choose genesis time. For a real Zion genesis ceremony, bind the timestamp and complete genesis bytes/hash into the signed ceremony manifest.
+
+### 27.6 Activation timing and evidence boundary
+
+The v0.38.26 E2E app emits height-zero validator changes from `InitChain` and later changes from `FinalizeBlock`. The CometBFT ABCI requirements specify that an update emitted after height H takes effect at H+2; H+1 commits the next-validator hash, H+2 activates the set, and H+3 reflects the new set in last-commit metadata. This activation delay must be represented explicitly in any Zion rotation protocol and its tests.
+
+Evidence inspected:
+- `test/e2e/pkg/testnet.go`, blob `41c5e4ae814e5691e767c86c01164127bef28b06`: manifest conversion, validator selection, update-height parsing, and `Testnet.Validate`.
+- `test/e2e/runner/setup.go`, blob `25d9a70b6a3fedf264dddd595f6918946844553e`: genesis construction, node config, and app config generation.
+- `test/e2e/app/app.go`, blob `9380f5dbc16100ba35f1ce172f7a9911d1bdb9e3`: `uint8` update-power decoding, InitChain height-zero update, and FinalizeBlock update lookup.
+- `types/genesis.go`, blob `d6d0b2afaa4d140b3e9b0902655f29e122944217`: genesis validation scope.
+- `types/validator_set.go`, blob `ebe92a760fd78a436fd2bbdef18ca405d43e70fe`: duplicate/power/aggregate checks and constructor panic behavior.
+- ABCI update semantics and H+2 activation timing: CometBFT specification. See cited source in the accompanying review.
+
+No malicious manifest, generated genesis, node process, or consensus network was executed. No runtime exploit, consensus failure, or production impact was experimentally demonstrated. No Docker/VM/network/volume was provisioned or changed. No Zion runtime, consensus implementation, dependency, launcher, database, migration, or production configuration was changed.
