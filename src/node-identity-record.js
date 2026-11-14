@@ -13,7 +13,7 @@ const MAX_CIPHERTEXT_BYTES = 16 * 1024;
 
 function exactKeys(value, keys, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
-      Object.keys(value).some(key => !keys.includes(key))) {
+      Object.keys(value).sort().join('\0') !== [...keys].sort().join('\0')) {
     throw new TypeError(`${label} has an invalid schema`);
   }
 }
@@ -69,7 +69,10 @@ function requireKeystore(keystore, methods) {
  * only the local keystore adapter may wrap/unwrap the random DEK.
  */
 export async function createEncryptedNodeIdentityRecord(identity, keystore, options = {}) {
-  exactKeys(options, ['keyId'], 'Node identity options');
+  if (!options || typeof options !== 'object' || Array.isArray(options) ||
+      Object.keys(options).some(key => key !== 'keyId')) {
+    throw new TypeError('Node identity options has an invalid schema');
+  }
   const keyId = options.keyId ?? `zion-node-identity:${randomUUID()}`;
   requireKeystore(keystore, ['createOrGetWrappingKey', 'wrapKey']);
   if (typeof keyId !== 'string' || !KEY_ID_RE.test(keyId)) throw new TypeError('Invalid local keystore key ID');
