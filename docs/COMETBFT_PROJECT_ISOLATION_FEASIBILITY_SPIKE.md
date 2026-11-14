@@ -1055,3 +1055,52 @@ Evidence inspected:
 - ABCI update semantics and H+2 activation timing: CometBFT specification. See cited source in the accompanying review.
 
 No malicious manifest, generated genesis, node process, or consensus network was executed. No runtime exploit, consensus failure, or production impact was experimentally demonstrated. No Docker/VM/network/volume was provisioned or changed. No Zion runtime, consensus implementation, dependency, launcher, database, migration, or production configuration was changed.
+
+## 28. Validator signing-state durability, reset paths, and key custody
+
+A read-only review of the pinned CometBFT v0.38.26 `privval/file.go`, `libs/tempfile/tempfile.go`, and `spec/consensus/wal.md` distinguishes useful local anti-double-sign safeguards from guarantees that a decentralized Zion validator lifecycle still needs to provide.
+
+### 28.1 The default file signer stores the private key in plaintext
+
+`FilePVKey.Save` serializes the private/public key pair to the configured key file and calls `tempfile.WriteFileAtomic(..., 0600)`. The file is therefore permission-restricted on supported filesystems, but it is not encrypted by this implementation. The CometBFT configuration documentation describes this as the default local signing-key storage method.
+
+Required controls: production Zion must not treat mode 0600 as encryption or hardware-backed custody. Define an explicit signer adapter and threat model for OS keystore, TPM/HSM, or an independently reviewed remote signer; constrain access to key material, backups, crash dumps, snapshots, and operator credentials. Do not add a hosted CA or central key service as a mandatory dependency.
+
+### 28.2 FilePV maintains H/R/S anti-equivocation state and persists before returning the signature
+
+`FilePVLastSignState` stores height, round, step, signature, and canonical sign bytes. `CheckHRS` rejects height/round/step regression; at an identical H/R/S it only reuses the prior signature for identical sign bytes or the narrowly permitted timestamp-only difference, and otherwise returns a conflict. Both vote and proposal signing call `saveSigned`, which updates and saves this state before the signature is returned to the caller.
+
+This is a valuable local guard, not a distributed lock or quorum protocol. Two processes holding the same private key but independent state files can each believe they are the sole signer. Copying a key to a second node, restoring an older state snapshot, or running blue/green instances without a fencing protocol can therefore invalidate the single-signer assumption.
+
+Required controls: one active signing authority per validator key unless the selected signer protocol explicitly provides durable anti-equivocation across replicas. Enforce fencing during failover and key handoff; bind signer state to chain ID, validator public key, protocol version, and the committed validator-set epoch. Test concurrent requests, process crash, disk rollback, snapshot restore, network partition, and failover with adversarial schedules before production use.
+
+### 28.3 Missing state fails closed in the normal loader, but explicit empty-state/reset APIs exist
+
+`LoadFilePV` loads both the key and state files and exits on read or decode errors. That default path does not silently replace a missing state file with an empty state. However, the same package exposes `LoadFilePVEmptyState`, which deliberately loads a key with an empty last-sign state, and `FilePV.Reset`, whose source comment explicitly marks it unsafe and which clears the signing history before saving.
+
+Required controls: production startup must never fall back to empty signing state after a missing, corrupt, stale, or inaccessible state file. Restrict reset/empty-state operations to isolated disposable testnets or a formally governed recovery ceremony that proves the validator key cannot resume signing against prior history. Backups must preserve key and anti-double-sign state as one versioned recovery unit; rollback detection must be explicit.
+
+### 28.4 Atomic file replacement is not a complete crash-consistency proof
+
+The v0.38.26 `WriteFileAtomic` helper creates a unique temporary file in the target directory using exclusive creation, synchronous writes, and the requested permissions, then closes and renames it over the destination. The helper does not explicitly fsync the parent directory after the rename. The consensus WAL specification separately says messages signed by the node are fsynced and that the WAL is replayed after a crash.
+
+These mechanisms reduce important failure windows, but source inspection alone does not establish durability across every filesystem, storage controller, virtualized disk, power-loss, snapshot/restore, or directory-metadata failure mode. Nor does a WAL on one node provide cross-node signer fencing.
+
+Required controls: validate the exact filesystem/storage stack and crash semantics; test abrupt termination and power-loss-equivalent faults in disposable environments; verify state and WAL recovery together; fail closed on uncertain recovery; document the recovery authority and prohibit rollback to an older signing state. Do not claim crash-safe anti-double-signing solely from atomic rename or WAL presence.
+
+### 28.5 Key rotation is a protocol handoff, not a file replacement
+
+The CometBFT file signer stores key material and last-sign state separately. Replacing only the key, restoring only one file, or starting a replacement signer before the validator-set update is committed can create an identity/state mismatch or concurrent signing authority. The validator-set activation delay recorded in section 27 also means an approved rotation is not active at the moment an application emits the update.
+
+Required controls: define a project-scoped rotation state machine with proposal authorization, proof of possession by the new key, old-key authorization where policy requires it, committed activation height/epoch, signer fencing, recovery and revocation semantics, and an explicit point at which the old signer becomes unable to sign. Test lost acknowledgements, partitions, delayed activation, old/new signer overlap, rollback, and recovery. Governance approval alone is not BFT commitment.
+
+### 28.6 Evidence and limitations
+
+Evidence inspected at the pinned v0.38.26 tag:
+- `privval/file.go`, blob `a092e38b08733b32dd058d094a99582b193b1d63`: key/state structures, H/R/S checks, normal and empty-state loaders, unsafe reset, signing and persistence order.
+- `libs/tempfile/tempfile.go`, blob `f79cd0e16322d20dde1d66bcafcfca08bb9a8afc`: exclusive temporary-file creation, `O_SYNC`, mode propagation, close and rename; no explicit parent-directory fsync in this helper.
+- `spec/consensus/wal.md`, blob `599d63d35537b3e7fe139682f4cea027e69ca9b0`: WAL fsync and replay description.
+- CometBFT signer-state reference: last signed height/round/step plus signature and sign bytes; the state file is used with a local private validator.
+
+No signer was instantiated, no key generated or rotated, no state file was modified, and no crash/recovery or double-signing experiment was executed. The findings are source-level observations and required design gates, not an experimentally demonstrated exploit or production certification. No Zion runtime, signer adapter, consensus implementation, dependency, launcher, database, migration, or production configuration was changed.
+
