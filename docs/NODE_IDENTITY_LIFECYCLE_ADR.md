@@ -36,10 +36,10 @@ The first candidate, `@napi-rs/keyring@2.1.2`, exposes get/set/delete but does n
 
 The adapter boundary has explicit mutable-byte ownership requirements:
 
-- `wrapKey` receives a borrowed view of the DEK. It must finish using the bytes before its promise resolves and must not retain the buffer or any alias. The caller wipes its DEK buffer in a `finally` block after wrapping completes.
+- `wrapKey` receives an isolated borrowed copy of the DEK, not the buffer used by AES-GCM. It must finish using the bytes before its promise resolves and must not retain the buffer or any alias. The caller wipes both its working DEK and the adapter input copy in `finally`; this prevents adapter mutation from changing the encryption key and clears retained aliases after settlement.
 - `unwrapKey` must return a mutable `Uint8Array` containing the plaintext DEK. Ownership of that returned view transfers to the caller; the adapter must not retain the view or aliases. The caller copies it for cryptographic use and wipes both the adapter-returned view and its local copy in `finally`, including authentication/decryption failure paths.
 - Adapters must not return immutable values, detached views, or shared mutable backing storage. A future production adapter must test and document this contract for its concrete native binding.
-- The current module validates the returned value's type and length, but it cannot prove that a native adapter has no retained aliases or hidden copies. The fake-keystore tests establish only the JavaScript-visible buffer behavior.
+- Cleanup uses the captured TypedArray intrinsic rather than a potentially overridden instance `.fill()` method. Detached or proxy-backed views may still be impossible to wipe; cleanup is best-effort and must not mask the primary cryptographic error. The module cannot prove that a native adapter has no hidden copies. Fake-keystore tests establish only JavaScript-visible buffer behavior.
 
 Zeroization is best-effort within the limits of Node.js and native cryptographic APIs. Clearing the temporary DER buffer does not erase the returned private `KeyObject`, native-library internal copies, garbage-collected copies, swap, crash dumps, or memory snapshots. The restored `KeyObject` necessarily remains live while the node needs to sign. Do not describe this as complete process-memory erasure or endpoint-compromise protection.
 ## Bootstrap and crash recovery
