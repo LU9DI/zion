@@ -128,13 +128,13 @@
   $('upload-files').addEventListener('click',()=>$('file-picker').click());
   $('file-picker').addEventListener('change',e=>{addFiles(e.target.files);e.target.value='';});
   $('file-search').addEventListener('input',renderFiles);$('file-filter').addEventListener('change',renderFiles);
-  $('view-toggle').addEventListener('click',()=>{gridView=!gridView;$('view-toggle').textContent=gridView?'☷':'▦';toast(gridView?'Lista compacta ativada.':'Compact list enabled.');renderFiles();});
+  $('view-toggle').addEventListener('click',()=>{gridView=!gridView;$('view-toggle').textContent=gridView?'☷':'▦';toast(gridView?'Compact list enabled.':'Compact list enabled.');renderFiles();});
   $('all-files').addEventListener('click',e=>{const b=e.target.closest('[data-file-index]');if(!b)return;const f=files[Number(b.dataset.fileIndex)];if(f)toast(`${f.name} · ${fmtSize(f.size)} · local demo`);});
   $('mobile-menu').addEventListener('click',()=>$('sidebar').classList.toggle('open'));
   document.querySelector('.notice-close').addEventListener('click',e=>e.currentTarget.closest('.notice').remove());
   $('help-button').addEventListener('click',()=>$('help-dialog').showModal());$('close-help').addEventListener('click',()=>$('help-dialog').close());$('help-ok').addEventListener('click',()=>$('help-dialog').close());
   $('contribute-toggle').addEventListener('change',e=>{$('contribute-message').textContent=e.target.checked?'Preference enabled in the demo only. No real service was started.':'Preference disabled. No real service was started.';toast(e.target.checked?'Simulated contribution enabled.':'Simulated contribution paused.');});
-  $('workspace-name').addEventListener('input',e=>document.querySelector('.profile strong').textContent=e.target.value.trim()||'Meu Zion');
+  $('workspace-name').addEventListener('input',e=>document.querySelector('.profile strong').textContent=e.target.value.trim()||'My Zion');
   $('save-settings').addEventListener('click',()=>{$('settings-feedback').textContent='Preference applied in this session.';toast('Preference updated in this preview.');});
   const inactivitySettingFields = {
     pauseWarningAtDays: 'idle-pause-warning', pauseAfterDays: 'idle-pause-after',
