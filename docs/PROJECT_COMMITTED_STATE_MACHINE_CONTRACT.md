@@ -285,3 +285,14 @@ The harness exercises deterministic state-root calculation, proposal/finalizatio
 **Scope limitation:** `MemoryAtomicCommittedStateStore` is an in-memory test double whose atomicity is a single JavaScript snapshot replacement. It does not implement filesystem durability, WAL, database transactions, process recovery, power-loss guarantees, ABCI, or consensus. The tests validate state-machine expectations and test wiring only. They must not be cited as proof of durable storage or BFT safety.
 
 Next implementation gate: replace the test double with a separately reviewed durable adapter, then run process-kill/restart tests against its actual storage engine before any ABCI integration. Keep this harness outside production imports and startup paths.
+
+
+### Harness hardening follow-up
+
+The test-only harness was hardened after review:
+
+- Corrected the SHA-256 domain separator to contain an actual NUL byte terminator rather than the two literal characters backslash and zero.
+- Rejected prototype-sensitive state keys (`__proto__`, `constructor`, `prototype`) before writing into ordinary JavaScript objects.
+- Added a regression test asserting these keys are rejected and do not mutate object prototypes.
+
+These are harness correctness/security fixes only. They do not change the previously stated persistence or consensus limitations.
