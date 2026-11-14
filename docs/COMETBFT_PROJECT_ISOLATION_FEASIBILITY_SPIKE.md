@@ -726,3 +726,51 @@ There is no warning-only state and no partial container creation. A READY invent
 - CometBFT runner or images built: no.
 - No infrastructure was provisioned or modified by this documentation step.
 - No Zion runtime, consensus implementation, dependency, launcher, database, migration, or production configuration was changed.
+
+
+## 22. Runner Compose lifecycle and implicit project identity
+
+A read-only inspection of the pinned upstream source at CometBFT v0.38.26 adds a second namespace concern beyond the explicit resource collisions in Section 20.
+
+### 22.1 Source facts
+
+The upstream file `test/e2e/pkg/infra/docker/docker.go` (blob `c3588c0930d9e6a59daf39b1226b37217c99285e`) shows:
+
+- `Provider.Setup` renders the Compose document and writes it to `<Testnet.Dir>/docker-compose.yml` with mode `0644`.
+- `StartNodes` invokes `docker compose -f <Testnet.Dir>/docker-compose.yml up -d <node names...>`.
+- `StopTestnet` invokes `docker compose -f <Testnet.Dir>/docker-compose.yml down`.
+- The command builder does not pass `-p/--project-name` or `--project-directory`.
+- The generated services use explicit `container_name` values derived from node names, the generated network is named from the testnet name, and node data is bind-mounted from paths relative to the Compose file directory.
+- Proxy and monitoring ports are rendered from the testnet/node configuration; the ordinary P2P and profiling entries are container-port-only entries in the Compose template.
+
+The upstream file `test/e2e/pkg/exec/exec.go` (blob `b0a3228fac652fafd9de5dee1d8707643c32c57b`) constructs subprocesses with `os/exec.CommandContext` and does not assign `cmd.Env`. The runner therefore inherits the parent process environment. This is consistent with the environment-selection risk already recorded in Section 18; it does not by itself prove which Docker context wins for every invocation.
+
+### 22.2 Consequences for concurrent runs
+
+- Without an explicit project name, Compose derives the project name from the Compose project directory (normally the directory containing the Compose file). Two different absolute testnet paths with the same final directory name can therefore resolve to the same implicit project name on a shared daemon.
+- A distinct absolute workspace path does not repair literal `container_name` collisions or fixed host-port/subnet overlaps described in Section 20.
+- `down` is scoped to the effective Compose project, not to an independently verified experiment ownership manifest. If two runs accidentally resolve to the same project name, stopping one can affect resources belonging to the other.
+- The generated bind mounts are relative to the Compose project directory. Their actual resolved host paths must be captured from the rendered configuration and checked against each VM's dedicated experiment workspace.
+- `Setup` writes the Compose file before start; a pre-existing or shared testnet directory is not an acceptable isolation boundary. Each run must have a fresh, exclusive workspace inside its own disposable VM.
+
+### 22.3 Required additional preflight checks
+
+Before any runner setup/start operation:
+
+1. Record the canonical absolute `Testnet.Dir` for each run and the final directory component used by Compose's implicit project-name derivation.
+2. Calculate the effective Compose project name using the exact Compose version and invocation environment; do not infer it only from a human-readable testnet name.
+3. Require unique project names on any shared daemon, while still treating the daemon/VM boundary as the primary isolation control.
+4. Verify that each testnet directory is fresh, exclusively owned by that run, and contains no pre-existing Compose file, node data, or symlinked path components.
+5. Render and archive the exact Compose configuration; verify resolved bind-mount sources, explicit container names, network names, host-port bindings, and all cleanup selectors.
+6. Record the effective Docker context and daemon identity immediately before each potentially destructive command. Environment inheritance must be explicit in the run record; do not rely on an operator's interactive shell defaults.
+
+These checks are additive. They do not make a shared-daemon topology acceptable without the Section 19 fault/cleanup experiment and the Section 20 resource-collision checks.
+
+### 22.4 Evidence and status
+
+- Compose lifecycle and command construction: source-inspected at the pinned v0.38.26 tag.
+- Implicit project-name derivation: corroborated by the official Docker Compose project-name documentation.
+- Same-daemon collision caused by equal directory basenames: derived from the documented naming rule; not experimentally exercised.
+- Runner invocation under two simultaneous testnets: not executed.
+- No VM, Docker daemon, container, network, or volume was provisioned or changed.
+- No Zion runtime, consensus implementation, dependency, launcher, database, migration, or production configuration was changed.
