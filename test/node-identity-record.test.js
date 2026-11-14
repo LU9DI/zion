@@ -117,6 +117,21 @@ test('encrypted identity wipes the keystore-returned plaintext DEK buffer after 
   assert.equal(returnedPlaintext.every(byte => byte === 0), true);
 });
 
+test('encrypted identity rejects non-byte keystore plaintext without masking the adapter error', async () => {
+  const identity = createNodeIdentity();
+  const record = await createEncryptedNodeIdentityRecord(identity, new FakeKeystore());
+  const invalidKeystore = {
+    async unwrapKey() {
+      return new ArrayBuffer(32);
+    },
+  };
+
+  await assert.rejects(
+    loadEncryptedNodeIdentityRecord(record, invalidKeystore),
+    { name: 'TypeError', message: 'Local keystore must return unwrapped key bytes' },
+  );
+});
+
 test('encrypted identity rejects a wrong local wrapping credential', async () => {
   const identity = createNodeIdentity();
   const record = await createEncryptedNodeIdentityRecord(identity, new FakeKeystore());
