@@ -111,6 +111,10 @@ Assessment date: 2026-11-13. This is a source/documentation screening, not a cod
 - Its specification describes a weighted validator set, commits with more than two-thirds of current validator weight, and safety/liveness while less than one-third of validator weight is malicious or faulty.
 - The upstream changelog shows active 2026 development, including v0.40.0 dated July 27, 2026 and subsequent unreleased changes at the time of this screening.
 
+**Additional upstream validator-update behavior verified (ABCI++ documentation)**
+
+- The application can provide the initial validator set at InitChain and update it from FinalizeBlock. Validator updates returned for block H affect the next validator hash at H+1 and become active at H+2; the H+3 commit-info fields then reflect the changed set. Duplicate public keys in one update are invalid, and voting power must be non-negative and bounded by the implementation's maximum total power. These semantics are important for deterministic application integration, but they do not by themselves establish a safe Zion-specific handoff, prove operator independence, or supply a DKG/resharing protocol. Zion must pin and test the exact CometBFT version and its reconfiguration behavior.
+
 **Zion fit / blockers**
 
 - CometBFT is a Go implementation. The inspected Zion repository's runtime is Node.js >=20; its Rust workspace currently has a small storage-core crate and does not provide a BFT engine or an existing Go integration boundary.
