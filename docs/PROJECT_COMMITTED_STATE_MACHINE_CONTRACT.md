@@ -342,8 +342,8 @@ The prototype is deliberately outside `src/` and is not imported by production s
 
 - One complete canonical JSONL record is appended per committed height.
 - Each record contains the height, previous journal-record hash, application state root, full committed snapshot (state data, operation-result index, and outbox), and its own domain-separated record hash.
-- Appends use a single-writer exclusive lock, bounded total journal size, full-write loops, file `fsync`, and directory `fsync` when the journal is first created.
-- Any ambiguous append or descriptor-close failure poisons the live instance; it cannot continue appending until it is closed and the journal is reopened and fully verified.
+- Lock creation and journal appends use full-write loops; the journal also uses a single-writer exclusive lock, bounded total size, file `fsync`, and directory `fsync` when the lock or journal file is first created.
+- Any ambiguous append or append-descriptor-close failure poisons the live instance; it cannot continue appending until it is closed and the journal is reopened and fully verified. Lock-descriptor close is tracked separately: the instance is not marked closed until lock cleanup completes, allowing a retry after a cleanup error without attempting to close an already-closed descriptor.
 - Recovery verifies contiguous heights, previous-record hash links, application state roots, and record hashes before exposing the latest snapshot.
 - Retrying an identical commit at the current height returns an idempotent already-committed result; a different state at that height is rejected as a commit conflict.
 - An incomplete trailing line or any invalid record fails closed; the prototype does not silently truncate or skip uncertain history.
