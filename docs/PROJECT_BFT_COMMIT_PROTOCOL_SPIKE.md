@@ -174,7 +174,7 @@ Tests must assert both safety (no two honest nodes commit conflicting values at 
 
 1. [x] Complete the source-level admission/authorization inventory in `docs/ADMISSION_AUTHORIZATION_SOURCE_AUDIT.md`; its findings identify the missing deterministic operation identity/result record and the existing dispatch/revocation linearization semantics.
 2. Select and review a concrete BFT protocol and exact maintained implementation.
-3. Define canonical transition, vote, certificate, and durable safety-state schemas.
+3. [x] Draft the application transition/idempotency/recovery contract in `docs/DECENTRALIZED_TRANSITION_STATE_MACHINE_SPEC.md`; physical-storage semantics, operation-result retention, external side-effect fencing, and committee Sybil assumptions remain unresolved. Vote, certificate, and durable BFT safety-state schemas remain blocked on protocol selection.
 4. Implement a storage-neutral committed-state interface with a test-only deterministic harness.
 5. Integrate the selected protocol in isolated multi-process tests.
 6. Connect governance certificates as authorization inputs, not as consensus certificates.
