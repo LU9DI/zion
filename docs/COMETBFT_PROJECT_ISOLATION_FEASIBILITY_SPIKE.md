@@ -631,3 +631,98 @@ Do not accept “different Compose project names” as evidence of testnet isola
 - A fully namespaced same-daemon harness: not implemented or tested.
 - Two-VM isolation experiment: still not provisioned or executed.
 - No Zion runtime, consensus implementation, dependency, launcher, database, migration, or production configuration was changed by this documentation update.
+
+## 21. Disposable VM readiness and read-only evidence collection
+
+This section turns the Section 19 preflight into a reproducible evidence checklist. It does not provision VMs, install Docker, pull images, create networks, or start containers. All commands below are intended for an administrator to run inside each already-provisioned disposable VM, before any experiment resources are created.
+
+### 21.1 Isolation and operator safety
+
+- Use two disposable Linux VMs, each dedicated to one testnet and one Docker daemon. The VM boundary, not a Docker context or project name, is the primary containment boundary.
+- Do not use the official Zion node, a production host, the user's workstation, or a VM containing unrelated Docker workloads.
+- Do not mount home directories, SSH agent sockets, cloud credentials, source-control credentials, production data, or host Docker sockets into test containers.
+- Restrict VM console/SSH access to named experiment operators. Docker daemon control is effectively host-administrator access on a rootful daemon; never expose an unauthenticated TCP API. If remote administration is necessary, use a separately authorized SSH endpoint and record its identity.
+- Rootless Docker may reduce daemon/container privilege exposure, but it is not a replacement for VM separation. Confirm its cgroup/resource-limit support and networking behavior on the selected OS before relying on it; do not silently change the experiment topology to accommodate it.
+- Do not disable host firewalling globally. Permit only the explicitly documented experiment links and management channel. Keep management access separate from validator P2P links.
+- Keep VM snapshots or rebuildable images available. Do not include private validator keys in evidence bundles; store disposable keys only inside their owning VM with restrictive permissions.
+
+### 21.2 Read-only host inventory
+
+Run separately on VM-A and VM-B, save the raw output with a UTC timestamp, and label the file with the VM identity. These commands inspect the host; they do not install or change software:
+
+```sh
+date -u +%Y-%m-%dT%H:%M:%SZ
+hostnamectl
+uname -a
+id
+nproc
+free -h
+df -hT
+lsblk -o NAME,TYPE,SIZE,FSTYPE,MOUNTPOINTS
+ip -brief address
+ip route show
+ip -6 route show
+ss -lntup
+systemctl is-active docker.service docker.socket
+```
+
+If a command is unavailable, record it as unavailable; do not install packages during evidence collection. Record the VM provider/hypervisor identifier and configured CPU, RAM, disk and network quotas from the provider control plane as a separate signed/exported artifact. Guest-visible capacity alone does not prove the configured quota.
+
+### 21.3 Read-only Docker inventory
+
+Only run these commands if Docker is already installed and the daemon is already provisioned for the experiment. Do not start or enable a daemon as part of this checklist.
+
+```sh
+docker version
+docker context ls
+docker context show
+docker info
+docker ps --all --no-trunc
+docker network ls
+docker volume ls
+```
+
+Record the effective context and daemon ID, server version, root/data directory, storage driver, security options, cgroup version/driver, default address pools, and daemon endpoint. Capture the full pre-experiment container/network/volume inventory. Redact registry credentials, authorization headers, certificates, tokens, and any environment values that may contain secrets. Do not publish raw `docker inspect` environment output without review.
+
+If the daemon is rootless, explicitly record the rootless security option, user namespace, socket path, data directory, and whether cgroup v2 plus systemd are available for CPU/memory/PID limits. Rootless mode's networking and published-port behavior must be validated within the disposable VM before the experiment; it is not assumed equivalent to rootful networking.
+
+### 21.4 Static manifest and Compose review
+
+After the two independent manifests and Compose files have been generated in their respective VM workspaces—but before any `up`, `start`, or runner setup command—capture the rendered configuration:
+
+```sh
+docker compose -f <experiment-compose-file> config
+```
+
+The command must be run against the exact file and environment intended for that VM. Store the rendered output, manifest hash, Compose file hash, and the non-secret variable names/values needed to reproduce resource allocation. Redact secrets before sharing the evidence bundle. Do not use `docker compose config --environment` in a shared report unless its output has been reviewed for secrets.
+
+Compare A and B artifacts for all Section 20 fields. Also confirm that every bind-mount source resolves inside that VM's dedicated experiment workspace, every named volume is owned by that testnet, no service uses host networking unless explicitly justified, and no service receives the host Docker socket. A static render cannot prove runtime routing or isolation; those remain runtime test obligations.
+
+### 21.5 Evidence manifest and preflight decision
+
+Create one evidence index per VM containing:
+
+- VM provider identifier, VM name, image ID, region/zone, creation timestamp, and declared resource quotas.
+- UTC collection timestamp and SHA-256 of every raw inventory artifact.
+- OS/kernel, Docker client/server, Compose, cgroup and storage-driver versions/settings.
+- Effective Docker context/endpoint and daemon ID; never include private endpoint credentials.
+- Baseline ports, routes, interfaces, firewall policy, containers, networks, volumes and writable mount inventory.
+- CometBFT source tag/commit, Go toolchain, runner digest and image digests once built.
+- Manifest/Compose hashes and a reviewed redacted rendered configuration.
+- Operator identity and a record of any unavailable measurement.
+
+The preflight result must be exactly one of:
+
+- **READY** — every mandatory field is evidenced, both VMs are disposable and dedicated, and static A/B collision checks pass.
+- **BLOCKED** — any required field is missing, the daemon/VM is shared or ambiguous, secrets are exposed, or any resource/network overlap is detected.
+
+There is no warning-only state and no partial container creation. A READY inventory authorizes only the next controlled build/setup step; it is not evidence of consensus isolation or a pass of the Section 19 experiment.
+
+### 21.6 Evidence status
+
+- Checklist and read-only command set: documented.
+- VM-A/VM-B identities, quotas and inventories collected: no.
+- Docker daemons provisioned or inspected for this experiment: no.
+- CometBFT runner or images built: no.
+- No infrastructure was provisioned or modified by this documentation step.
+- No Zion runtime, consensus implementation, dependency, launcher, database, migration, or production configuration was changed.
