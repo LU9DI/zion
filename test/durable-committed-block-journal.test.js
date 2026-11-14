@@ -55,6 +55,20 @@ test('close preserves a replacement lock owned by another writer', () => {
   } finally { f.cleanup(); }
 });
 
+test('failed lock acquisition never removes a pre-existing lock without this instance token', () => {
+  const f = fixture();
+  const existingLock = JSON.stringify({ pid: process.pid }) + '\n';
+  try {
+    writeFileSync(f.path + '.lock', existingLock);
+    assert.throws(
+      () => new DurableCommittedBlockJournal(f.path),
+      { code: 'EEXIST' },
+    );
+    assert.equal(existsSync(f.path + '.lock'), true);
+    assert.equal(readFileSync(f.path + '.lock', 'utf8'), existingLock);
+  } finally { f.cleanup(); }
+});
+
 test('journal refuses a symbolic-link path without modifying its target', {
   skip: process.platform === 'win32',
 }, () => {
