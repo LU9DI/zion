@@ -9,8 +9,8 @@ Scope: PR #68, branch `architecture/fully-decentralized-core`
 - All user-facing interface copy is English: navigation, forms, validation, empty states, notifications, settings, help, transactional email, and invitation flows.
 - The UI must remain simple, functional, responsive, accessible, and fast.
 - Zion is invitation-only. There is no public self-service registration without a valid invitation.
-- The first 1,000 users form the founding cohort and receive invitation privileges.
-- Each founding user may issue an unlimited number of invitations. There is no per-user invitation quota.
+- The first 1,000 users form the founding cohort, recorded as a globally verifiable historical cohort.
+- Every admitted user, including users who join through an invitation, may issue an unlimited number of invitations. There is no per-user invitation quota and invitation rights are not restricted to the founding cohort.
 - Each invitation must be redeemable only once. Unlimited issuance does not mean reusable codes or anonymous/unaccountable admission.
 - GitHub is the source/build/release workflow requested for the web app; GitHub must not become a mandatory runtime dependency for the decentralized network.
 
@@ -28,10 +28,10 @@ The web invitation flow needs its own explicit domain contract and must bind a r
 The founding cohort rule is a global network rule, not a per-node counter:
 
 - The founding cohort contains exactly the first 1,000 successfully admitted user identities under the canonical genesis/admission history.
-- Founding status and invitation-issuing eligibility must be deterministic and independently verifiable by every honest node.
+- Founding status must be deterministic and independently verifiable by every honest node. Invitation-issuing eligibility applies to every admitted user and must also be consistently verifiable.
 - A local counter, a single web server, a GitHub workflow, or an eventually consistent DHT record cannot decide who belongs to the first 1,000.
 - The admission transition must atomically assign the next founding ordinal while fewer than 1,000 founding identities exist.
-- Every founding identity receives unlimited invitation issuance rights. No per-issuer count limit may be applied to founding invitation issuance.
+- Every admitted identity receives unlimited invitation issuance rights, including non-founding users. No per-issuer count limit may be applied to invitation issuance.
 - Invitation redemption remains single-use and globally replay-protected. A unique invitation identifier/nonce must be consumed in the same committed transition that admits the recipient.
 - The invitation must be bound to the intended recipient identity (or to a securely defined claim flow), the issuer, the network/genesis identifier, and the applicable policy version. Expiry and revocation semantics must be explicit.
 - If no valid committed state or required quorum is available, the system must fail closed for admission rather than issue conflicting founding ordinals or accept a replay.
@@ -94,11 +94,14 @@ All visible text must be English. Keep UI strings separate from business logic s
 
 These findings mean the requested onboarding system is not already implemented. The current code must not be described as supporting the founding cohort or unlimited invitations.
 
-## 8. Product decision still required
+## 8. Confirmed invitation privilege policy
 
-The confirmed requirement grants invitation privileges to the first 1,000 users. It does not yet establish whether users who join through those invitations also receive unlimited invitation privileges, receive a smaller/conditional allowance, or cannot invite others.
+The product decision is confirmed: invitation privileges are universal for admitted users, not exclusive to the founding cohort.
 
-That inheritance rule must be decided before implementing invitation authorization. The default implementation must not silently expand the unlimited-inviter privilege beyond the founding 1,000 users.
+- The first 1,000 users are distinguished as the founding cohort for historical/product recognition.
+- Every user admitted afterward through a valid invitation may also issue an unlimited number of invitations.
+- Invitation rights do not depend on whether the user is a founder or an invitee.
+- Security controls (single-use redemption, issuer attribution, anti-forgery, anti-replay, abuse protection, and network capacity safeguards) remain mandatory and must not be implemented as an arbitrary per-user invitation quota.
 
 ## 9. Acceptance gates
 
@@ -106,8 +109,8 @@ Before calling invitation onboarding functional:
 
 1. English copy audit covers every rendered page, validation/error path, email, and accessibility label.
 2. Founding ordinal assignment is deterministic across independent nodes and protected against concurrent admissions.
-3. Exactly the first 1,000 committed identities receive founding invitation privileges.
-4. Founding invitation issuance has no per-user count cap.
+3. Exactly the first 1,000 committed identities receive founding-cohort status.
+4. Every admitted identity, founding or later, can issue invitations without a per-user count cap.
 5. Concurrent redemption of the same invitation can produce at most one successful admission.
 6. Issuer attribution and invitation replay protection survive restart and peer synchronization.
 7. Admission stops safely when committed state/quorum is unavailable.
