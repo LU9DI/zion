@@ -1491,3 +1491,61 @@ Sources reviewed:
 - libhotstuff prototype: `https://github.com/hot-stuff/libhotstuff`.
 
 No consensus engine was installed, no dependency was added, no testnet was started, and no BFT or project-isolation experiment was executed for this section. This screening does not prove CometBFT suitable for Zion. The only permitted next step is the isolated PoC described above, subject to the runner/VM safety gates already recorded in this document.
+
+
+## 35. Safe execution boundary for the CometBFT isolation experiment
+
+### 35.1 Finding from the upstream E2E runner lifecycle
+
+The CometBFT E2E runner is a lifecycle manager, not merely a test command. Its documented stages include setup, start, load, perturb, wait, test, stop, and cleanup. The cleanup stage removes generated configuration files and Docker containers/networks. The documented failure behavior can leave a testnet and its data running for inspection; cleanup is a separate explicit operation.
+
+This matters for Zion because a test harness that invokes upstream cleanup against a shared Docker daemon can affect resources outside the intended test run if the cleanup implementation or its resource selectors are broader than the run's ownership boundary. A unique Compose project name and unique output directory are useful namespacing controls, but they are not, by themselves, proof that all cleanup, bind mounts, networks, volumes, ports, or daemon-level operations are confined to that run.
+
+The upstream E2E documentation also supports selecting a distinct generated testnet directory. That controls generated files; it does not create a separate Docker daemon, kernel, network namespace boundary, or host resource budget.
+
+### 35.2 Required isolation topology
+
+**No execution on the current shared host is authorized by this spike.** Before any testnet is started, the harness must provide and independently verify all of the following:
+
+1. A disposable VM boundary for the experiment, with a dedicated Docker daemon/socket inside that VM. No connection to the developer's or production Docker daemon is permitted.
+2. Separate disposable VM and daemon boundaries for project A and project B in the two-project experiment. The VMs may communicate only over an explicitly configured test network; they must not share a writable filesystem, Docker socket, host PID namespace, or privileged control process.
+3. Hypervisor-enforced CPU, memory, disk, process, and network ceilings for each VM, plus an independently bounded outer host budget. Container-level limits alone are not a substitute for a VM-level ceiling.
+4. No production credentials, validator keys, SSH agent, cloud credentials, host home directory, source checkout with secrets, or production data mounted into either VM. Use only newly generated test-only keys and synthetic state.
+5. No writable host bind mounts from the guest. Test outputs must be exported through a narrow, separately controlled artifact channel after the run; guest-controlled paths must never select arbitrary host destinations.
+6. No guest access to the host Docker API, hypervisor management socket, or orchestration credentials. The outer controller may create/destroy only the identified disposable VMs and collect bounded artifacts.
+7. Explicit network policy: deny access to production/private networks and metadata services; permit only the endpoints needed to obtain pinned source/build inputs and the A/B test traffic. Record the effective policy and verify it from inside each guest.
+8. Immutable run identity and evidence: source commit and release digests, VM image digest, manifest digest, generated genesis/chain IDs, validator public-key fingerprints, daemon identity, resource limits, timestamps, and artifact hashes.
+
+### 35.3 Filesystem and cleanup safety requirements
+
+The harness must not rely on a path string check or a naïve lock file as a security boundary. Before any destructive operation, it must establish ownership of the target VM/daemon and the exact run resources using identifiers returned by the provisioning layer, not names inferred from mutable filesystem paths.
+
+For guest-local generated data, the harness must use a private run root owned by the test user, reject symlinks/reparse points and unexpected mount points in every path component, avoid following links during traversal, and refuse cleanup if ownership or containment cannot be established. Creation and publication must be no-overwrite and crash-aware; a successful rename alone is not evidence of durable directory metadata. These controls require platform-specific implementation and adversarial tests; this document does not claim they are already implemented.
+
+Cleanup must be scoped to the disposable VM being destroyed. It must never run broad host-level commands such as global container, network, volume, or Compose pruning. If resource ownership is uncertain, stop and preserve the VM and evidence for manual inspection rather than attempting best-effort deletion.
+
+### 35.4 Preflight go/no-go gate
+
+The experiment is **NO-GO** until evidence demonstrates every item below:
+
+- [ ] Provision two fresh disposable VMs from a pinned, reviewed image; verify unique VM identities and separate Docker daemon endpoints.
+- [ ] Verify that neither guest can access the host or the other guest's Docker socket, writable filesystem, credentials, or management interface.
+- [ ] Verify hypervisor-enforced per-VM resource ceilings and outer-host headroom under a deliberate resource-exhaustion rehearsal.
+- [ ] Verify network isolation and the exact allowlist from both guests.
+- [ ] Exercise a deliberately failed run, a killed runner, and a VM restart; prove that recovery and cleanup affect only the owned VM and its own daemon.
+- [ ] Exercise cleanup with unrelated sentinel containers, networks, volumes, files, and processes in a separate control environment; prove they remain untouched.
+- [ ] Exercise symlink/reparse-point, mount-point, path replacement, permission, concurrent-run, and crash cases against the artifact and cleanup paths on every supported host platform.
+- [ ] Confirm that no production or user secrets are present in the VM image, mounts, environment, logs, or exported artifacts.
+- [ ] Preserve complete preflight output and hashes before authorizing the two-project CometBFT test.
+
+A failed, missing, or unverifiable item is a hard stop. Do not downgrade the requirement to unique Compose project names, a lock file, a separate output directory, or operator discipline.
+
+### 35.5 Scope and current status
+
+This section defines a safety architecture and a preflight gate only. No VM was provisioned, no dedicated daemon was created, no cleanup command was executed, no CometBFT dependency was added, and no testnet or attack simulation was run. The available GitHub connector cannot establish the state of a local hypervisor, Docker daemon, kernel namespaces, filesystem ACLs, or host resource limits. Those facts therefore remain unverified.
+
+The two-project, four-validator experiment in section 34.6 remains blocked. The next admissible work is to implement and independently verify the disposable-VM harness and its destructive-operation tests. Only after the entire preflight gate passes may the CometBFT testnet experiment begin. No conclusion about production suitability, decentralized security, or BFT correctness follows from this design section.
+
+Sources reviewed:
+- CometBFT E2E runner stages and cleanup behavior: https://github.com/cometbft/cometbft/tree/v0.38.26/test/e2e
+- CometBFT E2E runner README: https://github.com/cometbft/cometbft/blob/v0.38.26/test/e2e/README.md
