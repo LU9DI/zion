@@ -503,3 +503,83 @@ A same-host multi-daemon prototype remains a secondary experiment only after its
 - Two-VM/two-daemon experiment: recommended; not provisioned or executed.
 - No Docker daemon, CometBFT node, PoC, or E2E test was run in this session.
 - No Zion runtime, dependency, launcher, database, migration, or production code was changed.
+
+
+## 19. Two-VM experiment protocol and objective acceptance gates
+
+### 19.1 Scope and non-goals
+
+This protocol evaluates whether two independent CometBFT testnets can make progress concurrently and remain isolated under faults and cleanup. It is a harness-feasibility experiment only. It does not select CometBFT as Zion's BFT protocol, establish a production topology, validate decentralized discovery, or authorize any Zion runtime integration.
+
+Use the pinned upstream tag v0.38.26 and its E2E runner. Provision two disposable Linux VMs (VM-A and VM-B), each with exactly one Docker daemon dedicated to this experiment. Do not share a daemon with production workloads, unrelated testnets, or user data. Each VM must have its own host network namespace, Docker data root, Docker socket, and disposable test workspace. Do not mount production credentials, SSH keys, cloud credentials, or persistent user directories into the test VMs.
+
+### 19.2 Preflight gate (all conditions mandatory)
+
+Before building or starting any container, record and verify:
+
+1. VM identity, OS/kernel, CPU count, memory limit, disk quota, network interface and assigned address for each VM.
+2. Docker Engine and Compose versions, daemon endpoint, daemon ID, root/data directory, storage driver, bridge/network configuration, and whether the daemon is dedicated and disposable.
+3. CometBFT tag, peeled commit, runner binary SHA-256, Go toolchain version, test image digests, and manifest SHA-256 values.
+4. A and B have distinct testnet directory roots, chain IDs, genesis hashes, validator private keys, node IDs, and validator public-key sets. No key material is copied between networks.
+5. Each VM can reach only the intended test endpoints. Document firewall rules and the exact inter-VM links required for each network. No implicit shared bridge, shared writable volume, or shared host directory is allowed.
+6. The runner's Docker endpoint is fixed and logged for the entire invocation. Verify the endpoint with Docker daemon identity before any destructive command. Do not rely on DOCKER_HOST alone if a Docker context or explicit CLI option can override it.
+7. Capture baseline CPU, memory, disk, network, open ports, Docker containers, networks, and volumes before the experiment.
+
+If any item cannot be measured or verified, stop before container creation. Do not downgrade a failed preflight into a warning.
+
+### 19.3 Baseline concurrent-liveness experiment
+
+1. Build the exact upstream E2E runner and required test image on the disposable environment; record immutable digests.
+2. Generate independent manifests for A and B, each with four validators, unique chain IDs/genesis, independent keys, and disjoint peer topology. Store manifests and generated data only in their VM's workspace.
+3. Run setup and start on A and B independently. Avoid the root full-run and benchmark commands because their pre-cleanup behavior is destructive. Do not invoke global cleanup while another testnet may exist on the same daemon.
+4. Verify all four validators in each network are live, connected to the intended peers, and reporting the expected chain ID and genesis hash.
+5. Sample heights and commit hashes at a fixed interval for a predeclared observation window. Require both networks to advance continuously and independently; record height, block hash, validator participation, peer set, process restarts, resource use, and errors.
+6. Verify that no A node has a peer connection to B and vice versa. Confirm each network's committed state and block hashes are internally consistent across its validators.
+
+Do not count container health or RPC responsiveness alone as evidence of consensus progress. Block-height advancement and matching committed block identity across the network are mandatory.
+
+### 19.4 Cross-network fault and cleanup matrix
+
+Execute one fault at a time, restore the baseline, and repeat in reverse order:
+
+| Case | Action confined to A | Required B invariant |
+|---|---|---|
+| F1 | Stop one A validator gracefully | B continues advancing and agreeing on committed blocks |
+| F2 | Kill one A validator abruptly | B continues advancing; no A process or resource appears in B |
+| F3 | Partition A's peer links | B remains connected internally and advances |
+| F4 | Pause one A validator | B remains live and advances |
+| F5 | Apply bounded CPU pressure to A | B remains within its predeclared liveness threshold |
+| F6 | Apply bounded disk pressure inside A's VM quota | B remains live; no shared storage degradation |
+| F7 | Stop and restart the A runner process | B's processes, network, data, and block progress remain intact |
+| F8 | Run A cleanup on A's dedicated daemon | B remains live and advances; its resource inventory is unchanged |
+
+Repeat F1-F8 with A and B swapped. Record fault start/end times, the affected resource IDs, both chains' heights and hashes, and all observed restarts or stalls. Define numeric liveness thresholds before execution; do not select them after seeing results.
+
+### 19.5 Cleanup and orphan-resource checks
+
+After each VM's own testnet is stopped, enumerate containers, networks, volumes, and testnet directories on that VM's dedicated daemon. Match every created resource to the pre-run inventory and recorded resource IDs. Confirm that cleanup removes only experiment-owned resources and leaves the daemon baseline unchanged. Simulate runner termination before cleanup and verify that the recovery procedure can identify only resources owned by that experiment. Never use a broad label-based cleanup on a shared daemon.
+
+Because each daemon is dedicated to a disposable VM, destroying the entire VM is the final containment boundary if ownership cannot be proven. Do not attempt speculative cleanup against an ambiguous resource inventory.
+
+### 19.6 Pass, fail, and inconclusive criteria
+
+**PASS** requires all preflight gates; simultaneous block progress on both networks; matching committed block identities within each network; zero cross-network peers or shared writable state; all A-only faults and cleanup leaving B within the predeclared liveness threshold; symmetric B-only results; and complete resource accounting with no unexplained orphan or deletion.
+
+**FAIL** includes any cross-network peer/session, chain/genesis/key collision, shared writable state, unexpected deletion or restart of the unaffected network, unexplained block divergence, or breach of the unaffected network's liveness threshold attributable to the other network's fault or cleanup.
+
+**INCONCLUSIVE** applies when instrumentation is missing, the baseline is unstable, the observation window is incomplete, resource pressure exceeds the predeclared test envelope, or the runner/daemon endpoint cannot be proven. Inconclusive is not a pass and must not be summarized as successful isolation.
+
+### 19.7 Required evidence bundle
+
+Retain: VM provisioning manifests; daemon identity/configuration; OS/kernel and tool versions; upstream tag and source commit; runner and image digests; A/B manifest and genesis hashes; public validator identities (never private keys); pre/post resource inventories; timestamped height/hash samples; peer topology snapshots; fault injection logs; runner and node logs; CPU/memory/disk/network measurements; cleanup output; and a machine-readable pass/fail/inconclusive summary. Redact credentials and private key material.
+
+### 19.8 Current execution status
+
+- Protocol and acceptance criteria: documented.
+- Disposable VMs provisioned: no.
+- Runner/image built on target VMs: no.
+- Concurrent two-network execution: not run.
+- Fault/cleanup matrix: not run.
+- No Zion runtime, consensus implementation, dependency, launcher, database, migration, or production configuration was changed.
+
+**Gate:** do not implement a Zion CometBFT adapter or claim project-isolation feasibility until the full experiment passes on the target disposable environment and its evidence bundle is reviewed.
