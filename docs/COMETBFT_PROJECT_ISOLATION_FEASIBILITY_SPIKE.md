@@ -2383,3 +2383,18 @@ First-party references:
 - https://tailscale.com/docs/features/tailnets-api
 - https://tailscale.com/docs/reference/trust-credentials
 - https://tailscale.com/docs/features/workload-identity-federation
+
+
+## 55. Application state-machine contract and global admission scope blocker (2026-11-14)
+
+A separate application contract has now been drafted in `docs/PROJECT_COMMITTED_STATE_MACHINE_CONTRACT.md`. It maps the existing governance, event-journal, replication, peer-admission, and identity components to the future deterministic committed-state boundary. It is a design contract only; no ABCI application, CometBFT dependency, storage adapter, or runtime integration has been added.
+
+The contract identifies a cross-document architecture conflict that must not be hidden during implementation:
+
+- This spike evaluates independent project-scoped committees and histories, with no global chain or global validator committee.
+- `docs/USER_INVITATION_PROTOCOL_ADR.md` requires a single Zion-wide contiguous founding ordinal sequence (1..1,000), assigned atomically with invitation redemption.
+- Independent project committees cannot alone serialize that one global counter. A separate global admission consensus domain would be a global admission authority/committee; project-scoped founder ordinals would change the product requirement; any third approach must provide a formal uniqueness/contiguity argument.
+
+This does **not** block the two-project CometBFT isolation experiment itself. It does block integrating global user invitation redemption and founder assignment into project-scoped consensus until the product/architecture scope is explicitly resolved. The invitation ADR and committed-state contract now record this as an open hard blocker.
+
+The existing disposable-VM/network NO-GO gate remains unchanged. No infrastructure was provisioned and no consensus test was run as part of this documentation increment.
