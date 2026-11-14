@@ -359,6 +359,7 @@ The prototype is deliberately outside `src/` and is not imported by production s
 6. Commit multiple heights and verify the full hash chain and latest recovered projection.
 7. Inject failures before writing, after a partial write, before `fsync`, and after `fsync`; verify rollback, writer poisoning, and empty-state recovery after reopen.
 8. Reject an existing symbolic-link journal path and verify its target and lock cleanup remain untouched; this preflight check is not race-free against concurrent path replacement.
+9. Interrupt initial lock-record creation after a partial write; verify the malformed lock is preserved, ordinary startup remains blocked, and cleanup requires the explicit no-writer assertion.
 
 
 
@@ -439,7 +440,7 @@ semantics, or consensus/finality requirements.
 
 A further source review identified a distinct failure mode in the test-only journal constructor. The lock file is created exclusively, then its JSON ownership record is written and fsynced. If that write is interrupted after creating the file but before a complete JSON record is available, constructor cleanup cannot parse the record and deliberately leaves the lock pathname in place. A later constructor then fails with `EEXIST`. This is fail-closed behavior: it can require manual recovery, but it avoids deleting a lock whose ownership cannot be established.
 
-The current tests cover preservation of a pre-existing lock when exclusive acquisition fails, and cleanup after failures that occur after a complete owned lock has been written. They do **not** inject a short/failed write during initial lock creation. The incomplete-lock case is therefore a source-derived limitation, not a tested recovery guarantee.
+The tests now inject a failure after half of the initial lock record is written, assert that the malformed lock remains and blocks another writer, and require the explicit no-writer assertion before the test helper removes it. This verifies the fail-closed recovery path for the injected boundary; it does not simulate a kernel short write, actual filesystem failure, process crash at every instruction, or independent verification of process liveness.
 
 For this prototype, recovery must remain an explicit operator procedure:
 
