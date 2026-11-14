@@ -1600,3 +1600,45 @@ Sources:
 - CometBFT v0.38.26 cleanup implementation: https://github.com/cometbft/cometbft/blob/v0.38.26/test/e2e/runner/cleanup.go
 - CometBFT v0.38.26 Docker Compose provider: https://github.com/cometbft/cometbft/blob/v0.38.26/test/e2e/pkg/infra/docker/docker.go
 - CometBFT v0.38.26 runner lifecycle: https://github.com/cometbft/cometbft/blob/v0.38.26/test/e2e/runner/main.go
+
+
+## 37. Safe invocation of the upstream runner inside an exclusive disposable VM
+
+### 37.1 Do not use the runner's aggregate command
+
+The v0.38.26 CLI source shows that the root command's `RunE` performs this sequence:
+1. `Cleanup(cli.testnet)`;
+2. `Setup(cli.testnet, cli.infp)`;
+3. starts transaction load and the network;
+4. waits, applies perturbations/evidence, and runs tests;
+5. calls `Cleanup(cli.testnet)` again unless `--preserve` is set.
+
+The `benchmark` command also calls `Cleanup` before setup and again after benchmarking. Both paths therefore invoke the global E2E-labeled Docker cleanup documented in section 36. Neither is an admissible entry point for the Zion harness, even when the testnet manifest has a unique name.
+
+### 37.2 Candidate subcommand lifecycle
+
+Within one exclusive disposable VM and its dedicated Docker daemon, the source exposes narrower subcommands:
+
+1. `runner -f <manifest> setup` — generates the testnet directory and configuration.
+2. `runner -f <manifest> start` — starts the nodes; if the testnet directory does not exist, it calls setup first.
+3. `runner -f <manifest> test` — runs the E2E Go tests against the running network.
+4. `runner -f <manifest> stop` — calls the Docker provider's `StopTestnet`, which runs Compose `down` against the manifest's Compose file.
+
+The CLI source shows these subcommands dispatch to `Setup`, `Start`, `Test`, and `StopTestnet` respectively; they do not invoke the root command's global `Cleanup` callback. This is a safer candidate lifecycle, not permission to run on a shared daemon. It remains subject to the exclusive-VM and dedicated-daemon requirements in sections 35–36.
+
+Do not invoke the `cleanup` or `benchmark` subcommands. Do not invoke the root command without a subcommand. After evidence has been captured, destroy the exclusive disposable VM by its provisioning-layer immutable identifier; VM destruction, not upstream `cleanup`, is the final cleanup boundary. If a run fails, preserve evidence and destroy only that VM. If the VM's identity or ownership cannot be verified, stop and leave it intact for manual investigation.
+
+### 37.3 Generated key and filesystem constraints
+
+The runner source defines a fixed `randomSeed` and derives testnet keys through its deterministic key generator. Those keys are test fixtures, not production validator identities. They must never be reused in Zion, exposed as public validator credentials, or allowed to sign on any public or production network. The disposable VM must contain only synthetic test state, and exported artifacts must exclude private keys and signer-state files.
+
+The setup implementation creates the testnet directory and node subdirectories with `os.MkdirAll`, writes Compose configuration and node configuration files, and stores validator key/state files in the generated tree. The harness must therefore start from a fresh, private guest workspace with no pre-existing path components controlled by another process. The VM boundary contains this write activity; it does not make an unsafe host bind mount acceptable.
+
+### 37.4 Candidate lifecycle status
+
+The subcommand sequence above is derived from source inspection only. It has not been run or tested. The current decision remains **NO-GO** until the disposable-VM controller, daemon separation, resource/network enforcement, artifact handling, and destructive-boundary tests have real execution evidence. No VM provider or local hypervisor has been selected or validated, so no provisioning implementation is being guessed or added to the Zion runtime.
+
+Sources:
+- CometBFT v0.38.26 runner CLI and lifecycle: https://github.com/cometbft/cometbft/blob/v0.38.26/test/e2e/runner/main.go
+- CometBFT v0.38.26 setup and testnet key generation: https://github.com/cometbft/cometbft/blob/v0.38.26/test/e2e/runner/setup.go
+- CometBFT v0.38.26 Docker Compose provider: https://github.com/cometbft/cometbft/blob/v0.38.26/test/e2e/pkg/infra/docker/docker.go
