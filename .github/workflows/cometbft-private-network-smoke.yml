@@ -37,9 +37,10 @@ jobs:
           TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           TS_AUDIENCE: ${{ secrets.TS_AUDIENCE }}
           NETWORK_SMOKE_OPT_IN: ${{ vars.ZION_ENABLE_COMETBFT_NETWORK_SMOKE }}
+          ISOLATED_TAILNET_READY: ${{ vars.ZION_ISOLATED_TAILNET_READY }}
         shell: bash
         run: |
-          if [[ "$NETWORK_SMOKE_OPT_IN" == "true" && -n "$TS_OAUTH_CLIENT_ID" && -n "$TS_AUDIENCE" ]]; then
+          if [[ "$NETWORK_SMOKE_OPT_IN" == "true" && "$ISOLATED_TAILNET_READY" == "true" && -n "$TS_OAUTH_CLIENT_ID" && -n "$TS_AUDIENCE" ]]; then
             echo "configured=true" >> "$GITHUB_OUTPUT"
           else
             echo "configured=false" >> "$GITHUB_OUTPUT"
@@ -47,7 +48,7 @@ jobs:
               echo "## Private runner network: NOT RUN"
               echo
               echo "No ephemeral tailnet node was created and no network test was attempted."
-              echo "Set ZION_ENABLE_COMETBFT_NETWORK_SMOKE=true and configure the restricted Tailscale OIDC identity secrets to opt in."
+              echo "The isolated-tailnet readiness gate, explicit opt-in, or restricted Tailscale OIDC identity is not configured. No tailnet node was created."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
