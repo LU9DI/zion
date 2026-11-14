@@ -345,6 +345,7 @@ The prototype is deliberately outside `src/` and is not imported by production s
 - Appends use a single-writer exclusive lock, bounded total journal size, full-write loops, file `fsync`, and directory `fsync` when the journal is first created.
 - Any ambiguous append or descriptor-close failure poisons the live instance; it cannot continue appending until it is closed and the journal is reopened and fully verified.
 - Recovery verifies contiguous heights, previous-record hash links, application state roots, and record hashes before exposing the latest snapshot.
+- Retrying an identical commit at the current height returns an idempotent already-committed result; a different state at that height is rejected as a commit conflict.
 - An incomplete trailing line or any invalid record fails closed; the prototype does not silently truncate or skip uncertain history.
 - A test-only crash hook exits the child process immediately after the record's `fsync`, before in-memory state is advanced. The restart test explicitly clears the abandoned lock only after the child has exited and the test has verified that no writer remains.
 
