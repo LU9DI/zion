@@ -137,3 +137,7 @@ CI success on unit tests alone is not sufficient evidence for these gates. Multi
 - It does not prove BFT safety, liveness, Sybil resistance, or DoS resistance.
 - It does not implement admission, revocation, quota, or capacity replacement.
 - It does not authorize any PostgreSQL migration, Neon change, launcher cutover, merge, deployment, or release.
+
+## 9. Deterministic transition refinement
+
+The operation-envelope, idempotency, state model, logical-capacity boundary, deterministic replay, and recovery requirements are refined in `docs/DECENTRALIZED_TRANSITION_STATE_MACHINE_SPEC.md`. That document is a specification gate only; it does not implement a state machine or select consensus.
