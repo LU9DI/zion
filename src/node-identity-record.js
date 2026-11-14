@@ -13,7 +13,7 @@ const MAX_CIPHERTEXT_BYTES = 16 * 1024;
 
 function exactKeys(value, keys, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
-      Object.keys(value).sort().join('\0') !== [...keys].sort().join('\0')) {
+      Object.keys(value).some(key => !keys.includes(key))) {
     throw new TypeError(`${label} has an invalid schema`);
   }
 }
