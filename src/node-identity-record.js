@@ -165,6 +165,7 @@ export async function loadEncryptedNodeIdentityRecord(record, keystore) {
       privateKey,
     });
   } finally {
+    if (unwrappedValue instanceof Uint8Array) unwrappedValue.fill(0);
     dek?.fill(0);
     privateDer?.fill(0);
   }
