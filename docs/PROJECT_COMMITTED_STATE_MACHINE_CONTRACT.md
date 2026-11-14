@@ -361,7 +361,7 @@ The prototype is deliberately outside `src/` and is not imported by production s
 
 
 
-The new `faultAt` cases are deterministic test hooks that throw at selected write boundaries. They validate the prototype's rollback/poison/reopen control flow; they do **not** emulate kernel-level short writes, a real `fsync` error, disk-full behavior, controller-cache loss, or power failure.
+The new `faultAt` cases are deterministic test hooks that throw at selected write boundaries. The partial-write case deliberately writes half of a serialized record before injecting the error, and the test verifies the file is truncated back to its original zero-byte length. They validate the prototype's rollback/poison/reopen control flow; they do **not** emulate kernel-level short writes, a real `fsync` error, disk-full behavior, controller-cache loss, or power failure.
 
 ### Strict limitations
 
