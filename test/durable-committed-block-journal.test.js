@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { CommittedStateHarness } from './support/committed-state-harness.js';
+import { CommittedStateHarness, MemoryAtomicCommittedStateStore } from './support/committed-state-harness.js';
 import { DurableCommittedBlockJournal } from './support/durable-committed-block-journal.js';
 
 function fixture() {
@@ -107,5 +107,29 @@ test('same-height commit retry is idempotent and conflicting replay fails closed
     assert.equal(reopened.commit(1, first.state).status, 'already-committed');
     assert.equal(reopened.info().lastBlockHeight, 1);
     reopened.close();
+  } finally { f.cleanup(); }
+});
+
+test('multiple committed heights recover the latest state through a verified hash chain', () => {
+  const f = fixture();
+  try {
+    const journal = new DurableCommittedBlockJournal(f.path);
+    const first = finalized(1, 'durable-operation-0007', 'profile.name', 'Zion');
+    journal.commit(1, first.state);
+    const nextApp = new CommittedStateHarness(
+      new MemoryAtomicCommittedStateStore(first.state),
+    );
+    const second = nextApp.finalizeBlock({
+      height: 2,
+      transactions: [{ operationId: 'durable-operation-0008', type: 'SET', key: 'profile.status', value: 'active' }],
+    });
+    journal.commit(2, second.state);
+    journal.close();
+
+    const recovered = new DurableCommittedBlockJournal(f.path);
+    assert.equal(recovered.info().lastBlockHeight, 2);
+    assert.equal(recovered.read().data['profile.name'], 'Zion');
+    assert.equal(recovered.read().data['profile.status'], 'active');
+    recovered.close();
   } finally { f.cleanup(); }
 });
