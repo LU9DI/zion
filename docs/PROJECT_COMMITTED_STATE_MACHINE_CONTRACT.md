@@ -417,11 +417,19 @@ unbounded allocation before the intended size guard ran.
 The recovery path now reads from the already-open, no-follow file descriptor in
 bounded 64 KiB chunks and stops as soon as it observes byte `maxBytes + 1`.
 It rejects the journal with `ZION_JOURNAL_TOO_LARGE` before parsing any record.
-A regression test writes a 1,025-byte file and opens it with a 1,024-byte limit;
-it expects the size error and verifies that the constructor cleans up its own
-lock. This bounds the recovery read buffer to the configured limit plus one
-byte (apart from bounded chunk-list overhead), rather than trusting the
-on-disk file size.
+The configured limit must also be strictly below Node's
+`buffer.constants.MAX_LENGTH`, so the later bounded concatenation cannot be
+asked to construct a Buffer larger than the runtime supports.
+
+Regression tests cover a 1,025-byte file with a 1,024-byte limit (including
+owned-lock cleanup) and reject a configured limit at the runtime Buffer
+maximum. This prevents an arbitrarily large on-disk file from being read
+without limit and rejects unsupported configured buffer sizes. It does **not**
+mean total recovery memory is capped at `maxBytes + 1`: concatenation,
+UTF-8 decoding, line splitting, and JSON parsing may create additional
+temporary copies. The memory cost remains proportional to the configured
+limit and can be multiple times that limit, so deployments would need a
+conservative cap or a streaming parser. The default remains 256 MiB.
 
 This is a test-support hardening change only. It does not resolve hostile
 parent-directory traversal, the lock unlink TOCTOU window, power-loss
