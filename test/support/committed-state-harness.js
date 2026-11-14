@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-const hash = value => createHash('sha256').update('ZION-COMMITTED-STATE-HARNESS-V1\\0').update(canonical(value)).digest('hex');
+const hash = value => createHash('sha256').update('ZION-COMMITTED-STATE-HARNESS-V1\0').update(canonical(value)).digest('hex');
 
 function canonical(value) {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
