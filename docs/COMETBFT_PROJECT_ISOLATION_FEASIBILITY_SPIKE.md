@@ -247,3 +247,33 @@ Before treating a build as reproducible, record the exact Go toolchain build, OS
 - No claim is made that multiple in-process nodes are isolated or supported.
 - No topology is selected; one-process-per-project is only the first topology to evaluate, subject to resource and product-constraint gates.
 - The Apache-2.0 license permits use subject to its terms; the full dependency tree still requires its own license/security review.
+
+
+## 12. Execution-environment attempt (2026-11-13)
+
+This section records an attempted preparation of the disposable PoC in the available execution environment. It is an environment report, not a CometBFT test result.
+
+Observed environment:
+- Go toolchain: `go version go1.23.2 linux/amd64`. This satisfies the release's declared Go `1.22.11` minimum.
+- Git: `2.47.3`.
+- Docker: unavailable (`docker: command not found`).
+- Direct outbound access to `github.com`: unavailable in this environment. Both `git ls-remote https://github.com/cometbft/cometbft.git refs/tags/v0.38.26` and an HTTPS request failed because DNS could not resolve `github.com`.
+- The GitHub repository connector could retrieve individual UTF-8 source files for inspection, including the exact-tag `go.mod`, `LICENSE`, `node/node.go`, and `node/setup.go`; it cannot provide a runnable checkout or execute Go builds/tests.
+
+Source observations confirmed from the exact `v0.38.26` tag:
+- `go.mod` declares `go 1.22.11`.
+- `LICENSE` is Apache License 2.0.
+- `node.Node` contains singular per-node configuration, genesis, state store, block store, consensus state/reactor, proxy application connections, and service fields.
+- `DefaultNewNode` constructs a node from one config, one local node key, one private validator, one application client, one genesis provider, one DB provider, and one metrics provider. This reinforces that the ordinary Node abstraction is not a built-in multi-project committee manager; it does not prove that multiple Node objects in one process are safely isolated.
+
+Execution outcome:
+- Source inspection: **partial, completed through read-only GitHub source access**.
+- Source checkout: **blocked**.
+- Dependency download / checksum verification: **not run**.
+- Build / unit tests / e2e tests: **not run**.
+- Two-project, eight-validator PoC: **not run**.
+- No runtime code or dependencies were added to Zion.
+
+The next valid execution environment must provide a full disposable checkout, outbound access to the pinned Go module sources (or a verified offline module cache), and enough process/network isolation to run eight validator processes. Docker is convenient but not intrinsically mandatory if the harness uses separate native processes, isolated data directories, and distinct P2P/RPC/ABCI ports. Before the PoC begins, the harness must also define CPU, memory, disk, file-descriptor and port budgets; do not infer acceptable scale after seeing the results.
+
+This blocker must not be bypassed by copying a partial subset of upstream source files, silently changing the pinned release, weakening the two-project matrix, or treating source inspection as a successful build/test.
