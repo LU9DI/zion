@@ -405,3 +405,24 @@ entry still refers to the verified inode" guarantee. Parent-directory
 replacement and hostile directory traversal are also outside this prototype's
 proven guarantees. These limitations must remain explicit; do not describe
 lock cleanup or path handling as race-free.
+
+
+### Bounded recovery-read hardening (2026-11-14)
+
+Source review found that the earlier implementation called `readFileSync(fd)`
+and checked `maxBytes` only after the entire journal had been loaded into
+memory. A file larger than the configured limit could therefore cause
+unbounded allocation before the intended size guard ran.
+
+The recovery path now reads from the already-open, no-follow file descriptor in
+bounded 64 KiB chunks and stops as soon as it observes byte `maxBytes + 1`.
+It rejects the journal with `ZION_JOURNAL_TOO_LARGE` before parsing any record.
+A regression test writes a 1,025-byte file and opens it with a 1,024-byte limit;
+it expects the size error and verifies that the constructor cleans up its own
+lock. This bounds the recovery read buffer to the configured limit plus one
+byte (apart from bounded chunk-list overhead), rather than trusting the
+on-disk file size.
+
+This is a test-support hardening change only. It does not resolve hostile
+parent-directory traversal, the lock unlink TOCTOU window, power-loss
+semantics, or consensus/finality requirements.
