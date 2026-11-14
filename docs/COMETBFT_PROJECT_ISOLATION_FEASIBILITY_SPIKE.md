@@ -2160,3 +2160,46 @@ Current first-party references:
 - https://tailscale.com/docs/features/tailnets-api (validated 2026-10-20)
 - https://tailscale.com/docs/reference/trust-credentials (revocation semantics; validated 2026-01-30)
 - https://tailscale.com/blog/multiple-tailnets-alpha (historical example of the returned client scope; 2025-10-29)
+
+
+## 50. Separate bootstrap authority from runner identity scope (2026-11-14)
+
+### Verified minimum scope for the GitHub Actions runner
+
+The current Tailscale GitHub Action documentation explicitly requires a federated OIDC identity with the `auth_keys` scope to register ephemeral runner nodes. The `tags` assigned to that federated identity constrain the tags the action may use; the action's requested tag must match. The official workload identity federation guide shows the same `auth_keys` scope in its GitHub Action setup and API examples.
+
+For Zion, the CI federated identity must therefore be configured with:
+- Scope: `auth_keys` only.
+- Allowed tag: `tag:zion-ci` only.
+- Issuer: `https://token.actions.githubusercontent.com`.
+- Subject: exact repository and branch subject `repo:LU9DI/zion:ref:refs/heads/architecture/fully-decentralized-core`.
+- Additional custom claim: exact `workflow_ref` for `.github/workflows/cometbft-private-network-smoke.yml` on the same branch.
+- Audience: the audience generated for this federated identity, copied exactly into `ZION_CI_TS_AUDIENCE`.
+- Client ID: the non-secret identifier of this federated identity, copied exactly into `ZION_CI_TS_OAUTH_CLIENT_ID`.
+
+The two GitHub repository secret names are retained to avoid exposing identifiers in workflow YAML, but their values are identifiers, not reusable Tailscale client secrets. No Tailscale OAuth client secret belongs in GitHub Actions.
+
+### Bootstrap identity is separate
+
+Creating the child federated identity is an administrative operation and requires the parent/child bootstrap credential to have the documented federated-identity write capability (`federated_keys`) for the target tailnet. That bootstrap authority is not granted to the runner identity. The runner identity receives only `auth_keys` and `tag:zion-ci`.
+
+The current trust-credential scope table also distinguishes `auth_keys` from `federated_keys`; do not combine them merely for convenience. Do not add `devices:core`, `devices:core:read`, `policy_file`, `tailnets`, or `all` to the runner identity. The network smoke workflow does not need those API capabilities.
+
+### Operational implications
+
+- Tailscale's GitHub Action registers nodes as ephemeral by default; retain that default.
+- The workflow's `id-token: write` permission is required for GitHub to issue the OIDC token; it does not grant repository write permission.
+- Keep the Tailscale action pinned to its full commit SHA.
+- The `tag:zion-ci` tag must be defined and its access policy must be verified in the isolated tailnet before enabling the readiness gate. A tagged node's effective network permissions derive from the tag's policy; the tag alone is not a complete network policy.
+- The current workflow's fixed health responder proves only private TCP reachability, not CometBFT consensus, Byzantine fault tolerance, or production readiness.
+
+### Verification boundary
+
+The existing user-created federated identity was configured before this audit, and its actual scope list and tag restriction have not been read back through an authorized Tailscale API or admin-console inspection. Do not infer its effective permissions from the fact that its Client ID and Audience were supplied. Before use, inspect the identity in the isolated child tailnet and confirm every field above. If it has broader scopes or tags, replace it with a narrowly scoped identity rather than reusing it.
+
+No Tailscale settings or credentials were changed in this step. No real tailnet was created, no policy was modified, and no network test was run.
+
+First-party references:
+- https://tailscale.com/docs/integrations/github/github-action (GitHub Action requires `auth_keys` for federated OIDC registration)
+- https://tailscale.com/docs/features/workload-identity-federation (OIDC scope, tags, claims, and GitHub integration)
+- https://tailscale.com/docs/reference/trust-credentials (scope definitions)
