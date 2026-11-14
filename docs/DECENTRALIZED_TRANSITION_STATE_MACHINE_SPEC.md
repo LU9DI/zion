@@ -148,7 +148,7 @@ Then multi-process tests must inject partitions, delayed/reordered messages, los
 2. **Physical storage promise:** is capacity a logical quota, a per-node local cap, or a verifiable distributed storage commitment? These are different guarantees.
 3. **Admission policy changes:** are rejected commands ordered and recorded, or only successful transitions? The choice affects retry stability and denial-of-service surface.
 4. **External side effects:** which operations can be delayed until a commit, and which require idempotency keys at external resource boundaries?
-5. **Committee scope:** what minimum validator population/independence assumptions make a project-scoped committee resistant to Sybil capture without a central identity authority?
+5. **Committee scope:** what minimum validator population/independence assumptions make a project-scoped committee resistant to Sybil capture without a central identity authority? This is tracked as a blocking design gate in [DECENTRALIZED_VALIDATOR_SYBIL_MODEL.md](DECENTRALIZED_VALIDATOR_SYBIL_MODEL.md); do not infer independence from distinct keys or VRF selection.
 
 Until these decisions and the BFT protocol gate are resolved, do not implement a consensus adapter or remove PostgreSQL from official startup.
 
