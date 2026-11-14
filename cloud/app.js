@@ -38,7 +38,7 @@
     $('all-files').closest('.file-table-wrap').classList.toggle('compact', gridView);
   }
   function renderActivity(target='recent-activity', items=activity.slice(0,3)){
-    $(target).innerHTML = items.map(a=>`<div class="activity-row"><span class="activity-icon">${safe(a.icon)}</span><div class="activity-copy"><strong>${safe(a.title)}</strong><p>${safe(a.detail)}</p></div><span class="activity-time">${safe(a.time)}</span></div>`).join('') || '<p class="subheading">Nenhuma atividade nesta visualização.</p>';
+    $(target).innerHTML = items.map(a=>`<div class="activity-row"><span class="activity-icon">${safe(a.icon)}</span><div class="activity-copy"><strong>${safe(a.title)}</strong><p>${safe(a.detail)}</p></div><span class="activity-time">${safe(a.time)}</span></div>`).join('') || '<p class="subheading">No activity in this view.</p>';
   }
   let toastTimer;
   function toast(message){const el=$('toast');el.textContent=message;el.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('show'),2800)}
@@ -61,7 +61,7 @@
       const type=['png','jpg','jpeg','gif','webp','svg','heic'].includes(ext)?'imagem':['mp4','mov','webm','mkv'].includes(ext)?'video':['pdf','doc','docx','txt','md','ppt','pptx','xls','xlsx','odt','rtf'].includes(ext)?'documento':'outro';
       files.unshift({name:f.name,type,size:f.size,modified:now,icon:({pdf:'PDF',doc:'W',docx:'W',pptx:'P',xlsx:'X'})[ext] || (type==='imagem'?'▧':type==='video'?'▶':type==='outro'?'▤':'DOC')});
     });
-    activity.unshift({icon:'↥',title:`${incoming.length} arquivo${incoming.length===1?'':'s'} selecionado${incoming.length===1?'':'s'}`,detail:'Adicionado(s) à visualização local; não enviado(s) para a nuvem.',time:now});
+    activity.unshift({icon:'↥',title:`${incoming.length} file${incoming.length===1?'':'s'} selected`,detail:'Added to the local view; not uploaded to the cloud.',time:now});
     renderRecentFiles();renderFiles();renderActivity();renderActivity('all-activity',activity);
     toast(`${incoming.length} arquivo${incoming.length===1?'':'s'} adicionado${incoming.length===1?'':'s'} added to the local preview.`);
   }
@@ -135,7 +135,7 @@
   $('help-button').addEventListener('click',()=>$('help-dialog').showModal());$('close-help').addEventListener('click',()=>$('help-dialog').close());$('help-ok').addEventListener('click',()=>$('help-dialog').close());
   $('contribute-toggle').addEventListener('change',e=>{$('contribute-message').textContent=e.target.checked?'Preference enabled in the demo only. No real service was started.':'Preference disabled. No real service was started.';toast(e.target.checked?'Simulated contribution enabled.':'Simulated contribution paused.');});
   $('workspace-name').addEventListener('input',e=>document.querySelector('.profile strong').textContent=e.target.value.trim()||'Meu Zion');
-  $('save-settings').addEventListener('click',()=>{$('settings-feedback').textContent='Preference applied in this session.';toast('Preferência atualizada in this preview.');});
+  $('save-settings').addEventListener('click',()=>{$('settings-feedback').textContent='Preference applied in this session.';toast('Preference updated in this preview.');});
   const inactivitySettingFields = {
     pauseWarningAtDays: 'idle-pause-warning', pauseAfterDays: 'idle-pause-after',
     reductionWarningAtDays: 'idle-reduction-warning', reduceAfterDays: 'idle-reduction-after',
