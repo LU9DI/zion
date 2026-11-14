@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
-  closeSync, existsSync, fsyncSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync,
+  closeSync, constants, fsyncSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync,
   readFileSync, unlinkSync, writeSync,
 } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -95,6 +95,31 @@ function rejectSymlink(path) {
   }
 }
 
+function openJournalNoFollow(path, flags, mode) {
+  if (!Number.isInteger(constants.O_NOFOLLOW)) {
+    throw Object.assign(new Error('This platform does not expose O_NOFOLLOW; refusing unsafe journal open'), {
+      code: 'ZION_JOURNAL_NOFOLLOW_UNSUPPORTED',
+    });
+  }
+  try {
+    const fd = openSync(path, flags | constants.O_NOFOLLOW, mode);
+    if (!fstatSync(fd).isFile()) {
+      closeSync(fd);
+      throw Object.assign(new Error('Committed block journal must be a regular file'), {
+        code: 'ZION_JOURNAL_NOT_REGULAR',
+      });
+    }
+    return fd;
+  } catch (error) {
+    if (error?.code === 'ELOOP') {
+      throw Object.assign(new Error('Committed block journal path must not be a symbolic link'), {
+        code: 'ZION_JOURNAL_SYMLINK',
+      });
+    }
+    throw error;
+  }
+}
+
 function syncDirectory(path) {
   const fd = openSync(dirname(path), 'r');
   try { fsyncSync(fd); } finally { closeSync(fd); }
@@ -160,8 +185,15 @@ export class DurableCommittedBlockJournal {
 
   #load() {
     rejectSymlink(this.path);
-    if (!existsSync(this.path)) return;
-    const bytes = readFileSync(this.path);
+    let fd;
+    try {
+      fd = openJournalNoFollow(this.path, constants.O_RDONLY);
+    } catch (error) {
+      if (error?.code === 'ENOENT') return;
+      throw error;
+    }
+    let bytes;
+    try { bytes = readFileSync(fd); } finally { closeSync(fd); }
     if (bytes.length > this.maxBytes) throw Object.assign(new Error('Committed block journal exceeds byte limit'), { code: 'ZION_JOURNAL_TOO_LARGE' });
     if (bytes.length && bytes[bytes.length - 1] !== 0x0a) {
       throw Object.assign(new Error('Committed block journal has an incomplete trailing record'), { code: 'ZION_JOURNAL_CORRUPT' });
@@ -237,8 +269,16 @@ export class DurableCommittedBlockJournal {
       throw Object.assign(new Error('Committed block journal byte limit reached'), { code: 'ZION_JOURNAL_TOO_LARGE' });
     }
     rejectSymlink(this.path);
-    const existed = existsSync(this.path);
-    const fd = openSync(this.path, 'a', 0o600);
+    let existed = true;
+    try { lstatSync(this.path); } catch (error) {
+      if (error?.code === 'ENOENT') existed = false;
+      else throw error;
+    }
+    const fd = openJournalNoFollow(
+      this.path,
+      constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT,
+      0o600,
+    );
     let originalSize;
     let fdOpen = true;
     try {
