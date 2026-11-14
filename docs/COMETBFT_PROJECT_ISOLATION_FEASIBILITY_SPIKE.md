@@ -1104,3 +1104,52 @@ Evidence inspected at the pinned v0.38.26 tag:
 
 No signer was instantiated, no key generated or rotated, no state file was modified, and no crash/recovery or double-signing experiment was executed. The findings are source-level observations and required design gates, not an experimentally demonstrated exploit or production certification. No Zion runtime, signer adapter, consensus implementation, dependency, launcher, database, migration, or production configuration was changed.
 
+## 29. Remote signer protocol: chain binding, request authority, and isolation boundaries
+
+A read-only review of the pinned CometBFT v0.38.26 `proto/tendermint/privval/types.proto`, `privval/signer_requestHandler.go`, `privval/signer_server.go`, and `privval/signer_dialer_endpoint.go` identifies the guarantees provided by the built-in remote-signing message handler and the guarantees it leaves to the transport and deployment.
+
+### 29.1 The request schema binds a chain ID, but carries no project or validator-set epoch
+
+The protobuf request variants are `PubKeyRequest`, `SignVoteRequest`, `SignProposalRequest`, and `PingRequest`. The first three carry a chain ID; vote and proposal requests carry the corresponding consensus object. The schema has no explicit Zion project ID, validator-set epoch, governance epoch, signer authorization scope, request nonce, or application-level expiry/fencing token.
+
+The default handler compares the supplied chain ID with the server's configured chain ID before returning a public key or signing a vote/proposal. This is useful domain separation, but a chain ID is a caller-supplied string checked against server configuration; it is not proof that the caller is an authorized project member or that a particular validator-set epoch is active.
+
+Required controls: a Zion signer boundary must bind every signing request to a canonical project identifier, chain ID, validator public key, committed validator-set epoch, message type, and exact canonical sign bytes. Authorization must be derived from committed project state, not merely a request field. Reject stale epochs, unknown projects, wrong keys, unsupported message types, and uncommitted rotations.
+
+### 29.2 The default handler is not a project authorization engine
+
+The handler validates the chain ID and delegates to `PrivValidator.SignVote` or `SignProposal`; public-key requests return the signer's key, and ping requests return a ping response. It does not consult Zion membership, governance, project admission, revocation tombstones, quorum certificates, or validator-set activation state.
+
+A remote signer endpoint therefore must not be exposed as a generic signing oracle to untrusted peers. Network reachability and a matching chain ID are not equivalent to authorization.
+
+Required controls: keep the signer on a narrowly scoped authenticated channel; authenticate the calling node/workload; authorize project and epoch on every request; bind signer key to the expected validator identity; rate-limit and bound request sizes; audit denials without leaking key material; fail closed if authorization state is unavailable. Do not make a central authorization server a mandatory final dependency: the authoritative authorization proof must be locally verifiable from committed decentralized state.
+
+### 29.3 One SignerServer serializes its handler, but this is not cross-instance fencing
+
+The inspected server holds a mutex while invoking its request handler, so one server instance processes its signing handler serially. This protects the handler's mutable state from concurrent calls through that instance. It does not coordinate two SignerServer processes, two endpoints, two machines, or a replacement signer started during failover. The underlying PrivValidator anti-double-sign state is still the decisive per-instance guard described in section 28.
+
+Required controls: enforce one fenced signing authority per validator key, or use a formally specified threshold/MPC signer whose protocol guarantees non-equivocation across participants. A mutex, single TCP connection, or process-local queue is not a distributed anti-double-sign mechanism. Test parallel requests across independent processes and stale-primary failover.
+
+### 29.4 Transport authentication is a separate layer and must be verified for the selected dialer
+
+The protobuf schema does not define transport authentication. CometBFT supplies different socket dialer/listener choices; security depends on the exact dialer, listener, connection wrapper, key configuration, and deployment network boundary. The files inspected here do not justify a blanket claim that every remote-signer connection is authenticated or encrypted, nor that TCP/Unix transports provide equivalent protections.
+
+Required controls: inventory the exact transport implementation selected by the runner/configuration. For TCP, require authenticated encryption and peer identity binding; reject unauthenticated plaintext exposure and public listener binding. For Unix sockets, validate filesystem ownership, mode, parent-directory permissions, mount namespace, and peer-credential policy. Test wrong peer keys, replay/reconnect, MITM, socket replacement, and unauthorized local processes. Keep transport peer identity distinct from the validator consensus key and from project authorization.
+
+### 29.5 Ping and reconnection are availability signals, not authorization or replay protection
+
+Ping requests contain no chain ID or project context. The dialer endpoint retries connection establishment, while the signer server accepts requests over the established connection. These behaviors support liveness and reconnect handling; they do not establish project membership, request freshness, committed epoch, or safe failover.
+
+Required controls: attach authorization and freshness to each signing operation rather than relying on connection establishment or ping. Treat reconnect as a new authenticated session; invalidate old session state, prevent overlapping active sessions unless explicitly safe, and ensure retry after an uncertain response cannot produce a conflicting signature. Preserve the exact H/R/S and sign-bytes idempotency checks at the signer.
+
+### 29.6 Evidence and limitations
+
+Evidence inspected at CometBFT v0.38.26:
+- `proto/tendermint/privval/types.proto`, blob `13190ca42fa2941efd357fa300c25938fd012629`: remote-signing message variants and fields.
+- `privval/signer_requestHandler.go`, blob `85a59617bbe715a847ae859bd94e4f391c749898`: chain-ID comparison, public-key response, vote/proposal delegation, and ping behavior.
+- `privval/signer_server.go`, blob `8c9abe717d451cd72a6e49e3eb737bb9806cad5c`: one-instance handler mutex and request loop.
+- `privval/signer_dialer_endpoint.go`, blob `997c15750f64e414f9752bafcbd94609a6b48246`: reconnect loop and configurable retry count/interval.
+- Official package documentation describes the remote signer client and socket endpoint model. See the linked reference in the review.
+
+The exact TCP/Unix dialer and listener implementation was not fully inspected in this pass; transport authentication/encryption conclusions are deliberately left open. No remote signer was started, no request was sent, and no network attack or replay experiment was executed. This is source-level protocol analysis, not an exploit demonstration or security certification. No Zion runtime, signer adapter, consensus implementation, dependency, launcher, database, migration, or production configuration was changed.
+
