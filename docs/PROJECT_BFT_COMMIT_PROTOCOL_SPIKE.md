@@ -203,3 +203,10 @@ Tests must assert both safety (no two honest nodes commit conflicting values at 
 ## 10. Validator membership and Sybil decision gate
 
 The dedicated [validator membership and Sybil threat model](DECENTRALIZED_VALIDATOR_SYBIL_MODEL.md) records the incompatibility between unrestricted cheap identity creation and strong identity-counted committee security, compares candidate scarcity/uniqueness mechanisms, and defines the interim boundary of project-governed validator eligibility. It is a design gate, not an implementation. The BFT protocol-selection step remains blocked until the project explicitly accepts the membership and independence assumptions. In particular, a VRF, random beacon, threshold signature, or 3f+1 committee calculation must not be represented as a Sybil defense.
+
+
+## 11. CometBFT multi-project isolation gate
+
+The required topology comparison and two-project adversarial experiment matrix are specified in [COMETBFT_PROJECT_ISOLATION_FEASIBILITY_SPIKE.md](COMETBFT_PROJECT_ISOLATION_FEASIBILITY_SPIKE.md). This is a test specification only; no PoC has been executed. A single-project ABCI demo is insufficient. The candidate must prove independent project histories, validator committees, failure domains, WAL/recovery boundaries, and bounded resource use without a global chain or hosted coordinator. A shared chain with project namespaces is not an acceptable shortcut under the current architecture.
+
+ABCI application execution is deterministic state-machine replication: the same committed input and prior state must produce identical results. Consensus-critical application state must not be mutated through an out-of-band side channel. This is an integration constraint, not proof that a proposed Zion application is deterministic or isolated.
