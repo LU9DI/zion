@@ -71,6 +71,18 @@ test('journal refuses a symbolic-link path without modifying its target', {
   } finally { f.cleanup(); }
 });
 
+test('oversized journal is rejected during bounded recovery read and cleans up its lock', () => {
+  const f = fixture();
+  try {
+    writeFileSync(f.path, Buffer.alloc(1025, 0x61));
+    assert.throws(
+      () => new DurableCommittedBlockJournal(f.path, { maxBytes: 1024 }),
+      { code: 'ZION_JOURNAL_TOO_LARGE' },
+    );
+    assert.equal(existsSync(f.path + '.lock'), false);
+  } finally { f.cleanup(); }
+});
+
 test('journal refuses a directory as its data file and cleans up its owned lock', () => {
   const f = fixture();
   const directoryPath = join(f.dir, 'journal-directory');
