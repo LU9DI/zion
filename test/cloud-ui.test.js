@@ -48,7 +48,7 @@ test('cloud preview serves the UI and assets with defensive headers', async t =>
   const js = await fetch(`${base}/app.js`);
   assert.equal(js.status, 200);
   const jsBody = await js.text();
-  assert.match(jsBody, /Adicionado\(s\) à visualização local/);
+  assert.match(jsBody, /added to the local preview/);
   assert.match(jsBody, /function renderPeople/);
   assert.match(jsBody, /function renderNotifications/);
   assert.match(jsBody, /Mark as read/);
