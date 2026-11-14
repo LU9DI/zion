@@ -312,3 +312,45 @@ Implications for this spike:
 - Before writing that replacement, first attempt to obtain a Docker-capable disposable environment. If unavailable, document the exact missing isolation primitives and decide whether a native harness can safely reproduce each required scenario without weakening the acceptance matrix.
 
 The upstream E2E runner's Docker dependency is an execution constraint, not evidence that CometBFT itself requires Docker at runtime. No PoC or E2E test was run as part of this documentation update.
+
+
+## 15. Multiple-testnet runner: promising path, isolation still unverified
+
+A follow-up review of the upstream E2E documentation found that CometBFT documents a `run-multiple.sh` helper for launching multiple testnets from separate TOML manifests. The same documentation describes generating testnet files into a custom directory and setting `E2E_TESTNET_DIR` when running tests against a custom testnet directory.
+
+This is a materially better starting point than immediately writing a native process harness: it suggests the upstream test tooling already has a workflow for managing more than one testnet. It does **not** yet prove that two Zion project networks can safely run concurrently with independent failure domains.
+
+### Evidence and version caveat
+
+- Upstream E2E README documents: `./run-multiple.sh <manifest-glob>` for multiple testnets.
+- The README also documents custom testnet output directories and `E2E_TESTNET_DIR`.
+- The web-accessible README snapshot inspected for this finding is not yet tied in this audit to the exact pinned `v0.38.26` commit. Treat the feature as a promising upstream-documented capability, not yet as a verified property of the pinned release.
+- The exact `run-multiple.sh` implementation at commit `94d77f9f51a72e2b7d832798859f6222f08028f8` has not yet been inspected. In particular, no claim is made about whether it serializes or parallelizes runs, how it handles failures, or whether all resource names are collision-free.
+
+### Required source inspection before using it
+
+At the pinned release, inspect `test/e2e/run-multiple.sh`, the runner's manifest loading and testnet-directory resolution, and the Docker Compose/network/container naming logic. Record exact answers to:
+
+1. Does the helper start both testnets concurrently, sequentially, or by another policy?
+2. Does each manifest resolve to a unique generated testnet directory without relying on a shared mutable output path?
+3. Are Docker project names, container names, network names, volume names, and host ports unique across both manifests?
+4. Does one failed start/stop/cleanup abort or tear down the other testnet?
+5. Can each testnet be perturbed, stopped, restarted, and cleaned up independently?
+6. Can the existing Go E2E test package target each manifest separately without cross-test global environment-variable races?
+7. Are the two testnets configured with disjoint validator keys, genesis digests, P2P peer sets, RPC ports, and ABCI endpoints?
+
+### Proposed use in the Zion PoC
+
+If the pinned implementation passes the static review, use two explicit manifests (project-alpha and project-beta), each with four validators, disjoint keys, distinct genesis/state roots, and separate output directories. Start both, record their actual container/network/volume/port identities, then execute the functional and failure-isolation matrix from Sections 4–5.
+
+The PoC must include cross-project negative checks and failure injection against only one testnet while continuously checking that the other continues committing. A successful `run-multiple.sh` invocation by itself is not an isolation test.
+
+If the script or runner shares a global output path, colliding resource names, or coupled cleanup behavior, do not patch upstream tooling blindly. First determine whether the pinned runner offers documented per-testnet overrides; otherwise isolate two independent runner invocations with explicitly disjoint resource namespaces, or fall back to a carefully reviewed native-process harness.
+
+### Status
+
+- Multiple-testnet capability: **documented by upstream E2E README; exact pinned-tag verification pending**.
+- `run-multiple.sh` source audit at the pinned commit: **not yet performed**.
+- Two concurrent independent testnets: **not executed**.
+- Docker isolation, port uniqueness, cleanup independence, and cross-project failure isolation: **not proven**.
+- No code, dependency, launcher, database, migration, or production runtime was changed by this finding.
