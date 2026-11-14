@@ -189,7 +189,7 @@ test('event log snapshots and replication pages cannot mutate internal records',
     const snapshot = log.snapshot();
     assert.throws(() => { snapshot.events[0].data.nested.value = 2; }, TypeError);
     const page = log.snapshotRecords();
-    page.records[0].envelope.payload.data.nested.value = 3;
+    assert.throws(() => { page.records[0].envelope.payload.data.nested.value = 3; }, TypeError);
 
     const fresh = log.snapshotRecords().records[0];
     assert.equal(verifySignedProjectEventRecord(fresh).ok, true);
