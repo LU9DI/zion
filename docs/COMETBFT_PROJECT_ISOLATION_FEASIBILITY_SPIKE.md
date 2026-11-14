@@ -2307,3 +2307,33 @@ First-party references:
 - https://tailscale.com/docs/features/tags (exact-match tag behavior does not consult tagOwners)
 - https://tailscale.com/docs/features/workload-identity-federation (runner tags must match the federated identity; auth_keys scope)
 - https://tailscale.com/docs/features/tailnets-api (API-only tailnets have no human users or admin console)
+
+
+## 53. Federated identity must belong to the child tailnet (2026-11-14)
+
+### Credential boundary
+
+The GitHub Actions runner identity used by `.github/workflows/cometbft-private-network-smoke.yml` must be a federated identity configured in the **Zion API-only child tailnet**, not merely an identity configured in the user's original/personal tailnet.
+
+The current Tailscale Tailnets API guide states that:
+- The parent-tailnet credential creates the API-only child tailnet.
+- The create response returns an OAuth client for the child tailnet.
+- A federated identity for use in the child tailnet must first be created using that returned child OAuth client.
+- A federated identity token exchange cannot use the parent's cross-tailnet `tailnet` parameter to select a child tailnet.
+
+Therefore:
+1. Treat any federated identity previously created in the personal/parent tailnet as unrelated to Zion CI until its owning tailnet is verified.
+2. Do not copy a parent-tailnet Client ID/Audience into the Zion workflow and assume it authenticates against the child tailnet.
+3. Create the child-tailnet federated identity only after the child OAuth bootstrap credential is available, with `auth_keys` and exactly `tag:zion-ci`.
+4. Read back the child identity and verify the exact GitHub OIDC issuer, subject, workflow claim, audience, scope, and tag.
+5. Revoke the broad child bootstrap OAuth credential after child identity creation, while separately inventorying/revoking any child credentials it created. Revoking the bootstrap credential alone does not revoke child credentials.
+
+### Current state and gate
+
+No API-only child tailnet has been created or verified in this work. No evidence establishes that the previously created user federated identity belongs to a child tailnet. The dedicated `ZION_CI_TS_OAUTH_CLIENT_ID` and `ZION_CI_TS_AUDIENCE` values must refer to the **child-tailnet** federated identity, not the parent-tailnet identity.
+
+Keep `ZION_ISOLATED_TAILNET_READY` unset/false. Do not enable the workflow or create runners until the child-tailnet identity and policy are read back and verified.
+
+First-party reference:
+- https://tailscale.com/docs/features/tailnets-api (child OAuth client and child-tailnet federated identity flow)
+- https://tailscale.com/docs/reference/trust-credentials (credential scope and revocation semantics)
