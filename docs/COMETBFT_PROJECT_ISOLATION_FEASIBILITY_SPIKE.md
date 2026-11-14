@@ -1879,7 +1879,7 @@ Before the network smoke test can run, configure the Tailscale tailnet:
 2. Create a GitHub Actions federated OIDC identity with the writable `auth_keys` scope and permission to issue only `tag:zion-ci` nodes.
 3. Restrict its claims to repository `LU9DI/zion`, the exact branch `architecture/fully-decentralized-core`, and workflow `.github/workflows/cometbft-private-network-smoke.yml`. Do not accept arbitrary repositories, refs, or workflows.
 4. Enable MagicDNS.
-5. Add the following narrow rule to the existing tailnet policy; merge it into the existing policy rather than replacing the policy:
+5. Add the following narrow rule to the existing tailnet policy; merge it into the existing policy rather than replacing the policy. Tailscale ACL rules are additive: first inspect the complete existing policy and remove or narrow any broader rule that would also grant `tag:zion-ci` access to other destinations or ports. The snippet below is not a deny override for an existing allow-all rule:
    ```json
    {
      "tagOwners": {
