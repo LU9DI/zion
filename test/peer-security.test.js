@@ -231,7 +231,6 @@ test('encrypted identity record restores the same Ed25519 identity through a loc
   const keystore = fakeIdentityKeystore();
   const record = await createEncryptedNodeIdentityRecord(identity, keystore, {
     keyId: 'zion-node-identity:test',
-    random: size => Buffer.alloc(size, size === 32 ? 0x42 : 0x24),
   });
   assert.equal(JSON.stringify(record).includes(identity.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString()), false);
   const restored = await loadEncryptedNodeIdentityRecord(record, keystore);
