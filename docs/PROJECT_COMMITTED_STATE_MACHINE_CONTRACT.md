@@ -357,6 +357,11 @@ The prototype is deliberately outside `src/` and is not imported by production s
 4. Reject height gaps and stale-lock cleanup without explicit no-writer verification.
 5. Retry an identical commit at the same height idempotently; reject a conflicting state at that height, including after reopen.
 6. Commit multiple heights and verify the full hash chain and latest recovered projection.
+7. Inject failures before writing, after a partial write, before `fsync`, and after `fsync`; verify rollback, writer poisoning, and empty-state recovery after reopen.
+
+
+
+The new `faultAt` cases are deterministic test hooks that throw at selected write boundaries. They validate the prototype's rollback/poison/reopen control flow; they do **not** emulate kernel-level short writes, a real `fsync` error, disk-full behavior, controller-cache loss, or power failure.
 
 ### Strict limitations
 
@@ -366,4 +371,4 @@ The stale-lock cleanup API requires an explicit caller assertion that no writer 
 
 ### Gate
 
-Do not wire this prototype into ABCI `Commit`, production startup, invitation redemption, or network membership. Before considering an adapter, run the full test suite and syntax checks on supported Node versions and operating systems; add fault injection for short writes, `fsync` failures, disk-full behavior, process termination at every write boundary, and restart after each boundary; define snapshot/compaction and retention; and obtain independent review of filesystem and lock semantics.
+Do not wire this prototype into ABCI `Commit`, production startup, invitation redemption, or network membership. Before considering an adapter, run the full test suite and syntax checks on supported Node versions and operating systems; extend fault injection to actual short-write and filesystem-error conditions, disk-full behavior, process termination at every write boundary, and restart after each boundary; define snapshot/compaction and retention; and obtain independent review of filesystem and lock semantics.
