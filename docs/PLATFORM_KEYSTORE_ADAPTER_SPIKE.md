@@ -68,3 +68,16 @@ This protocol itself still needs a platform-specific implementation and adversar
 ## Next implementation gate
 
 Build a disposable cross-process spike outside the official launcher. First prove the exclusive provisioning primitive and its crash semantics independently of the keyring library; then test the real OS store through process restarts and concurrent initialization. Only after that evidence should the package be pinned in the project manifest and integrated behind the local-keystore interface.
+
+## Repository audit: existing event-journal lock is not an identity gate
+
+The current `src/signed-project-event-log.js` implementation was inspected at the PR #68 audit head. It creates a sibling lock file with Node.js `openSync(path, 'wx', 0o600)`, writes a PID/random token, and keeps the file descriptor open while the journal instance is active. On close it closes the descriptor, reads the pathname, and removes the file only if the stored PID/token match.
+
+This is useful single-writer coordination for the current journal implementation, but it is **not approved as the node-identity provisioning or rotation gate**:
+
+- The journal constructor creates the parent directory recursively; this code does not validate every path component, ownership, Windows ACLs, or reparse-point state before using the lock path.
+- The lock protocol is pathname-based. The code does not establish a platform-reviewed, handle-lifetime locking contract covering directory replacement, hostile path substitution, or the close/read/unlink sequence.
+- It does not provide a tested transaction spanning OS-keystore no-overwrite creation, credential read-back, encrypted-record publication, directory durability, and crash recovery.
+- The journal lock tests therefore cannot be counted as evidence for independent-process identity provisioning safety.
+
+Do not reuse this lock as a security boundary or extend it with stale-lock stealing. Keep identity provisioning blocked until a disposable Windows/Linux spike demonstrates the required kernel-enforced exclusion and adversarial path/crash tests on each supported platform. This audit makes no claim that the journal's existing lock is exploitable in every deployment; it records that its current guarantees are insufficient for the stronger identity-lifecycle contract.
