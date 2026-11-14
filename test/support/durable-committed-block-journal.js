@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
-  closeSync, existsSync, fsyncSync, fstatSync, mkdirSync, openSync,
+  closeSync, existsSync, fsyncSync, fstatSync, ftruncateSync, mkdirSync, openSync,
   readFileSync, unlinkSync, writeSync,
 } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -47,7 +47,9 @@ function canonical(value) {
   throw new TypeError('Journal values must be canonical JSON');
 }
 
-const digest = value => createHash('sha256').update(DOMAIN).update(canonical(value)).digest('hex');
+const digestWithDomain = (domain, value) => createHash('sha256').update(domain).update(canonical(value)).digest('hex');
+const digest = value => digestWithDomain(DOMAIN, value);
+const stateDigest = value => digestWithDomain('ZION-COMMITTED-STATE-HARNESS-V1\\0', value);
 
 function validateState(state, height) {
   if (!state || typeof state !== 'object' || Array.isArray(state) ||
@@ -64,7 +66,7 @@ function validateState(state, height) {
     operations: state.operations,
     outbox: state.outbox,
   };
-  if (digest(payload) !== state.appHash) {
+  if (stateDigest(payload) !== state.appHash) {
     throw Object.assign(new Error('Committed application state root mismatch'), { code: 'ZION_JOURNAL_STATE_ROOT_MISMATCH' });
   }
   return JSON.parse(JSON.stringify(state));
@@ -211,7 +213,6 @@ export class DurableCommittedBlockJournal {
       this.poisoned = true;
       if (originalSize !== undefined) {
         try {
-          const { ftruncateSync } = awaitlessFs();
           ftruncateSync(fd, originalSize);
           fsyncSync(fd);
         } catch {}
@@ -246,12 +247,3 @@ export class DurableCommittedBlockJournal {
   }
 }
 
-// Kept as a tiny indirection so this module's only public API remains the journal.
-function awaitlessFs() {
-  return { ftruncateSync: (fd, size) => {
-    // eslint-free synchronous rollback; imported lazily only on the error path.
-    const fs = process.getBuiltinModule?.('node:fs');
-    if (!fs?.ftruncateSync) throw new Error('Synchronous rollback unavailable');
-    fs.ftruncateSync(fd, size);
-  } };
-}
