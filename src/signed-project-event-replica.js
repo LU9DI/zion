@@ -50,6 +50,7 @@ export class SignedProjectEventReplica {
     this.closed = false;
     this.persistenceFailed = false;
     this.queue = Promise.resolve();
+    this.pendingIngests = 0;
     mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
     const lock = acquireLock(`${this.path}.lock`);
     this.lockFd = lock.fd;
@@ -87,9 +88,13 @@ export class SignedProjectEventReplica {
   }
 
   ingest(record) {
+    this.pendingIngests++;
     const operation = this.queue.then(() => this.#ingest(record));
     this.queue = operation.catch(() => {});
-    return operation;
+    return operation.then(
+      value => { this.pendingIngests--; return value; },
+      error => { this.pendingIngests--; throw error; },
+    );
   }
 
   #ingest(record) {
@@ -145,6 +150,11 @@ export class SignedProjectEventReplica {
 
   close() {
     if (this.closed) return;
+    if (this.pendingIngests > 0) {
+      throw Object.assign(new Error('Cannot close replica while ingests are pending; await them and retry'), {
+        code: 'ZION_REPLICA_BUSY',
+      });
+    }
     this.closed = true;
     if (this.lockFd !== undefined) { try { closeSync(this.lockFd); } finally { this.lockFd = undefined; } }
     try {
