@@ -190,3 +190,57 @@ A narrative-only report or a passing happy-path demo is not proof of feasibility
 - No code, dependency, launcher, database, migration, or production runtime is changed.
 - No project isolation, BFT safety/liveness, validator reconfiguration, or crash recovery is proven for Zion.
 - PostgreSQL/Neon remain transitional and untouched; PR #63/#64 and their bases remain untouched.
+
+
+## 11. Pinned upstream source baseline (evaluation only)
+
+The source inspection for this spike uses the following immutable upstream baseline:
+
+- Repository: `https://github.com/cometbft/cometbft`
+- Release tag: `v0.40.0`
+- Annotated tag object: `06b4cbf4b776554bd2b95fc39c80991e7529e765`
+- Tag target commit: `0880b4d378f347ab16e54ec677ff50d803f37d62`
+- Tag signature: GitHub API reports the annotated tag signature as verified.
+- License: Apache-2.0 (the release's `LICENSE` file).
+- Go module directive: `go 1.25.0` (from `go.mod` at the exact release tag).
+- Release publication: 2026-07-27.
+
+This is a reproducible **spike input pin only**. It does not select CometBFT for Zion, approve a dependency, or establish production suitability. Re-evaluate supported/security status and the exact dependency closure before any future adoption.
+
+### 11.1 Source-level isolation observations
+
+Inspection of the exact `v0.40.0` source shows that `node.Node` owns singular per-node fields for its config, genesis document, state store, block store, consensus state/reactor, proxy application connections, and related services. `node/setup.go` constructs the application proxy, block executor, mempool, evidence pool, state-sync reactor, and consensus reactor from one node configuration and one genesis/state context.
+
+Consequences:
+
+- A single ordinary `Node` instance is a single-chain/single-application execution context; it is not a built-in multi-project committee manager.
+- Project namespaces inside one ordinary chain would still share that chain's consensus history and validator set, and remain a negative control rather than an acceptable Zion design.
+- Running multiple `Node` instances in one Go process may be technically investigable, but the inspected API shape alone does not prove safe isolation of package-level state, metrics registries, listeners, storage, WALs, lifecycle, or crash recovery.
+- Separate processes with separate configs, genesis documents, validator keys, databases/directories, ports, and ABCI applications remain the most straightforward topology to test first. That topology may still fail Zion's resource/complexity constraints and is not approved.
+
+### 11.2 Reproducible source inspection and build preparation
+
+The disposable experiment must fetch the exact tag and verify the peeled commit before building:
+
+```sh
+git clone https://github.com/cometbft/cometbft.git cometbft-spike
+cd cometbft-spike
+git fetch --tags --force
+git checkout --detach v0.40.0
+git rev-parse HEAD
+# Expected: 0880b4d378f347ab16e54ec677ff50d803f37d62
+go version
+# Must satisfy the go.mod directive: Go 1.25.0 or compatible newer toolchain.
+go mod download
+go mod verify
+```
+
+Before treating a build as reproducible, record the exact Go toolchain build, OS/architecture, module download checks, dependency graph/SBOM, and hashes of the resulting binaries. A successful local build is not a substitute for the two-project failure/isolation matrix.
+
+### 11.3 Current conclusion
+
+- `v0.40.0` is pinned as the upstream test baseline only.
+- No Go toolchain, CometBFT source checkout, binary, container image, or PoC was built or run in this session.
+- No claim is made that multiple in-process nodes are isolated or supported.
+- No topology is selected; one-process-per-project is only the first topology to evaluate, subject to resource and product-constraint gates.
+- The Apache-2.0 license permits use subject to its terms; the full dependency tree still requires its own license/security review.
