@@ -2082,3 +2082,41 @@ Official references:
 - https://tailscale.com/docs/reference/trust-credentials
 - https://tailscale.com/docs/features/tailnets-api
 - https://tailscale.com/docs/features/workload-identity-federation
+
+
+## 48. Returned API-only tailnet OAuth client: documented bootstrap privilege (2026-11-14)
+
+### Newly located first-party statement
+
+The Tailscale engineering/product article “One organization, multiple tailnets” (2025-10-29) explicitly states that the OAuth client returned when an API-only tailnet is created has the `all` scope. Its example response contains the child tailnet ID and an `oauthClient` object with client ID and secret. The current Tailnets API feature guide confirms that this returned client is the supported credential used to configure the child tailnet and create additional credentials inside it.
+
+This resolves part of the uncertainty recorded in section 47: the published article describes a broad-privilege bootstrap credential, not a least-privilege credential. The current feature guide does not repeat the returned client's scope, so the article is first-party evidence but older than the currently validated feature guide. Do not silently assume the response contract has remained unchanged.
+
+### Safe bootstrap interpretation
+
+If a separately authorized disposable test confirms the current behavior, the returned `all`-scope OAuth client may be used only as a one-time administrative bootstrap credential to create the child tailnet's GitHub OIDC federated identity. It must never be stored in GitHub Actions secrets, runner environment variables, repository files, logs, or the Zion application.
+
+After the federated identity is created and independently verified, revoke the broad bootstrap OAuth client and confirm it can no longer obtain tokens. The CI workflow should retain only the child federated identity identifiers (client ID and audience), with the identity restricted to the minimum required scope and `tag:zion-ci`. The workflow itself must not receive `all`, a client secret, or organization-level tailnet creation authority.
+
+### Remaining validation gate
+
+The published article is not a substitute for checking the current API response and revocation behavior. Before creating the real Zion tailnet:
+1. Obtain explicit authorization for a disposable test in a separate test organization/context.
+2. Verify the create response contains the documented child OAuth client and inspect only non-secret metadata; never print or retain its secret in logs.
+3. Use the disposable credential to create a narrowly scoped federated identity and verify the exact OIDC trust claims, tag restriction, and API permissions.
+4. Revoke the broad OAuth client and verify token exchange fails; verify the federated identity still works.
+5. Record the exact cleanup and deletion authorization before creating any disposable resource.
+
+If a separate test organization/context or safe secret-handling path is unavailable, request written confirmation from Tailscale Support instead. Do not use the personal tailnet, do not create a real Zion tailnet merely to test this, and do not set `ZION_ISOLATED_TAILNET_READY=true` yet.
+
+### Updated decision
+
+- Bootstrap is now a plausible documented path: the returned client is described by Tailscale as `all` scope.
+- The remaining blocker is validating that this alpha API contract and safe revocation sequence still work as documented.
+- No Zion tailnet, child OAuth client, federated identity, auth key, or device was created or modified in this audit.
+- Keep the workflow opt-in and readiness gates closed. Keep the PR open and draft.
+
+First-party references:
+- https://tailscale.com/blog/multiple-tailnets-alpha (2025-10-29; explicitly documents the returned client as `all`)
+- https://tailscale.com/docs/features/tailnets-api (current feature guide; returned OAuth client is used to configure the child tailnet)
+- https://tailscale.com/docs/reference/trust-credentials (scope definitions; `all` grants complete tailnet API access)
