@@ -1815,3 +1815,35 @@ Do not add a provider SDK, credentials, workflow, controller, or infrastructure 
 - GitHub-hosted runner lifecycle and nested virtualization limitation: https://docs.github.com/en/actions/how-tos/manage-runners/github-hosted-runners/use-github-hosted-runners and https://docs.github.com/en/actions/concepts/runners/github-hosted-runners
 - Hetzner Cloud server IDs and server create/get/delete API: https://docs.hetzner.cloud/reference/cloud
 - Hetzner private Networks, server attachment, and firewall defaults: https://docs.hetzner.cloud/reference/cloud
+
+
+## 42. Qualification of currently known local hosts and cloud-account prerequisites
+
+### Local-host evidence available to this audit
+
+- The latest available Windows environment record reports approximately 8 GB of physical RAM and approximately 31.4 GB free on the system volume at the time of that check, with WSL2 active.
+- A separately recorded secondary machine reports 4 GB of recognized RAM and very little free memory at the time of its check.
+- These snapshots are not a current hardware inventory and do not establish the newer machine's CPU virtualization extensions, firmware settings, Linux host availability, usable RAM headroom, or KVM/libvirt support.
+- WSL2 and Docker availability do not prove that a supported type-1/type-2 hypervisor host with two independently controlled guests is available.
+- Therefore neither recorded local machine is qualified for the two-VM experiment on present evidence. This is a qualification failure, not a claim that virtualization is impossible on every machine the user may own.
+
+### Cloud account and authorization evidence
+
+- The Hetzner API requires a project-scoped API token. The official API guide explicitly instructs users to create and retain a token; create/update/delete operations are write operations.
+- No Hetzner project, API token, cloud budget, region choice, or authorization to create billable resources has been established in this audit.
+- Hetzner's API documentation mentions that eligible open-source projects may request a one-time credit of up to €50. This is discretionary eligibility, not an automatic grant, balance, free VM entitlement, or guarantee that this repository qualifies. The application and provider decision would have to occur before relying on it.
+- No token was requested, exposed, stored, or used. No account was accessed and no cloud resource was created.
+
+### Qualification result
+
+| Substrate | Evidence available | Qualification |
+|---|---|---|
+| Recorded 8 GB Windows/WSL2 host | RAM/disk snapshot only; no verified KVM/libvirt host or two-VM headroom | Not qualified |
+| Recorded 4 GB secondary host | Low RAM snapshot | Not qualified |
+| Newer/other local host | Required hardware and hypervisor facts not established | Unknown; cannot approve |
+| Hetzner Cloud | Official API, private-network and firewall primitives; no confirmed account/token/budget/approval | Technically plausible, not authorized or provisioned |
+| GitHub-hosted Actions | Per-job fresh VM lifecycle; no configured private guest-to-guest network; nested VMs unsupported | Not sufficient alone |
+
+### Safe next step
+
+The next useful step is a read-only qualification of an already available cloud account or a Linux host, not infrastructure creation. Until such evidence exists, keep the CometBFT experiment NO-GO and continue only source-level review. Do not create a paid resource, request/store a secret, or add provider-specific code as a substitute for the missing authorization and substrate.
