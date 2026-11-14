@@ -1917,3 +1917,22 @@ The network smoke test is **NOT RUN** until the tailnet OIDC identity, tag/ACL, 
 - Tailscale GitHub Action, OIDC federation, MagicDNS peer ping, and ephemeral node lifecycle: https://tailscale.com/docs/integrations/github/github-action
 - Tailscale workload identity federation: https://tailscale.com/docs/features/workload-identity-federation
 - Tailscale GitHub Action v4.4.0 verified release: https://github.com/tailscale/github-action/releases/tag/v4.4.0
+
+## 44. API-only Tailscale tailnet isolation reassessment (2026-11-14)
+
+The default personal tailnet policy previously inspected contains an unrestricted grant (`src: ["*"]`, `dst: ["*"]`, `ip: ["*"]`). Tailscale grants are additive; appending a narrow Zion grant would not neutralize that allow-all rule. The personal tailnet must therefore remain untouched.
+
+Tailscale documents an alternative: API-only tailnets, currently alpha and available on all plans, intended for CI/CD and automation. They are created through the organization Tailnets API, support tagged devices only, have no human users, and do not appear in the admin console. The documented organization limit is ten tailnets including the original. These limitations mean this is a candidate isolation substrate, not an already provisioned or production-qualified network.
+
+Creation requires a trust credential in the existing tailnet with the `tailnets` write scope. Tailscale documents workload identity federation as an authentication option for this API. The created-tailnet response includes an OAuth client for that new tailnet. Tailscale further documents that federated identity token exchange cannot directly request access to another tailnet; the returned OAuth client must first be used to establish credentials in the API-only tailnet. This is a distinct bootstrap sequence from the current workflow's direct `auth_keys` federation.
+
+Consequences for this repository:
+- The current smoke workflow is NOT an API-only-tailnet provisioner. It still expects `TS_OAUTH_CLIENT_ID` and `TS_AUDIENCE` for a preconfigured tailnet identity and only joins two ephemeral tagged nodes.
+- `ZION_ISOLATED_TAILNET_READY=true` is a fail-closed manual readiness gate. It is not proof that a separate tailnet exists or that its policy has been audited.
+- Do not set that variable until an API-only tailnet has been created, its credentials have been bootstrapped, and its policy has been read back and verified to contain no broad allow-all grant.
+- The next implementation must explicitly design credential bootstrap, storage/rotation of the returned OAuth client secret, child-tailnet policy configuration, restricted node authentication, and tailnet lifecycle/cleanup. Do not put OAuth client secrets in workflow logs or repository variables.
+- The existing personal tailnet, its Android device, PR #63, PR #64, and the Neon project remain untouched.
+
+No API-only tailnet was created, no Tailscale API credentials were exchanged, no CometBFT runtime/testnet was run, and no external resource was provisioned as part of this reassessment.
+
+Sources: Tailscale Tailnets API documentation (alpha status, limits, API-only behavior, and bootstrap model); Tailscale trust credential scopes; Tailscale workload identity federation documentation.
