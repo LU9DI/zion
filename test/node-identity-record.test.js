@@ -127,6 +127,24 @@ test('encrypted identity creation rejects malformed keystore adapters before wri
   );
 });
 
+test('encrypted identity creation rejects caller-controlled random sources before keystore access', async () => {
+  const identity = createNodeIdentity();
+  const keystore = new FakeKeystore();
+  let randomCalls = 0;
+  await assert.rejects(
+    createEncryptedNodeIdentityRecord(identity, keystore, {
+      keyId: 'zion-node-identity:custom-rng-rejected',
+      random() {
+        randomCalls += 1;
+        return Buffer.alloc(32, 0x42);
+      },
+    }),
+    /Node identity options has an invalid schema/,
+  );
+  assert.equal(randomCalls, 0);
+  assert.equal(keystore.created.length, 0);
+});
+
 
 test('encrypted identity rejects malformed and oversized encoded fields before keystore access', async () => {
   const identity = createNodeIdentity();
