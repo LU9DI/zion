@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { constants as bufferConstants } from 'node:buffer';
 import {
   closeSync, constants, fsyncSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync,
   readFileSync, readSync, unlinkSync, writeSync,
@@ -152,7 +153,7 @@ function syncDirectory(path) {
 export class DurableCommittedBlockJournal {
   constructor(path, { maxBytes = 256 * 1024 * 1024, crashAfterFsync = false, faultAt = null } = {}) {
     if (typeof path !== 'string' || !path.trim() ||
-        !Number.isSafeInteger(maxBytes) || maxBytes < 1024 || maxBytes > 4 * 1024 * 1024 * 1024 ||
+        !Number.isSafeInteger(maxBytes) || maxBytes < 1024 || maxBytes >= bufferConstants.MAX_LENGTH ||
         typeof crashAfterFsync !== 'boolean' ||
         ![null, 'before-write', 'after-partial-write', 'before-fsync', 'after-fsync'].includes(faultAt)) {
       throw new TypeError('Invalid committed block journal configuration');
