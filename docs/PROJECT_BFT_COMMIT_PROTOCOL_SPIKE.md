@@ -172,7 +172,7 @@ Tests must assert both safety (no two honest nodes commit conflicting values at 
 
 ## 8. Implementation order
 
-1. Complete a source-level interface inventory for the current admission/authorization path.
+1. [x] Complete the source-level admission/authorization inventory in `docs/ADMISSION_AUTHORIZATION_SOURCE_AUDIT.md`; its findings identify the missing deterministic operation identity/result record and the existing dispatch/revocation linearization semantics.
 2. Select and review a concrete BFT protocol and exact maintained implementation.
 3. Define canonical transition, vote, certificate, and durable safety-state schemas.
 4. Implement a storage-neutral committed-state interface with a test-only deterministic harness.
