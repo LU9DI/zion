@@ -1847,3 +1847,72 @@ Do not add a provider SDK, credentials, workflow, controller, or infrastructure 
 ### Safe next step
 
 The next useful step is a read-only qualification of an already available cloud account or a Linux host, not infrastructure creation. Until such evidence exists, keep the CometBFT experiment NO-GO and continue only source-level review. Do not create a paid resource, request/store a secret, or add provider-specific code as a substitute for the missing authorization and substrate.
+
+
+## 43. GitHub-hosted runner pair with ephemeral Tailscale networking
+
+### Decision
+
+GitHub Actions can host the first networked isolation experiment without provisioning an external cloud VM provider. Use two independent GitHub-hosted jobs, each receiving its own GitHub-managed runner VM and Docker daemon, and connect only those temporary runners through Tailscale using GitHub OIDC workload identity federation.
+
+This is a viable alternative for a bounded CI experiment, not a Zion runtime dependency. GitHub documents private networking for hosted runners, and Tailscale documents its GitHub Action as creating an ephemeral tailnet node from the workflow's OIDC identity. The action logs that node out when the workflow completes; Tailscale removes the ephemeral node from the tailnet. GitHub manages the hosted runner VM lifecycle.
+
+### Workflow implementation boundary
+
+The accompanying `.github/workflows/cometbft-private-network-smoke.yml` is deliberately limited to a manually dispatchable or branch-push network smoke test:
+
+- It creates two independent matrix jobs (`zion-ci-alpha` and `zion-ci-beta`) on separate `ubuntu-24.04` hosted runners; the matrix allows both jobs to run concurrently and does not share a Docker socket.
+- It uses the Tailscale GitHub Action pinned to the verified v4.4.0 commit and Tailscale client 1.104.4.
+- It requests a short-lived Tailscale node through GitHub OIDC. No reusable Tailscale auth key or OAuth client secret is placed in the repository.
+- Each job binds a minimal HTTP health responder only to its own Tailscale IPv4 address in `100.64.0.0/10`; it does not bind to the runner's public interface.
+- Each job resolves the other runner through MagicDNS, verifies that the destination IPv4 address is in the Tailscale CGNAT range, and makes a TCP request on port 26656. Both matrix jobs perform the check, so the smoke test verifies both directions.
+- The health responder returns one fixed string and exposes no workspace files, credentials, or general-purpose proxy.
+- The workflow is not a CometBFT testnet run. It proves only that two independent hosted jobs can establish the intended private path.
+
+The workflow intentionally does not run the upstream CometBFT E2E root command, `cleanup`, `benchmark`, or any testnet lifecycle command. The previously documented global Docker cleanup and failure-path hazards remain relevant. Actual CometBFT setup must be a later, separately reviewed step inside each runner's exclusive Docker daemon, with test-only keys and explicit resource limits.
+
+### Required Tailscale configuration
+
+Before the network smoke test can run, configure the Tailscale tailnet:
+
+1. Create the tag `tag:zion-ci`, owned by the tailnet administrators.
+2. Create a GitHub Actions federated OIDC identity with the writable `auth_keys` scope and permission to issue only `tag:zion-ci` nodes.
+3. Restrict its claims to repository `LU9DI/zion`, the exact branch `architecture/fully-decentralized-core`, and workflow `.github/workflows/cometbft-private-network-smoke.yml`. Do not accept arbitrary repositories, refs, or workflows.
+4. Enable MagicDNS.
+5. Add the following narrow rule to the existing tailnet policy; merge it into the existing policy rather than replacing the policy:
+   ```json
+   {
+     "tagOwners": {
+       "tag:zion-ci": ["autogroup:admin"]
+     },
+     "acls": [
+       {
+         "action": "accept",
+         "src": ["tag:zion-ci"],
+         "dst": ["tag:zion-ci:26656"]
+       }
+     ]
+   }
+   ```
+6. Add GitHub Actions repository secrets `TS_OAUTH_CLIENT_ID` and `TS_AUDIENCE`. These identify the federated identity; they are not a reusable Tailscale auth key. The workflow skips the network check and writes an explicit **NOT RUN** summary if either value is absent.
+
+The same tag is acceptable only for this isolated smoke test because the rule permits just TCP 26656 between these ephemeral nodes. Before the real experiment, review whether distinct alpha/beta tags and narrower direction-specific rules are needed for the exact CometBFT ports and test cases. Do not expose RPC, metrics, or profiling ports to the public Internet.
+
+### Lifecycle and limits
+
+- GitHub-hosted jobs use separate GitHub-managed runner VMs; no nested virtualization, external VM API token, or paid cloud VM is required for this smoke test.
+- The Tailscale Action performs logout in its post-job phase and the nodes are ephemeral. GitHub is responsible for decommissioning the hosted runner VM after the job. This is platform-managed lifecycle evidence, not an independently queried cloud-provider VM deletion record.
+- A runner cancellation or abrupt platform failure must not be represented as a successful test. The workflow has a finite job timeout and the experiment remains bounded to the lifetime of the hosted jobs.
+- GitHub Actions usage is subject to the repository's plan, visibility, and included-minute limits. No external cloud resource or provider charge is created by this workflow, but GitHub Actions quota/billing must still be respected.
+- This workflow is not authorized to access production secrets, production node keys, Neon, or any Zion runtime environment.
+
+### Gate
+
+The network smoke test is **NOT RUN** until the tailnet OIDC identity, tag/ACL, MagicDNS, and two repository secrets are configured. A successful smoke test will qualify only the two-runner private network. It will not qualify CometBFT consensus safety, cross-project state isolation, resource ceilings, crash recovery, or a complete teardown proof. Those require separate tests and review.
+
+### Official references
+
+- GitHub-hosted runner private networking: https://docs.github.com/en/actions/concepts/runners/private-networking
+- Tailscale GitHub Action, OIDC federation, MagicDNS peer ping, and ephemeral node lifecycle: https://tailscale.com/docs/integrations/github/github-action
+- Tailscale workload identity federation: https://tailscale.com/docs/features/workload-identity-federation
+- Tailscale GitHub Action v4.4.0 verified release: https://github.com/tailscale/github-action/releases/tag/v4.4.0
