@@ -112,3 +112,14 @@ test('invalid non-canonical values and malformed operations are rejected', () =>
     /Invalid committed-state harness transaction/,
   );
 });
+
+test('reserved object property names are rejected to prevent prototype mutation', () => {
+  const app = new CommittedStateHarness();
+  for (const key of ['__proto__', 'constructor', 'prototype']) {
+    assert.throws(
+      () => app.finalizeBlock({ height: 1, transactions: [op('operation-reserved-' + key, key, 'polluted')] }),
+      /Invalid committed-state harness transaction/,
+    );
+  }
+  assert.equal({}.polluted, undefined);
+});
