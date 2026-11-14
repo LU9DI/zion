@@ -89,3 +89,18 @@ Implementation must not be called production-ready until all of the following pa
 ## Consequences
 
 This design preserves the unlimited-invitation product policy without confusing it with node admission or pretending a local database/controller is decentralized. The immediate implementation dependency is a proven canonical BFT commit layer and a replicated user-membership state machine. Until then, user invitation redemption must remain unavailable rather than being represented as globally safe.
+
+
+## Architecture scope blocker — global founding ordinal versus project-scoped consensus (2026-11-14)
+
+The current BFT evaluation requires independent, project-scoped validator committees and committed histories, with no global chain or global validator committee. This ADR requires one Zion-wide, contiguous founding ordinal sequence (1..1,000) bound to a network/genesis identifier.
+
+A project-scoped committee alone cannot serialize a single global founder counter across independent projects: two committees could concurrently assign the same next ordinal. A local database, website counter, DHT record, GitHub workflow, or cache cannot be used to bridge that gap because this ADR already forbids them as authorities.
+
+This is unresolved and blocks implementation of `REDEEM_USER_INVITATION` and founder assignment. The architecture must explicitly choose between:
+
+1. a separate Zion-wide admission consensus domain (which is a global admission committee/authority even if it is not a global blockchain, and must be reconciled with the no-global-committee requirement);
+2. changing founder ordinals to be project-scoped (a product-policy change requiring explicit approval); or
+3. a fully specified alternative protocol that proves globally unique, contiguous ordinals without a global serialization authority. No such protocol is currently specified.
+
+Until resolved, invitation redemption and global founder assignment remain unavailable. Project-scoped BFT evaluation may continue independently. See `docs/PROJECT_COMMITTED_STATE_MACHINE_CONTRACT.md`, section 2.
