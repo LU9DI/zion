@@ -68,13 +68,11 @@ function requireKeystore(keystore, methods) {
  * Encrypt an Ed25519 identity record. The wrapping key never enters this module:
  * only the local keystore adapter may wrap/unwrap the random DEK.
  */
-export async function createEncryptedNodeIdentityRecord(identity, keystore, {
-  keyId = `zion-node-identity:${randomUUID()}`,
-  random = randomBytes,
-} = {}) {
+export async function createEncryptedNodeIdentityRecord(identity, keystore, options = {}) {
+  exactKeys(options, ['keyId'], 'Node identity options');
+  const keyId = options.keyId ?? `zion-node-identity:${randomUUID()}`;
   requireKeystore(keystore, ['createOrGetWrappingKey', 'wrapKey']);
   if (typeof keyId !== 'string' || !KEY_ID_RE.test(keyId)) throw new TypeError('Invalid local keystore key ID');
-  if (typeof random !== 'function') throw new TypeError('Random source must be a function');
   const publicDer = validateIdentity(identity);
   const record = {
     schemaVersion: RECORD_VERSION,
@@ -88,11 +86,11 @@ export async function createEncryptedNodeIdentityRecord(identity, keystore, {
   let privateDer;
   try {
     await keystore.createOrGetWrappingKey({ keyId, purpose: KEY_PURPOSE });
-    dek = Buffer.from(random(32));
+    dek = randomBytes(32);
     if (dek.length !== 32) throw new Error('Random source must return exactly 32 bytes');
     privateDer = identity.privateKey.export({ type: 'pkcs8', format: 'der' });
     if (privateDer.length < 1 || privateDer.length > MAX_CIPHERTEXT_BYTES) throw new RangeError('Private key encoding has an invalid size');
-    const nonce = Buffer.from(random(12));
+    const nonce = randomBytes(12);
     if (nonce.length !== 12) throw new Error('Random source must return exactly 12 bytes for the AES-GCM nonce');
     const cipher = createCipheriv('aes-256-gcm', dek, nonce);
     cipher.setAAD(aadFor(record));
