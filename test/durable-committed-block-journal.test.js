@@ -69,6 +69,24 @@ test('failed lock acquisition never removes a pre-existing lock without this ins
   } finally { f.cleanup(); }
 });
 
+test('partial lock initialization fails closed and requires explicit stale-lock recovery', () => {
+  const f = fixture();
+  try {
+    assert.throws(
+      () => new DurableCommittedBlockJournal(f.path, { faultAt: 'lock-after-partial-write' }),
+      { code: 'ZION_JOURNAL_INJECTED_LOCK_FAILURE' },
+    );
+    assert.equal(existsSync(f.path + '.lock'), true);
+    assert.throws(() => JSON.parse(readFileSync(f.path + '.lock', 'utf8')), SyntaxError);
+    assert.throws(
+      () => DurableCommittedBlockJournal.clearStaleLockAfterVerification(f.path),
+      /Explicit confirmation/,
+    );
+    DurableCommittedBlockJournal.clearStaleLockAfterVerification(f.path, { verifiedNoWriter: true });
+    assert.equal(existsSync(f.path + '.lock'), false);
+  } finally { f.cleanup(); }
+});
+
 test('journal refuses a symbolic-link path without modifying its target', {
   skip: process.platform === 'win32',
 }, () => {
