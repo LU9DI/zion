@@ -49,7 +49,7 @@ function canonical(value) {
 
 const digestWithDomain = (domain, value) => createHash('sha256').update(domain).update(canonical(value)).digest('hex');
 const digest = value => digestWithDomain(DOMAIN, value);
-const stateDigest = value => digestWithDomain('ZION-COMMITTED-STATE-HARNESS-V1\\0', value);
+const stateDigest = value => digestWithDomain('ZION-COMMITTED-STATE-HARNESS-V1\0', value);
 
 function validateState(state, height) {
   if (!state || typeof state !== 'object' || Array.isArray(state) ||
