@@ -42,11 +42,15 @@ test('close preserves a replacement lock owned by another writer', () => {
   const f = fixture();
   try {
     const journal = new DurableCommittedBlockJournal(f.path);
-    const replacement = JSON.stringify({ pid: process.pid + 1, token: 'replacement-lock-token' }) + '\\n';
+    const replacement = JSON.stringify({ pid: process.pid + 1, token: 'replacement-lock-token' }) + '\n';
     writeFileSync(f.path + '.lock', replacement);
     journal.close();
     assert.equal(existsSync(f.path + '.lock'), true);
     assert.equal(readFileSync(f.path + '.lock', 'utf8'), replacement);
+    assert.deepEqual(JSON.parse(readFileSync(f.path + '.lock', 'utf8')), {
+      pid: process.pid + 1,
+      token: 'replacement-lock-token',
+    });
   } finally { f.cleanup(); }
 });
 
