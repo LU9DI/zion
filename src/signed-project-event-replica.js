@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, writeSync, unlinkSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readFileSync, writeSync, unlinkSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { verifySignedProjectEventRecord } from './signed-project-event-log.js';
 
@@ -120,7 +120,11 @@ export class SignedProjectEventReplica {
     const existed = existsSync(this.path);
     const fd = openSync(this.path, 'a', 0o600);
     let fdOpen = true;
+    let originalSize;
     try {
+      // Capture the exact pre-append boundary from the opened descriptor, not a
+      // pathname stat that could refer to a different file.
+      originalSize = fstatSync(fd).size;
       let offset = 0;
       while (offset < line.length) {
         const written = writeSync(fd, line, offset, line.length - offset);
@@ -135,7 +139,20 @@ export class SignedProjectEventReplica {
       closeSync(fd);
       fdOpen = false;
     } catch (error) {
-      this.persistenceFailed = true;
+      if (originalSize !== undefined) {
+        // Roll back only this append. Even a successful rollback does not make
+        // the instance safe to continue: the caller observed an ambiguous I/O
+        // failure, so keep persistence poisoned until close and recovery.
+        this.persistenceFailed = true;
+        try {
+          ftruncateSync(fd, originalSize);
+          fsyncSync(fd);
+          error.rollbackSucceeded = true;
+        } catch (rollbackError) {
+          error.rollbackSucceeded = false;
+          error.rollbackError = rollbackError;
+        }
+      }
       throw error;
     } finally {
       if (fdOpen) {
