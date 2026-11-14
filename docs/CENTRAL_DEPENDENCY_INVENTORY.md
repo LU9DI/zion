@@ -54,6 +54,10 @@ The repository already contains useful components, but they are not an end-to-en
 | Static bootstrap allowlist | Multiple optional seed peers, peer exchange, DHT and local/out-of-band bootstrap |
 | Mutual TLS CA trust | Peer-key authentication and encrypted Noise sessions with key rotation/revocation governed by protocol epochs |
 
+## Admission/authorization contract
+
+`docs/DECENTRALIZED_ADMISSION_AUTHORIZATION_CONTRACT.md` records the source-derived state and atomicity requirements for admission, revocation, release, dispatch authorization, capacity/quota accounting, and commit-outcome ambiguity. It is a migration contract only; no storage-neutral implementation or PostgreSQL replacement is claimed.
+
 ## Consensus design gate
 
 `docs/PROJECT_BFT_COMMIT_PROTOCOL_SPIKE.md` defines the required separation between governance authorization and validator consensus, the safety assumptions, commit evidence, durable anti-equivocation state, epoch reconfiguration, candidate evaluation, and adversarial acceptance suite. No BFT protocol is selected or implemented yet. The governance state machine and signed event replica must not be treated as consensus.
