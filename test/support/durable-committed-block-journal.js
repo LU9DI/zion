@@ -183,13 +183,15 @@ export class DurableCommittedBlockJournal {
       if (lockFd !== undefined) {
         try { closeSync(lockFd); } catch {}
       }
-      try {
-        const lock = JSON.parse(readFileSync(this.lockPath, 'utf8'));
-        if (lock?.token === this.lockToken && lock?.pid === process.pid) {
-          unlinkSync(this.lockPath);
-          syncDirectory(this.lockPath);
-        }
-      } catch {}
+      if (lockFd !== undefined && this.lockToken !== undefined) {
+        try {
+          const lock = JSON.parse(readFileSync(this.lockPath, 'utf8'));
+          if (lock?.token === this.lockToken && lock?.pid === process.pid) {
+            unlinkSync(this.lockPath);
+            syncDirectory(this.lockPath);
+          }
+        } catch {}
+      }
       throw error;
     }
   }
