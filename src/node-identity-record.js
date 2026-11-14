@@ -111,6 +111,9 @@ export async function createEncryptedNodeIdentityRecord(identity, keystore, opti
       wrappedDek: wrapped.toString('base64'),
     });
   } finally {
+    // The adapter-returned plaintext is key material too. Wipe both its
+    // original mutable byte view and the local copy, including on failure.
+    unwrappedValue?.fill(0);
     dek?.fill(0);
     privateDer?.fill(0);
   }
@@ -141,8 +144,9 @@ export async function loadEncryptedNodeIdentityRecord(record, keystore) {
   }
   let dek;
   let privateDer;
+  let unwrappedValue;
   try {
-    const unwrappedValue = await keystore.unwrapKey({ keyId: record.keyId, wrappedKey: wrappedDek });
+    unwrappedValue = await keystore.unwrapKey({ keyId: record.keyId, wrappedKey: wrappedDek });
     if (!(unwrappedValue instanceof Uint8Array)) throw new TypeError('Local keystore must return unwrapped key bytes');
     dek = Buffer.from(unwrappedValue);
     if (dek.length !== 32) throw new Error('Local keystore returned an invalid DEK');
