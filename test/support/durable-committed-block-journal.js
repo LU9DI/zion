@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   closeSync, constants, fsyncSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync,
-  readFileSync, unlinkSync, writeSync,
+  readFileSync, readSync, unlinkSync, writeSync,
 } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
@@ -45,6 +45,25 @@ function canonical(value) {
     }).join(',') + '}';
   }
   throw new TypeError('Journal values must be canonical JSON');
+}
+
+
+function readBoundedSync(fd, maxBytes) {
+  const chunks = [];
+  let total = 0;
+  while (total <= maxBytes) {
+    const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, maxBytes + 1 - total));
+    const bytesRead = readSync(fd, chunk, 0, chunk.length, null);
+    if (bytesRead === 0) break;
+    chunks.push(bytesRead === chunk.length ? chunk : chunk.subarray(0, bytesRead));
+    total += bytesRead;
+  }
+  if (total > maxBytes) {
+    throw Object.assign(new Error('Committed block journal exceeds byte limit'), {
+      code: 'ZION_JOURNAL_TOO_LARGE',
+    });
+  }
+  return Buffer.concat(chunks, total);
 }
 
 function writeAllSync(fd, bytes) {
@@ -193,8 +212,7 @@ export class DurableCommittedBlockJournal {
       throw error;
     }
     let bytes;
-    try { bytes = readFileSync(fd); } finally { closeSync(fd); }
-    if (bytes.length > this.maxBytes) throw Object.assign(new Error('Committed block journal exceeds byte limit'), { code: 'ZION_JOURNAL_TOO_LARGE' });
+    try { bytes = readBoundedSync(fd, this.maxBytes); } finally { closeSync(fd); }
     if (bytes.length && bytes[bytes.length - 1] !== 0x0a) {
       throw Object.assign(new Error('Committed block journal has an incomplete trailing record'), { code: 'ZION_JOURNAL_CORRUPT' });
     }
