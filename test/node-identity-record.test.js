@@ -139,9 +139,15 @@ test('encrypted identity rejects malformed and oversized encoded fields before k
     },
   };
 
+  const invalidPublicDer = Buffer.from('not-an-ed25519-spki');
   const malformedRecords = [
     { ...record, publicKeyDer: '!!!!' },
     { ...record, publicKeyDer: 'A'.repeat(1024 * 1024) },
+    {
+      ...record,
+      publicKeyDer: invalidPublicDer.toString('base64'),
+      nodeId: createHash('sha256').update(invalidPublicDer).digest('hex'),
+    },
     { ...record, nonce: 'abc' },
     { ...record, ciphertext: Buffer.alloc(16 * 1024 + 1, 0x41).toString('base64') },
     { ...record, authTag: Buffer.from([0x01]).toString('base64') },
