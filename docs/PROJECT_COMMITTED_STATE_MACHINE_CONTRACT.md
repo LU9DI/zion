@@ -358,6 +358,7 @@ The prototype is deliberately outside `src/` and is not imported by production s
 5. Retry an identical commit at the same height idempotently; reject a conflicting state at that height, including after reopen.
 6. Commit multiple heights and verify the full hash chain and latest recovered projection.
 7. Inject failures before writing, after a partial write, before `fsync`, and after `fsync`; verify rollback, writer poisoning, and empty-state recovery after reopen.
+8. Reject an existing symbolic-link journal path and verify its target and lock cleanup remain untouched; this preflight check is not race-free against concurrent path replacement.
 
 
 
@@ -365,7 +366,7 @@ The new `faultAt` cases are deterministic test hooks that throw at selected writ
 
 ### Strict limitations
 
-This is an experimental, test-only append-only persistence prototype—not a production adapter and not evidence of consensus or quorum finality. The child-process test is authored but must be run by Node CI before it can be called passing. It does not yet establish behavior under physical power loss, filesystem/controller write-cache failure, disk-full conditions, cross-platform directory-`fsync` differences, hostile filesystem paths/symlinks, multi-process recovery races, snapshots/compaction, or long-term storage growth.
+This is an experimental, test-only append-only persistence prototype—not a production adapter and not evidence of consensus or quorum finality. The child-process test is authored but must be run by Node CI before it can be called passing. It does not yet establish behavior under physical power loss, filesystem/controller write-cache failure, disk-full conditions, cross-platform directory-`fsync` differences, concurrent symlink/path replacement (the current symlink check is preflight only), hostile parent-directory paths, multi-process recovery races, snapshots/compaction, or long-term storage growth.
 
 The stale-lock cleanup API requires an explicit caller assertion that no writer is active; it is not an automatic liveness detector. A production implementation needs an operator-safe recovery procedure and stronger cross-platform lock design.
 
