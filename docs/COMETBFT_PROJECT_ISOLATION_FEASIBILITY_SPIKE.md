@@ -297,3 +297,18 @@ This is a source-derived integration risk, not a reproduced runtime failure in t
 4. concurrent start/stop/restart and registry cleanup, ensuring one node cannot unregister, mutate, or hide another node's metrics.
 
 Disabling metrics or changing instrumentation removes at most this identified conditional obstacle; it does not establish safe isolation of consensus, WAL, databases, listeners, package-level state, goroutines, or crash recovery. The separate-process topology remains the first PoC target.
+
+
+## 14. Upstream E2E harness and execution-path constraint
+
+The upstream CometBFT E2E documentation describes a staged runner that generates configuration, starts Docker containers, applies load and perturbations, waits for network convergence, runs Go E2E tests, and then stops/cleans up the containers and networks.
+
+Implications for this spike:
+
+- The upstream E2E runner is the preferred starting point for reproducing CometBFT's own network-level behavior, but its documented start/stop/cleanup path requires Docker.
+- The current execution environment has no Docker executable, so the upstream E2E runner cannot be used here as documented.
+- CometBFT documents ways to run individual nodes outside that E2E runner. That is not equivalent to the full multi-node E2E harness and does not automatically provide controlled partitions, resource limits, or safe cleanup.
+- A native-process replacement harness is possible in principle, but it must explicitly implement process supervision, unique per-node data roots, P2P/RPC/ABCI port allocation, peer topology, network fault injection, process-group cleanup, and resource accounting. It must not be described as the upstream E2E runner.
+- Before writing that replacement, first attempt to obtain a Docker-capable disposable environment. If unavailable, document the exact missing isolation primitives and decide whether a native harness can safely reproduce each required scenario without weakening the acceptance matrix.
+
+The upstream E2E runner's Docker dependency is an execution constraint, not evidence that CometBFT itself requires Docker at runtime. No PoC or E2E test was run as part of this documentation update.
