@@ -117,6 +117,20 @@ test('encrypted identity wipes the keystore-returned plaintext DEK buffer after 
   assert.equal(returnedPlaintext.every(byte => byte === 0), true);
 });
 
+test('encrypted identity wipes keystore plaintext when authenticated decryption fails', async () => {
+  const identity = createNodeIdentity();
+  const record = await createEncryptedNodeIdentityRecord(identity, new FakeKeystore());
+  const wrongPlaintext = Buffer.alloc(32, 0x7f);
+  const observingKeystore = {
+    async unwrapKey() {
+      return wrongPlaintext;
+    },
+  };
+
+  await assert.rejects(loadEncryptedNodeIdentityRecord(record, observingKeystore));
+  assert.equal(wrongPlaintext.every(byte => byte === 0), true);
+});
+
 test('encrypted identity rejects non-byte keystore plaintext without masking the adapter error', async () => {
   const identity = createNodeIdentity();
   const record = await createEncryptedNodeIdentityRecord(identity, new FakeKeystore());
