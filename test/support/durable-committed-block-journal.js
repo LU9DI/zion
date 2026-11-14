@@ -174,7 +174,14 @@ export class DurableCommittedBlockJournal {
     try {
       lockFd = openSync(this.lockPath, 'wx', 0o600);
       this.lockToken = randomUUID();
-      writeAllSync(lockFd, Buffer.from(JSON.stringify({ pid: process.pid, token: this.lockToken }) + '\n'));
+      const lockRecord = Buffer.from(JSON.stringify({ pid: process.pid, token: this.lockToken }) + '\n');
+      if (this.faultAt === 'lock-after-partial-write') {
+        writeAllSync(lockFd, lockRecord.subarray(0, Math.max(1, Math.floor(lockRecord.length / 2))));
+        throw Object.assign(new Error('Injected lock initialization failure after partial write'), {
+          code: 'ZION_JOURNAL_INJECTED_LOCK_FAILURE',
+        });
+      }
+      writeAllSync(lockFd, lockRecord);
       fsyncSync(lockFd);
       this.lockFd = lockFd;
       syncDirectory(this.lockPath);
