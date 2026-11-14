@@ -434,3 +434,18 @@ conservative cap or a streaming parser. The default remains 256 MiB.
 This is a test-support hardening change only. It does not resolve hostile
 parent-directory traversal, the lock unlink TOCTOU window, power-loss
 semantics, or consensus/finality requirements.
+
+### Lock-initialization interruption and operator recovery (2026-11-14)
+
+A further source review identified a distinct failure mode in the test-only journal constructor. The lock file is created exclusively, then its JSON ownership record is written and fsynced. If that write is interrupted after creating the file but before a complete JSON record is available, constructor cleanup cannot parse the record and deliberately leaves the lock pathname in place. A later constructor then fails with `EEXIST`. This is fail-closed behavior: it can require manual recovery, but it avoids deleting a lock whose ownership cannot be established.
+
+The current tests cover preservation of a pre-existing lock when exclusive acquisition fails, and cleanup after failures that occur after a complete owned lock has been written. They do **not** inject a short/failed write during initial lock creation. The incomplete-lock case is therefore a source-derived limitation, not a tested recovery guarantee.
+
+For this prototype, recovery must remain an explicit operator procedure:
+
+1. Stop the process supervisor or otherwise establish, independently of the lock file, that no process can still be writing this journal.
+2. Preserve a copy of the lock file and inspect the journal separately; do not infer writer liveness from a PID alone, because PIDs can be reused and the lock may be malformed.
+3. Only after independently verifying that no writer is active may an operator remove the stale lock and sync the parent directory, then reopen the journal and require full hash-chain/state-root verification before allowing further writes.
+4. If the journal is incomplete or fails verification, keep writes disabled and preserve the evidence for investigation; do not truncate or skip uncertain records automatically.
+
+`clearStaleLockAfterVerification` accepts a caller-supplied boolean assertion; it does not itself verify process liveness, lock ownership, or directory-entry identity. Its path-based unlink also shares the previously documented replacement race. It is a test helper, not an operator-safe production recovery interface. No automatic stale-lock deletion or production recovery procedure is implemented.
