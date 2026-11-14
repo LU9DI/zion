@@ -136,6 +136,7 @@ export class SignedProjectEventLog {
     this.byteLength = 0;
     this.persistenceFailed = false;
     this.queue = Promise.resolve();
+    this.pendingAppends = 0;
     this.closed = false;
     this.lockPath = `${this.path}.lock`;
     mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
@@ -177,9 +178,13 @@ export class SignedProjectEventLog {
   }
 
   append({ projectId, eventType, data } = {}) {
+    this.pendingAppends++;
     const operation = this.queue.then(() => this.#append({ projectId, eventType, data }));
     this.queue = operation.catch(() => {});
-    return operation;
+    return operation.then(
+      value => { this.pendingAppends--; return value; },
+      error => { this.pendingAppends--; throw error; },
+    );
   }
 
   #append({ projectId, eventType, data }) {
@@ -243,6 +248,11 @@ export class SignedProjectEventLog {
 
   close() {
     if (this.closed) return;
+    if (this.pendingAppends > 0) {
+      throw Object.assign(new Error('Cannot close event log while appends are pending; await them and retry'), {
+        code: 'ZION_EVENT_LOG_BUSY',
+      });
+    }
     this.closed = true;
     if (this.lockFd !== undefined) { try { closeSync(this.lockFd); } finally { this.lockFd = undefined; } }
     try {
