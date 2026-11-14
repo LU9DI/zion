@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -35,6 +35,18 @@ test('durable journal reopens the complete committed snapshot and rejects concur
     assert.deepEqual(reopened.read(), block.state);
     assert.equal(reopened.info().appHash, block.appHash);
     reopened.close();
+  } finally { f.cleanup(); }
+});
+
+test('close preserves a replacement lock owned by another writer', () => {
+  const f = fixture();
+  try {
+    const journal = new DurableCommittedBlockJournal(f.path);
+    const replacement = JSON.stringify({ pid: process.pid + 1, token: 'replacement-lock-token' }) + '\\n';
+    writeFileSync(f.path + '.lock', replacement);
+    journal.close();
+    assert.equal(existsSync(f.path + '.lock'), true);
+    assert.equal(readFileSync(f.path + '.lock', 'utf8'), replacement);
   } finally { f.cleanup(); }
 });
 
