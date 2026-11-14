@@ -353,3 +353,37 @@ test('replica enforces a global record limit before durable append', async () =>
     source.close();
   } finally { f.cleanup(); }
 });
+
+
+test('event log refuses to release its writer lock while appends are pending', async () => {
+  const f = fixture();
+  try {
+    const log = new SignedProjectEventLog(f.path, { identity: f.identity });
+    const pending = log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: {} });
+    assert.throws(() => log.close(), { code: 'ZION_EVENT_LOG_BUSY' });
+    await pending;
+    log.close();
+    const reopened = new SignedProjectEventLog(f.path, { identity: f.identity });
+    assert.equal(reopened.snapshot().count, 1);
+    reopened.close();
+  } finally { f.cleanup(); }
+});
+
+test('replica refuses to release its writer lock while ingests are pending', async () => {
+  const f = fixture();
+  try {
+    const source = new SignedProjectEventLog(f.path, { identity: f.identity });
+    await source.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: {} });
+    const record = source.snapshotRecords().records[0];
+    const replicaPath = join(f.dir, 'pending-close-replica.events');
+    const replica = new SignedProjectEventReplica(replicaPath, { authorizePeer: () => true });
+    const pending = replica.ingest(record);
+    assert.throws(() => replica.close(), { code: 'ZION_REPLICA_BUSY' });
+    await pending;
+    replica.close();
+    const reopened = new SignedProjectEventReplica(replicaPath, { authorizePeer: () => true });
+    assert.equal(reopened.snapshot().records, 1);
+    reopened.close();
+    source.close();
+  } finally { f.cleanup(); }
+});
