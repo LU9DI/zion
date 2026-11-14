@@ -403,3 +403,69 @@ These are source-level observations. No concurrent Compose stacks were started, 
 - Concurrent two-project E2E run: **not executed**.
 - Cross-project consensus, resource, and failure isolation: **not proven**.
 - No CometBFT code was changed; no Zion runtime, dependency, launcher, database, migration, or production code was changed.
+
+
+## 17. Runner command-path audit and safe orchestration options
+
+A further read-only inspection of the pinned `v0.38.26` `test/e2e/runner/main.go` clarifies exactly where the global cleanup hazard occurs.
+
+### 17.1 Which CLI paths invoke global cleanup?
+
+- The root command's normal full-run `RunE` calls `Cleanup(cli.testnet)` before `Setup`, then starts, loads, perturbs, waits, tests, and (unless `--preserve`) cleans up again.
+- The `benchmark` command also calls `Cleanup` before setup and after benchmarking.
+- The individual `setup` command calls only `Setup`.
+- The individual `start` command checks whether the testnet directory exists, calls `Setup` only if it does not, and then starts the nodes. It does not call `Cleanup`.
+- The individual `stop` command calls the provider's Compose stop operation.
+- The individual `cleanup` command calls `Cleanup`, and is therefore globally destructive to every E2E-labelled Docker container/network on that Docker daemon.
+
+This means two separate runner invocations using only `setup` and `start` can avoid the runner's initial global cleanup. It does **not** make concurrent execution safe by itself: Compose-generated resources still need distinct identities and networks, and no cleanup command may be invoked while the other testnet is running.
+
+### 17.2 Resource namespace constraints in the pinned implementation
+
+The exact source confirms these relevant defaults:
+
+- Docker IPv4 CIDR is hard-coded to `10.186.73.0/24`; IPv6 mode uses a fixed `fd80:b10c::/48`.
+- Proxy host-port allocation starts at `5701` for every testnet; Prometheus proxy allocation starts at `6701`.
+- Generated Compose services set literal `container_name: <node-name>` (and `<node-name>_u` for upgrade containers), bypassing normal Compose-generated container-name uniqueness.
+- The generated network has an E2E label and a testnet-derived logical name; Compose invocation does not pass an explicit project name.
+- The runner's full-run and benchmark paths invoke global cleanup before setup; the cleanup subcommand is also global.
+- Per-node data directories are relative to the generated testnet directory, which does provide a useful data-path boundary.
+
+The fixed subnets and default port ranges are source facts. Whether Docker rejects a particular overlapping subnet or a specific port collision depends on the actual host/runtime configuration; this audit does not claim those collisions were reproduced.
+
+### 17.3 Viable harness options (not yet implemented)
+
+**Option A — test-only fork/wrapper around the upstream E2E runner (preferred if a single Docker daemon is used).**
+
+Use the pinned runner's setup/start/load/perturb/wait/test/stop capabilities, but replace its global cleanup with an ownership-scoped cleanup implementation. Before starting either network, allocate and validate disjoint CIDRs, proxy ports, monitoring ports, node/container names, Compose project names, and per-network output directories. Ensure the wrapper tracks exact created resource IDs and removes only those IDs. Do not rely on the broad `e2e=true` label for destructive cleanup.
+
+The test-only fork must preserve upstream behavior relevant to consensus tests and keep the delta small and reviewable. It must include a test that starts A and B, invokes A cleanup, and proves B's containers, network, volumes, and block production remain intact.
+
+**Option B — separate Docker daemons/engines.**
+
+Running each testnet against a distinct Docker daemon can isolate Docker resource namespaces and make the upstream daemon-wide cleanup boundary narrower (one testnet per daemon). This is a candidate only: it adds host setup, daemon lifecycle, storage, networking, and resource-accounting complexity. It does not prove consensus isolation and still requires independent validation of host ports and CPU/memory contention. Do not choose it without confirming the target disposable environment supports multiple isolated daemons.
+
+**Option C — native process harness.**
+
+Run eight CometBFT processes with independent home directories, keys, ports, and explicit peer topology under a supervisor. This avoids Docker daemon-level cleanup coupling but requires the harness to implement reliable process supervision, readiness, restart, crash cleanup, network fault injection, and resource accounting. It is not the upstream E2E runner and should not be preferred merely to avoid Docker setup.
+
+### 17.4 Recommended next sequence
+
+1. Obtain a disposable Docker-capable Linux environment; do not use the production node or the user's normal workstation as the first destructive test target.
+2. Build the exact `v0.38.26` upstream E2E runner in that environment and record toolchain/image digests.
+3. Prototype only the test harness namespace layer (no Zion runtime changes): two manifests, eight distinct validator keys, distinct chain IDs/genesis, disjoint networks, host ports, container names, and output directories.
+4. Exercise setup/start for A and B, verify both are simultaneously producing blocks, and record identities of all Docker resources.
+5. Trigger A-only cleanup and assert B remains alive and advances height; then repeat with B-only cleanup.
+6. Inject A-only validator kills, P2P partition, process pause, disk pressure, and CPU pressure while observing B's commit progress and state hash.
+7. Repeat with reverse project order and crash/restart the harness itself to test orphan-resource recovery.
+8. Only after those checks, run the full adversarial and resource matrix.
+
+### 17.5 Evidence status
+
+- Exact root full-run and benchmark pre-cleanup behavior: **verified by source inspection**.
+- Exact `setup` and `start` subcommand behavior: **verified by source inspection**.
+- Safe concurrent use of the stock runner on one Docker daemon: **not supported by current evidence; global cleanup and resource namespace issues remain**.
+- A namespaced wrapper/fork: **proposed only, not implemented or tested**.
+- Separate Docker daemons: **candidate only, not evaluated in a target environment**.
+- Native process harness: **candidate only, not implemented**.
+- No CometBFT source, Zion runtime, dependency, launcher, database, or migration was changed by this investigation.
