@@ -1403,3 +1403,91 @@ This section does not select a BFT engine, prove threshold-MPC security, impleme
 - CometBFT ABCI++ application requirements, “Updating the Validator Set”: `https://github.com/cometbft/cometbft/blob/main/spec/abci/abci%2B%2B_app_requirements.md`.
 
 The review is based on published source/documentation, not a reproduced signer test or an independent cryptographic audit.
+
+## 34. BFT engine candidate comparison and provisional selection gate
+
+This section compares concrete, publicly inspectable implementations against Zion's requirements. It is an architecture screening, not a protocol proof, production approval, or benchmark.
+
+### 34.1 Candidate A — CometBFT
+
+**Status: strongest current candidate for a controlled project-isolation PoC; not yet selected for production.**
+
+Evidence:
+- The official CometBFT project describes the engine as Byzantine-fault-tolerant deterministic state-machine replication and exposes ABCI/ABCI++ so the application can be implemented separately.
+- The official repository publishes signed release tags and explicitly advises consumers to use releases rather than the moving `main` branch.
+- The current Zion spike already pins and audits v0.38.26, including validator-set transition semantics, WAL/consensus recovery surfaces, signer interfaces, and the E2E runner's isolation hazards.
+
+Advantages for Zion:
+- A mature, maintained upstream implementation avoids inventing consensus or implementing a new pacemaker, quorum certificate, vote protocol, WAL, and recovery path.
+- ABCI gives Zion a deterministic application boundary for project-scoped admission, revocation, reservations, governance epochs, and operation results.
+- Independent CometBFT instances can in principle have distinct chain IDs, genesis files, validator sets, WALs, and application state. This is the topology-A hypothesis in this spike, not a demonstrated isolation guarantee.
+
+Unresolved blockers:
+- The spike has not run its two-project functional/failure-isolation experiment. Independent chain IDs and directories alone do not prove independent failure domains.
+- One instance per project may scale linearly in memory, file descriptors, sockets, disk I/O, startup/recovery work, and operator burden for a peer participating in many projects.
+- A shared host, supervisor, disk, network interface, or resource pool can still create correlated failures and cross-project DoS unless resource budgets and isolation are enforced.
+- The application still needs deterministic state transitions, project-scoped validator admission, safe key custody, and committed operation-result reconciliation.
+- The current pinned v0.38.26 signer path has the custody and anti-double-sign recovery gaps documented in sections 28–32.
+
+Version policy:
+- Keep v0.38.26 as the audited baseline for the already-written source findings and any reproducible comparison against those findings.
+- Do not silently move the PoC to a newer minor release. A later release candidate requires a separate API, consensus, WAL, signer, dependency, upgrade, and regression audit.
+- A newer release may be evaluated in parallel as a candidate, but it must not rewrite the historical evidence for v0.38.26.
+
+### 34.2 Candidate B — HotStuff reference implementations
+
+**Status: research references; not acceptable as drop-in production engines on the evidence currently available.**
+
+The `asonnino/hotstuff` Rust repository describes itself as a minimal 2-chain HotStuff implementation and explicitly says it was not designed to run in production. It is useful for understanding protocol structure and controlled research experiments, not as Zion's production consensus dependency.
+
+The `hot-stuff/libhotstuff` C++ repository describes itself as in-progress and its own TODO list still includes persistent protocol state/recovery work. Its README also describes the code as a prototype implementation of the research paper. It does not meet Zion's maintenance, recovery, language-stack, and production-evidence gates.
+
+Neither repository should be adopted merely because HotStuff has attractive latency or pipelining properties in research papers. A paper, benchmark, or minimal implementation does not establish correct membership changes, durable safety state, rollback resistance, adversarial networking, reproducible builds, or production incident response.
+
+### 34.3 Candidate C — Raft-based coordination or signer clusters
+
+**Status: rejected as the project BFT engine.**
+
+Raft may be useful for crash-fault-tolerant coordination inside a signer implementation, but its fault model does not meet Zion's Byzantine committee requirement. The Horcrux comparison in section 33 documents why a threshold signer coordinated by Raft cannot become the project governance or BFT state machine.
+
+No crash-fault-tolerant quorum may be relabelled as BFT, and no signer coordinator may become a mandatory central authority.
+
+### 34.4 Screening result
+
+| Candidate | BFT protocol | Production evidence in inspected implementation | Zion fit now |
+|---|---|---|---|
+| CometBFT | Yes | Maintained upstream, signed releases, established consensus/WAL implementation; Zion integration and isolation unproven | **PoC candidate** |
+| asonnino/hotstuff | Yes, research implementation | README explicitly says not designed for production | Research only |
+| hot-stuff/libhotstuff | Yes, prototype | In-progress; persistent protocol state/recovery listed as TODO | Reject for production |
+| Raft / Horcrux coordination | No, crash-fault model | Archived signer project; not a BFT engine | Reject as BFT |
+
+### 34.5 Provisional decision
+
+Continue the CometBFT evaluation rather than implementing a new BFT protocol or adopting an unproven HotStuff codebase. The only topology allowed to advance to the next experiment is **topology A: one independent CometBFT instance per project**, because it is the clearest way to preserve distinct committees and commit histories without assuming an unsupported multiplexing API.
+
+This is permission to test topology A, not a final architecture selection. Topology A must still pass the two-project isolation, Byzantine/failure, crash-recovery, resource-exhaustion, and 1/2/10/100-instance scale gates in sections 4–9. If it fails the predeclared resource or isolation criteria, CometBFT is a no-go for Zion; do not conceal the failure with a global chain, a privileged supervisor, or an unreviewed fork.
+
+Topology B remains a negative control. Topology C is not assumed to exist without source-level proof of independent consensus/WAL/validator state. Topology D may be considered only as process packaging after the independent instances are proven; a supervisor cannot hold consensus authority.
+
+### 34.6 Immediate next experiment
+
+Before adding a CometBFT dependency or touching the official launcher:
+1. Prepare a disposable, isolated test harness that does not use the current official launcher, Neon, PostgreSQL, production keys, or existing migrations.
+2. Use the already-audited CometBFT v0.38.26 baseline and test-only validator keys.
+3. Start two independent four-validator committees with separate genesis files, chain IDs, WALs, application stores, ports, and resource limits.
+4. Prove that A commits while B is below quorum, and B commits while A is below quorum.
+5. Exercise cross-project transaction replay, wrong-project validator updates, independent restarts, WAL corruption, and resource exhaustion in one project while measuring the other.
+6. Measure per-instance idle/active memory, CPU, disk, sockets, startup, recovery, and p50/p95/p99 commit latency; expand only to the predeclared 10/100-instance limits if the two-project test is safe.
+7. Preserve immutable logs, source/version digests, state roots, committee digests, and every failed run. No happy-path-only report.
+
+Do not begin this experiment on the current shared host unless its disposable isolation and resource ceilings are independently verified. The prior runner audit found global cleanup and shared-daemon hazards; those must be resolved first.
+
+### 34.7 Evidence and limitations
+
+Sources reviewed:
+- CometBFT official repository and release policy: `https://github.com/cometbft/cometbft`.
+- CometBFT releases: `https://github.com/cometbft/cometbft/releases`.
+- HotStuff reference implementation: `https://github.com/asonnino/hotstuff`.
+- libhotstuff prototype: `https://github.com/hot-stuff/libhotstuff`.
+
+No consensus engine was installed, no dependency was added, no testnet was started, and no BFT or project-isolation experiment was executed for this section. This screening does not prove CometBFT suitable for Zion. The only permitted next step is the isolated PoC described above, subject to the runner/VM safety gates already recorded in this document.
