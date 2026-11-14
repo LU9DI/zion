@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import { createNodeIdentity, signPeerMessage, verifyPeerMessage } from '../src/peer-security.js';
 import {
   createEncryptedNodeIdentityRecord,
@@ -82,6 +82,18 @@ test('encrypted identity rejects ciphertext and authenticated metadata tampering
 
   const alteredKeyId = { ...record, keyId: 'zion-node-identity:other-slot' };
   await assert.rejects(loadEncryptedNodeIdentityRecord(alteredKeyId, keystore));
+
+  // Recompute nodeId so validation reaches AES-GCM authentication. The public
+  // key bytes are still authenticated metadata and must not be substitutable.
+  const alteredPublicDer = Buffer.from(record.publicKeyDer, 'base64');
+  alteredPublicDer[0] ^= 0x01;
+  const alteredPublicKey = alteredPublicDer.toString('base64');
+  const alteredPublicKeyNodeId = createHash('sha256').update(alteredPublicDer).digest('hex');
+  await assert.rejects(loadEncryptedNodeIdentityRecord({
+    ...record,
+    publicKeyDer: alteredPublicKey,
+    nodeId: alteredPublicKeyNodeId,
+  }, keystore));
 
   const unknownField = { ...record, unexpected: true };
   await assert.rejects(loadEncryptedNodeIdentityRecord(unknownField, keystore), /invalid schema/);
