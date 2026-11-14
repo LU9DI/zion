@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -51,6 +51,23 @@ test('close preserves a replacement lock owned by another writer', () => {
       pid: process.pid + 1,
       token: 'replacement-lock-token',
     });
+  } finally { f.cleanup(); }
+});
+
+test('journal refuses a symbolic-link path without modifying its target', {
+  skip: process.platform === 'win32',
+}, () => {
+  const f = fixture();
+  const target = join(f.dir, 'outside-target');
+  try {
+    writeFileSync(target, 'do-not-modify');
+    symlinkSync(target, f.path);
+    assert.throws(
+      () => new DurableCommittedBlockJournal(f.path),
+      { code: 'ZION_JOURNAL_SYMLINK' },
+    );
+    assert.equal(readFileSync(target, 'utf8'), 'do-not-modify');
+    assert.equal(existsSync(f.path + '.lock'), false);
   } finally { f.cleanup(); }
 });
 
