@@ -88,3 +88,24 @@ test('height gaps and unverified stale-lock cleanup are rejected', () => {
     journal.close();
   } finally { f.cleanup(); }
 });
+
+test('same-height commit retry is idempotent and conflicting replay fails closed', () => {
+  const f = fixture();
+  try {
+    const journal = new DurableCommittedBlockJournal(f.path);
+    const first = finalized(1, 'durable-operation-0005', 'k', 'v1');
+    const conflict = finalized(1, 'durable-operation-0006', 'k', 'v2');
+    journal.commit(1, first.state);
+    assert.equal(journal.commit(1, first.state).status, 'already-committed');
+    assert.throws(
+      () => journal.commit(1, conflict.state),
+      { code: 'ZION_JOURNAL_COMMIT_CONFLICT' },
+    );
+    journal.close();
+
+    const reopened = new DurableCommittedBlockJournal(f.path);
+    assert.equal(reopened.commit(1, first.state).status, 'already-committed');
+    assert.equal(reopened.info().lastBlockHeight, 1);
+    reopened.close();
+  } finally { f.cleanup(); }
+});
