@@ -1153,3 +1153,53 @@ Evidence inspected at CometBFT v0.38.26:
 
 The exact TCP/Unix dialer and listener implementation was not fully inspected in this pass; transport authentication/encryption conclusions are deliberately left open. No remote signer was started, no request was sent, and no network attack or replay experiment was executed. This is source-level protocol analysis, not an exploit demonstration or security certification. No Zion runtime, signer adapter, consensus implementation, dependency, launcher, database, migration, or production configuration was changed.
 
+## 30. TCP versus Unix remote-signer transport: authenticated encryption and local trust
+
+A source-level review of the pinned CometBFT v0.38.26 `privval/socket_dialers.go`, `privval/socket_listeners.go`, and signer endpoint code resolves the transport question left open in section 29.
+
+### 30.1 TCP uses SecretConnection for authenticated encryption
+
+`DialTCPFn` establishes TCP, applies a handshake deadline, then wraps the connection with `p2p/conn.MakeSecretConnection` using the dialer's persistent private key. `NewTCPListener` wraps accepted TCP connections with the same SecretConnection mechanism using the listener's configured private key. The upstream SecretConnection protocol performs an ephemeral X25519 key exchange, derives authenticated encryption keys, and authenticates persistent public keys with signatures over a transcript challenge.
+
+This is materially stronger than plaintext TCP: it provides encrypted transport and cryptographic peer authentication at the channel layer. It does not by itself authorize a peer for a particular Zion project, validator key, or committed validator-set epoch. The inspected remote-signer handler still only compares chain ID before signing. A listener must additionally pin or authorize the expected caller identity from committed project state; otherwise any party able to establish an accepted SecretConnection may reach the signing handler.
+
+Required controls: use TCP only with SecretConnection or an independently reviewed mutually authenticated secure transport; pin/authorize the expected caller key and bind it to project, chain, validator key, and committed epoch. Verify both sides' identity expectations, key rotation, downgrade rejection, and replay behavior. Never treat encryption alone as project authorization.
+
+### 30.2 Unix transport is explicitly unencrypted in this implementation
+
+`DialUnixFn` uses `net.DialUnix` directly. `NewUnixListener` accepts the connection and wraps it only with read/write deadlines. The source comment says the connection is unencrypted and contains a TODO for an authentication MAC. Therefore the Unix transport in this tag does not provide cryptographic peer authentication or message encryption at this layer.
+
+Unix sockets can still be appropriate inside a tightly controlled host boundary, but their security then depends on OS-enforced filesystem and process isolation. The source reviewed here does not establish that the socket path is created with restrictive ownership/mode, that parent directories cannot be replaced, or that peer credentials are checked.
+
+Required controls: either add a reviewed authenticated channel for Unix sockets or restrict them to a hardened local trust boundary with dedicated unprivileged identities, restrictive socket and parent-directory permissions, protected mount namespaces, and OS peer-credential checks. Validate ownership/mode after bind and before every use; reject symlink/replacement attacks; test unauthorized same-host processes. Do not expose a Unix signer socket through a shared writable volume without an explicit access-control proof.
+
+### 30.3 TCP handshake authentication is not the same as an allowlist
+
+SecretConnection proves possession of the private key corresponding to the peer identity presented during the handshake. The remote-signer endpoint code reviewed here does not itself compare that identity to a project-scoped allowlist or authorization certificate. Authentication answers "which key is on this connection"; Zion must still answer "is this key authorized to request this signature for this project and epoch?"
+
+Required controls: maintain an explicit, committed authorization binding from caller node identity to project membership and permitted signer operations. Validate the binding on each request or against a safely cached committed state with bounded staleness. Revocation must take effect according to a deterministic committed rule; stale or unavailable authorization must fail closed. Do not add a mandatory central CA or hosted identity service.
+
+### 30.4 Connection replacement and retries leave an uncertain-outcome boundary
+
+The listener endpoint accepts a connection, places it in an availability channel, and replaces/drops the active connection during reconnect. The retry client repeats signing operations after transport errors, except explicit remote-signer errors. If a signer completed and durably persisted a signature but the response was lost, the caller may retry the same operation. The local FilePV H/R/S guard can return the same signature for the same sign bytes, which is useful, but this is not a general operation-ID protocol and does not solve concurrent independent signers or stale-key failover.
+
+Required controls: model every signing request as an idempotent operation bound to canonical sign bytes and H/R/S; after an uncertain response, retry only the exact same operation and retrieve/reproduce the exact prior result. Reject changed bytes at the same H/R/S. Reconnection must not silently transfer signing authority; use explicit fencing and committed key-epoch handoff. Test response loss after durable sign, reconnect during sign, duplicate requests, old connection overlap, and old signer resumption.
+
+### 30.5 Resource and denial-of-service controls remain deployment obligations
+
+The inspected listeners enforce accept/read/write timeouts and the endpoint caps an individual delimited remote-signer message at 10 KiB in this tag. These are useful bounds, but they do not alone establish global connection limits, per-identity quotas, handshake CPU budgets, listener backlog safety, or project-level fair scheduling. A peer able to repeatedly initiate handshakes or occupy the single accepted connection can affect signer availability.
+
+Required controls: bound concurrent handshakes and connections, rate-limit by authenticated identity and network source, cap work queues and request sizes, isolate signer CPU/memory, and expose bounded telemetry without leaking signing material. Availability defenses must not allow unauthenticated callers to consume unbounded resources before authentication.
+
+### 30.6 Evidence and limitations
+
+Pinned CometBFT v0.38.26 source inspected:
+- `privval/socket_dialers.go`, blob `d49231c72c08d062f261e792dc3e6c0c388e12b4`: TCP SecretConnection wrapper and direct Unix dial.
+- `privval/socket_listeners.go`, blob `0be86453d259d9ae15b32e7820b9a997ec5e5ec4`: TCP authenticated-encryption wrapper; Unix plaintext wrapper and explicit authentication-MAC TODO; read/write/accept deadlines.
+- `privval/signer_listener_endpoint.go`, blob `3a8525bab24ea2308e53334fee6a4b155e07911f`: accepted-connection lifecycle, ping and reconnect.
+- `privval/signer_endpoint.go`, blob `84dbde8f3553266d431f8eed247102f60cdf5cc9`: connection replacement, framing, timeout handling, 10 KiB message cap.
+- `privval/retry_signer_client.go`, blob `271e146474c8da6ddc382b85d1f9384ff876a11f`: retry behavior for signing calls.
+- CometBFT SecretConnection protocol description: ephemeral X25519, transcript challenge authentication, and encrypted traffic.
+
+No network listener was opened, no socket was created, and no handshake, unauthorized access, replay, or DoS test was run. The findings describe source behavior and design requirements; they do not establish a demonstrated exploit. No Zion runtime, signer adapter, dependency, launcher, database, migration, or production configuration was changed.
+
