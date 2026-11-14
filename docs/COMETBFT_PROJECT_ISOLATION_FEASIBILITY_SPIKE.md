@@ -1259,3 +1259,75 @@ Pinned CometBFT v0.38.26 source inspected:
 
 No handshake was executed, no adversarial traffic generated, and no CPU/memory benchmark or denial-of-service test performed. The malformed-length observation is static code review, not an exploit. The external v0.38.22 report is not evidence of a measured v0.38.26 vulnerability. No Zion code, runtime, dependency, launcher, database, or migration was changed.
 
+## 32. Persistent signer identity, anti-double-sign state, and recovery boundaries
+
+This section correlates the CometBFT v0.38.26 FilePV implementation with Zion's current node-identity lifecycle artifacts. It distinguishes peer identity, validator signing identity, and the mutable consensus safety state.
+
+### 32.1 CometBFT FilePV stores the validator private key in plaintext
+
+In `privval/file.go`, `FilePVKey.Save` serializes the private key into JSON and calls `tempfile.WriteFileAtomic(..., 0600)`. The file mode is restrictive on POSIX filesystems, but the key is still plaintext at rest. Mode 0600 is not encryption, is not a complete Windows ACL guarantee, and does not protect a running process or a compromised OS account.
+
+The validator public key/address are re-derived from the private key during load; this detects stale public metadata but does not establish authorization of the validator for a Zion project or epoch.
+
+Required controls: do not use the stock plaintext FilePV key file as Zion's production custody model. Keep private validator material behind a reviewed local keystore or a separately reviewed threshold/MPC signer. No hosted escrow or mandatory central HSM service. A local HSM/TPM/OS store is an optional device boundary, not a global trust root.
+
+### 32.2 Key file and anti-double-sign state are separate, non-transactional writes
+
+`FilePV.Save` writes the key file and then the last-sign-state file sequentially. Each individual write uses a same-directory temporary file and rename, but the pair is not one atomic transaction. A crash between the two writes can leave mismatched generations. The normal `LoadFilePV` path loads both files and fails if either cannot be read; it does not reconcile generations or prove that the key and state belong together.
+
+The signing path persists H/R/S, canonical sign bytes, and signature before returning the signature to the caller. This is an important crash-safety property: after a response is lost, the same H/R/S and same sign bytes can reuse the prior signature. Different bytes at the same H/R/S are rejected, apart from the explicitly handled timestamp-only normalization. This remains local state protection, not distributed anti-equivocation.
+
+Required controls: treat validator key and last-sign-state as one versioned, integrity-protected recovery unit. Bind the state to project ID, chain ID, validator public key, signer epoch, and a monotonic committed checkpoint. Persist and verify the unit before signing authority becomes active. A mismatch, missing state, stale snapshot, or ambiguous generation must stop signing and enter explicit recovery. Do not attempt automatic repair by pairing a key with an arbitrary state file.
+
+### 32.3 Empty-state loading and Reset deliberately erase anti-double-sign history
+
+`LoadFilePVEmptyState` loads the private key but deliberately initializes an empty last-sign state. `FilePV.Reset()` clears H/R/S, signature, and sign bytes, then saves the result. Both APIs are explicitly unsafe in source comments/documentation.
+
+`LoadOrGenFilePV` also generates and saves a new validator when the key file is absent. It does not prove that the absence means a genuinely new validator slot rather than deletion, path substitution, partial restore, or an identity-loss event. If a key is regenerated while the network still recognizes the previous validator identity, continuity and consensus safety are not preserved.
+
+Required controls: production Zion code must not expose empty-state load, reset, or load-or-generate as automatic recovery paths. Missing key/state/record, a changed node ID, or a changed validator public key must fail closed. New validator identities require an explicit committed rotation/admission process; they must never be silently substituted for an existing identity.
+
+### 32.4 Atomic file replacement is not equivalent to durable, no-overwrite publication
+
+The v0.38.26 `libs/tempfile.WriteFileAtomic` creates a temporary file in the target directory with `O_CREAT|O_EXCL|O_SYNC`, writes and closes it, then calls `os.Rename`. This is useful against temporary-name collision and gives atomic replacement semantics on supported filesystems. The source does not fsync the containing directory after rename, and `os.Rename` may replace an existing destination on supported platforms. The temporary-name suffix comes from a time/PID-seeded LCG; exclusivity is provided by `O_EXCL`, not by cryptographic unpredictability.
+
+Consequently this helper does not meet Zion's stronger lifecycle requirement for atomic no-overwrite publication plus durable directory synchronization. It also assumes the parent directory is already trusted; it does not defend the caller against symlink/reparse-point substitution or directory replacement.
+
+Required controls: implement a platform-specific persistence layer that validates the directory/ACL/reparse state, creates temp files exclusively, flushes file contents, publishes without replacing an existing identity record, synchronizes the parent directory where supported, and verifies by reopening. Windows and Linux semantics must be tested separately. Do not claim portable crash durability from rename alone.
+
+### 32.5 Zion peer identity and validator identity are separate key roles
+
+The current `src/peer-security.js` creates an Ed25519 peer identity in memory and derives `nodeId = SHA-256(SPKI DER)`. `src/node-identity-record.js` encrypts and restores that Ed25519 identity through an injected local keystore interface, validating that the recovered public key and node ID match. This is a cryptographic record core; it does not implement persistent filesystem publication or a real OS keystore adapter.
+
+The current CometBFT validator key is a separate signing role. A peer node ID must not automatically confer validator power, and a validator key must not automatically authorize arbitrary P2P or governance operations. Their binding must be an explicit project-scoped, epoch-bound governance/consensus record. Rotating one identity must not silently rotate or replace the other.
+
+The current `src/project-governance.js` is a deterministic governance state-machine helper with threshold approvals, membership and key-rotation operations. It is not a distributed BFT commit protocol. A valid local state transition or threshold signature bundle is not proof that the network committed the transition.
+
+### 32.6 Current Zion lifecycle implementation status
+
+Inspected on the PR #68 branch:
+- `docs/NODE_IDENTITY_LIFECYCLE_ADR.md`, blob `6135dfe96d1c826415be9dc48b19152fb5c8fb10`: identity record core implemented; real OS keystore and filesystem persistence pending.
+- `src/node-identity-record.js`, blob `d318664aa660b4f8db105a2bf18243e352e550ee`: AES-256-GCM identity-record cryptographic core; injected keystore contract; no production persistence adapter.
+- `src/peer-security.js`, inspected at the current PR branch: in-memory Ed25519 peer identity and node-ID derivation; no persistence lifecycle.
+- `src/project-governance.js`, inspected at the current PR branch: deterministic local governance state machine; not BFT consensus.
+- `docs/NODE_IDENTITY_BOOTSTRAP_PROTOCOL.md`: design gate only; cross-process provisioning gate, durable publication, recovery and migration ceremonies not implemented.
+- `docs/PLATFORM_KEYSTORE_ADAPTER_SPIKE.md`: `@napi-rs/keyring@2.1.2` remains a candidate only; its documented get/set/delete interface does not prove atomic create-if-absent. Linux must explicitly use Secret Service; no silent keyutils fallback.
+
+### 32.7 Required next gates
+
+1. Define a single versioned signer-state envelope binding project, chain, validator key, validator epoch, H/R/S, canonical sign bytes, signature, and committed checkpoint.
+2. Specify rollback detection that does not depend on a mandatory central monotonic counter. Evaluate local hardware counters only as optional strengthening; distributed peers must detect stale signer epochs and conflicting histories through committed protocol state.
+3. Keep peer identity and validator signing identity distinct, with explicit committed bindings and separate rotation/revocation semantics.
+4. Implement a real Windows/Linux local keystore adapter only after a safe cross-process no-overwrite primitive is proven on both platforms.
+5. Implement crash-safe identity publication and signer-state recovery as separate versioned transactions with explicit recovery states.
+6. Add separate-process restart, snapshot rollback, stale backup, missing/corrupt state, concurrent signer, response-loss, and old-key-resumption tests.
+7. Do not integrate the identity adapter into the official launcher or enable production signing until all evidence gates pass.
+
+### 32.8 Evidence and limitations
+
+Pinned CometBFT v0.38.26 source inspected:
+- `privval/file.go`, blob `a4d024e057de0b17c8a474c7e79c473eb9a1b4db`: plaintext key serialization, mode 0600, FilePV load/save/reset, H/R/S conflict checks, and save-before-return signing behavior.
+- `libs/tempfile/tempfile.go`, blob `8c621f5996cd7fb31629ed8e6b63fde5c8e3b4ab`: exclusive temporary creation, O_SYNC write, rename, LCG temporary names, and absence of parent-directory fsync.
+
+No validator key was generated, loaded, reset, or used to sign. No filesystem crash, snapshot rollback, multi-process signing, or recovery experiment was run. These are source-level findings and architecture gates, not a demonstrated exploit or production certification. No Zion runtime, launcher, dependency, database, migration, or deployment configuration was changed.
+
