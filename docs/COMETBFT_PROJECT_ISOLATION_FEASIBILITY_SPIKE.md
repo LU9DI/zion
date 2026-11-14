@@ -2120,3 +2120,43 @@ First-party references:
 - https://tailscale.com/blog/multiple-tailnets-alpha (2025-10-29; explicitly documents the returned client as `all`)
 - https://tailscale.com/docs/features/tailnets-api (current feature guide; returned OAuth client is used to configure the child tailnet)
 - https://tailscale.com/docs/reference/trust-credentials (scope definitions; `all` grants complete tailnet API access)
+
+
+## 49. Bootstrap credential revocation semantics and current-contract caution (2026-11-14)
+
+### Current documentation checked again
+
+The current Tailnets API guide (validated October 20, 2026) confirms:
+- API-only tailnets are alpha, limited to ten per organization including the original tailnet.
+- They contain no human users and do not appear in the organization admin console.
+- Creating them requires a trust credential in the parent tailnet with the `tailnets` scope.
+- The create response contains an OAuth client that permits API access to the child tailnet.
+- The current guide does not state the returned client's exact scope. The older first-party October 29, 2025 article says the returned client has `all`; treat this as historical first-party evidence, not a current guaranteed response contract.
+
+Therefore, do not hard-code or assume `all` in bootstrap code. Inspect the current response safely in a disposable authorized test, or obtain written Tailscale Support confirmation.
+
+### Critical revocation semantics
+
+The current Trust credentials reference explicitly says that revoking a trust credential also revokes active API access tokens created by that credential, but does **not** revoke auth keys or child trust credentials created by it. Those child credentials remain valid until they expire or are separately revoked.
+
+This is important for the intended bootstrap sequence:
+1. Create the child tailnet using the parent organization credential.
+2. Use the returned child OAuth client only in a controlled administrative bootstrap environment.
+3. Create the child-tailnet GitHub OIDC federated identity with the minimum scope needed for the workflow and the `tag:zion-ci` restriction.
+4. Read back and verify the federated identity configuration, OIDC issuer, exact repository/ref/workflow claims, audience, scope, and tag restriction.
+5. Revoke the broad child OAuth bootstrap client.
+6. Separately verify that the bootstrap client can no longer exchange for tokens and that the child federated identity still works. Do not assume the latter from the revocation response alone.
+7. Maintain an inventory of every child credential created during bootstrap. Revoke any unintended child credentials individually.
+
+The workflow must never receive the broad OAuth client secret or an `all`-scope credential. It should use only the federated identity's non-secret client ID and audience through the dedicated `ZION_CI_*` repository secrets.
+
+### Decision superseding section 48
+
+Section 48's one-time-bootstrap proposal remains conditional, but its wording must not be read as proof that the current API create response still grants `all`. The current feature guide leaves that exact scope unspecified. The 2025 article is supporting historical documentation only. The exact effective scope and revocation sequence remain a test/support gate.
+
+No disposable organization, tailnet, OAuth client, federated identity, auth key, or device was created. No request was sent to Tailscale. The personal tailnet remains untouched. Keep `ZION_ISOLATED_TAILNET_READY` unset/false and keep PR #68 open and draft.
+
+Current first-party references:
+- https://tailscale.com/docs/features/tailnets-api (validated 2026-10-20)
+- https://tailscale.com/docs/reference/trust-credentials (revocation semantics; validated 2026-01-30)
+- https://tailscale.com/blog/multiple-tailnets-alpha (historical example of the returned client scope; 2025-10-29)
