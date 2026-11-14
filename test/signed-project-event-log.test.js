@@ -158,6 +158,62 @@ test('event log exposes bounded signed records that remote peers can verify', as
   } finally { f.cleanup(); }
 });
 
+
+test('event log isolates signed payloads from caller-owned nested objects', async () => {
+  const f = fixture();
+  try {
+    const log = new SignedProjectEventLog(f.path, { identity: f.identity });
+    const original = { metadata: { labels: ['trusted'] } };
+    const appended = await log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: original });
+    original.metadata.labels[0] = 'tampered';
+    original.metadata.labels.push('injected');
+
+    assert.deepEqual(log.snapshot().events[0].data, { metadata: { labels: ['trusted'] } });
+    assert.deepEqual(appended.data, { metadata: { labels: ['trusted'] } });
+    assert.throws(() => { appended.data.metadata.labels[0] = 'changed'; }, TypeError);
+
+    const record = log.snapshotRecords().records[0];
+    const verified = verifySignedProjectEventRecord(record);
+    assert.equal(verified.ok, true);
+    assert.deepEqual(verified.event.data, { metadata: { labels: ['trusted'] } });
+    log.close();
+  } finally { f.cleanup(); }
+});
+
+test('event log snapshots and replication pages cannot mutate internal records', async () => {
+  const f = fixture();
+  try {
+    const log = new SignedProjectEventLog(f.path, { identity: f.identity });
+    await log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: { nested: { value: 1 } } });
+
+    const snapshot = log.snapshot();
+    assert.throws(() => { snapshot.events[0].data.nested.value = 2; }, TypeError);
+    const page = log.snapshotRecords();
+    page.records[0].envelope.payload.data.nested.value = 3;
+
+    const fresh = log.snapshotRecords().records[0];
+    assert.equal(verifySignedProjectEventRecord(fresh).ok, true);
+    assert.equal(verifySignedProjectEventRecord(fresh).event.data.nested.value, 1);
+    log.close();
+  } finally { f.cleanup(); }
+});
+
+test('event log rejects non-JSON, accessor-backed, and cyclic payload values', async () => {
+  const f = fixture();
+  try {
+    const log = new SignedProjectEventLog(f.path, { identity: f.identity });
+    const cyclic = {};
+    cyclic.self = cyclic;
+    const accessor = {};
+    Object.defineProperty(accessor, 'secret', { enumerable: true, get() { return 'value'; } });
+    await assert.rejects(log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: { nested: undefined } }), TypeError);
+    await assert.rejects(log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: cyclic }), TypeError);
+    await assert.rejects(log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: accessor }), TypeError);
+    assert.equal(log.snapshot().count, 0);
+    log.close();
+  } finally { f.cleanup(); }
+});
+
 test('event log serializes concurrent appends into a single sequence', async () => {
   const f = fixture();
   try {
