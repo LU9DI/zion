@@ -1203,3 +1203,59 @@ Pinned CometBFT v0.38.26 source inspected:
 
 No network listener was opened, no socket was created, and no handshake, unauthorized access, replay, or DoS test was run. The findings describe source behavior and design requirements; they do not establish a demonstrated exploit. No Zion runtime, signer adapter, dependency, launcher, database, migration, or production configuration was changed.
 
+## 31. SecretConnection internals: identity binding, handshake ordering, and pre-authentication exhaustion
+
+The pinned v0.38.26 implementation in `p2p/conn/secret_connection.go` resolves several details that were not visible at the socket-wrapper layer.
+
+### 31.1 Cryptographic construction and what is actually authenticated
+
+The implementation generates fresh ephemeral X25519 key pairs, exchanges ephemeral public keys, sorts them into a canonical order, and appends both keys plus the Diffie-Hellman secret to a Merlin transcript. HKDF-SHA256 derives directional ChaCha20-Poly1305 keys; a transcript challenge is then signed with the persistent local private key. Each side sends its persistent public key and signature, and verifies the remote signature over the same challenge. Only Ed25519 remote public keys are accepted by this implementation.
+
+The transcript binds the ephemeral exchange and DH secret to the authentication challenge, preventing a network intermediary from substituting ephemeral keys without invalidating the signatures. Fresh ephemeral keys provide forward secrecy for past sessions, assuming ephemeral secrets are erased and long-term keys remain protected. The record's authenticated remote public key is exposed by `RemotePubKey()`.
+
+Critical boundary: `MakeSecretConnection` authenticates possession of a persistent Ed25519 key, but it does not know a Zion project, chain, membership epoch, signer role, or authorized operation. The source itself explicitly states that consumers must authenticate the returned remote public key against known information or they remain vulnerable to MITM. For the remote-signer wrapper, the current `TCPListener.Accept` returns the authenticated connection but the listener endpoint/handler reviewed in sections 29-30 does not bind `RemotePubKey()` to a committed project authorization record.
+
+Required controls: immediately after handshake, compare `RemotePubKey()` to an expected identity or project-scoped authorization set before exposing the connection to the signer request handler. Bind that identity to project ID, chain ID, validator public key, role, and committed key epoch. Inbound authentication must be symmetric in policy: the server must authorize the connecting caller, not merely prove its own identity to a dialer. Fail closed on unknown, revoked, stale, or ambiguous identities.
+
+### 31.2 Handshake ordering creates pre-authentication CPU and memory exposure
+
+The order in `MakeSecretConnection` is:
+1. Generate ephemeral X25519 key pair.
+2. Exchange ephemeral public keys.
+3. Compute X25519 shared secret and derive keys.
+4. Construct AEAD state and sign the local challenge.
+5. Exchange persistent public keys/signatures.
+6. Verify the remote signature and only then return an authenticated connection.
+
+Thus an unauthenticated inbound TCP client can force the listener to perform ephemeral key generation, key exchange, transcript/KDF work, local signing, and remote signature verification before the caller identity is available for project authorization. The transport's cryptographic security does not prevent resource-exhaustion attempts against the handshake itself.
+
+In the inspected privval path, `TCPListener.Accept` performs `MakeSecretConnection` synchronously before returning the accepted connection. `SignerListenerEndpoint.serviceLoop` calls `listener.Accept()` in its single service loop. Therefore a slow or computationally expensive unauthenticated handshake occupies the accept path; the socket wrapper's per-read/write timeout bounds individual I/O waits but is not a global handshake concurrency or CPU budget. The inspected code path contains no per-source handshake rate limiter or bounded parallel handshake worker pool.
+
+A separate public research report describes pre-authentication CPU amplification against CometBFT v0.38.22. That is external evidence for a related version, not a reproduced result for Zion or a measured result for v0.38.26. The source-order finding above is independently visible in the pinned tag; actual attack throughput and impact on v0.38.26 remain unmeasured.
+
+Required controls: perform cheap network admission controls before expensive cryptography (connection caps, source-prefix rate limits, SYN/backlog protections, firewall policy, and bounded accept queues); use a bounded handshake worker pool with a strict global and per-source concurrency budget; enforce one absolute handshake deadline rather than relying only on resettable per-read/write deadlines; apply CPU/memory budgets and backpressure; measure adversarial handshake cost under realistic hardware. Do not allow untrusted peers to create unbounded goroutines or queued handshakes. These controls must be distributed/local policy and must not introduce a central CA or mandatory hosted admission service.
+
+### 31.3 Handshake framing and malformed-input boundaries
+
+The ephemeral-key and authentication-signature messages are read using delimited protobuf readers with a 1 MiB maximum. The remote ephemeral byte string is copied into a fixed 32-byte array without an explicit equality check on the decoded byte-string length in `shareEphPubKey`; shorter inputs are zero-padded and longer inputs truncated before X25519. X25519 rejects invalid/low-order inputs when the library reports an error, but this is not a strict wire-format length check. This should be treated as a protocol-validation hardening gap and tested with lengths 0, 1, 31, 32, 33, and the maximum accepted frame, not as a demonstrated authentication bypass.
+
+The authentication message also has a 1 MiB reader bound even though the persistent key and signature are small fixed-format values. The code rejects non-Ed25519 public keys and verifies the signature, but a smaller explicit handshake-message bound and strict field-size validation would reduce parser/resource exposure.
+
+Required controls: enforce exact 32-byte ephemeral public keys before X25519; bound authentication messages to the maximum valid Ed25519 public-key/signature encoding plus protobuf overhead; reject unknown/oversized fields where feasible; test truncated, oversized, malformed, duplicate, and reordered handshake messages. Keep framing limits consistent across implementations.
+
+### 31.4 Session confidentiality, integrity, and nonce handling
+
+Application frames are length-prefixed and encrypted with ChaCha20-Poly1305. Directional keys and independent 96-bit nonces are used; the implementation increments a 64-bit counter in the nonce and panics rather than reusing a nonce on overflow. The receive side authenticates each frame before exposing plaintext and rejects a decoded chunk length greater than 1024 bytes. These are useful channel protections, but they do not provide application-level request authorization, project binding, or replay semantics across a newly established session.
+
+Required controls: bind each signer request to project, chain, validator key, epoch, canonical sign bytes, and an idempotent operation identity at the application layer. A fresh secure channel must not make an old authorization or old signer epoch valid again.
+
+### 31.5 Evidence and limitations
+
+Pinned CometBFT v0.38.26 source inspected:
+- `p2p/conn/secret_connection.go`, blob `cdafefcd2b394c541d6d974b5b840295cab6b7c0`: handshake ordering, Merlin transcript, X25519, HKDF-SHA256, Ed25519 challenge verification, ChaCha20-Poly1305 framing, nonce progression, 1 MiB handshake readers, and remote-key accessor.
+- `p2p/conn/secret_connection_test.go`, blob `5b5655e3d5fd9edc85b95e0c84489c584496d3b3`: handshake, concurrent read/write, golden derivation vectors, key-type rejection, and read/write tests.
+- `p2p/conn/evil_secret_connection_test.go`, blob `c8ff888073a71d8dd5d255e3304afadbce1e39e3`: negative test cases for missing/bad ephemeral and authentication messages.
+- `privval/socket_listeners.go`, blob `0be86453d259d9ae15b32e7820b9a997ec5e5ec4`, and `privval/signer_listener_endpoint.go`, blob `3a8525bab24ea2308e53334fee6a4b155e07911f`: synchronous handshake during listener accept and single service-loop accept path.
+
+No handshake was executed, no adversarial traffic generated, and no CPU/memory benchmark or denial-of-service test performed. The malformed-length observation is static code review, not an exploit. The external v0.38.22 report is not evidence of a measured v0.38.26 vulnerability. No Zion code, runtime, dependency, launcher, database, or migration was changed.
+
