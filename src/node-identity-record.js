@@ -124,6 +124,13 @@ export async function loadEncryptedNodeIdentityRecord(record, keystore) {
       !NODE_ID_RE.test(record.nodeId || '')) throw new Error('Unsupported or invalid node identity record');
   const publicDer = decodeBase64(record.publicKeyDer, 'Public key', 1024);
   if (deriveNodeId(publicDer) !== record.nodeId) throw new Error('Stored node ID does not match the public key');
+  // Parse and type-check the public key before invoking the OS keystore. A
+  // caller-controlled, hash-consistent but invalid DER value must not trigger
+  // credential-store operations or reach private-key decryption.
+  const storedPublicKey = createPublicKey({ key: publicDer, type: 'spki', format: 'der' });
+  if (storedPublicKey.asymmetricKeyType !== 'ed25519') {
+    throw new Error('Stored public key is not Ed25519');
+  }
   const nonce = decodeBase64(record.nonce, 'Nonce', 12);
   const ciphertext = decodeBase64(record.ciphertext, 'Ciphertext', MAX_CIPHERTEXT_BYTES);
   const authTag = decodeBase64(record.authTag, 'Authentication tag', 16);
