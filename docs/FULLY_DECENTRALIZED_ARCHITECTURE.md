@@ -47,7 +47,7 @@ A public permissionless network cannot obtain strong Sybil resistance from signa
 
 Use **project-scoped Byzantine fault-tolerant state-machine replication**, not one global chain.
 
-- Each project has a validator committee derived from its committed membership and governance policy.
+- Each project has a validator committee derived from its committed membership and governance policy. Validator eligibility and operator-independence assumptions are a separate blocking design gate: see [DECENTRALIZED_VALIDATOR_SYBIL_MODEL.md](DECENTRALIZED_VALIDATOR_SYBIL_MODEL.md). Distinct public keys, peer discovery, and VRF selection do not by themselves provide Sybil resistance.
 - Membership changes are committed as epoch transitions. Committee selection and rotation are deterministic and recorded so peers can independently verify them.
 - A state transition is committed only with a quorum certificate from the configured committee. For a committee of 3f + 1 validators, the protocol requires 2f + 1 votes to tolerate up to f Byzantine validators, subject to the committee-selection and independence assumptions.
 - The proposer rotates. No permanent leader or coordinator is authoritative.
