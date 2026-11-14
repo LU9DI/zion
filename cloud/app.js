@@ -1,20 +1,20 @@
 'use strict';
 (() => {
   const demoFiles = [
-    {name:'Projeto Zion.pdf',type:'documento',size:2480000,modified:'Hoje, 09:42',icon:'PDF'},
-    {name:'Fotos de viagem.zip',type:'imagem',size:186000000,modified:'Ontem, 18:20',icon:'▧'},
-    {name:'Meeting notes.docx',type:'documento',size:420000,modified:'Ontem, 14:08',icon:'W'},
-    {name:'Presentation.pptx',type:'documento',size:5200000,modified:'08 out. 2026',icon:'P'},
-    {name:'Demo video.mp4',type:'video',size:84000000,modified:'07 out. 2026',icon:'▶'},
-    {name:'Budget.xlsx',type:'documento',size:930000,modified:'06 out. 2026',icon:'X'},
-    {name:'Logo Zion.svg',type:'imagem',size:78000,modified:'05 out. 2026',icon:'◇'},
-    {name:'Archive.tar',type:'outro',size:12300000,modified:'03 out. 2026',icon:'▤'}
+    {name:'Zion Project.pdf',type:'documento',size:2480000,modified:'Today, 09:42',icon:'PDF'},
+    {name:'Travel photos.zip',type:'imagem',size:186000000,modified:'Yesterday, 18:20',icon:'▧'},
+    {name:'Meeting notes.docx',type:'documento',size:420000,modified:'Yesterday, 02:08 PM',icon:'W'},
+    {name:'Presentation.pptx',type:'documento',size:5200000,modified:'Oct 8, 2026',icon:'P'},
+    {name:'Demo video.mp4',type:'video',size:84000000,modified:'Oct 7, 2026',icon:'▶'},
+    {name:'Budget.xlsx',type:'documento',size:930000,modified:'Oct 6, 2026',icon:'X'},
+    {name:'Logo Zion.svg',type:'imagem',size:78000,modified:'Oct 5, 2026',icon:'◇'},
+    {name:'Archive.tar',type:'outro',size:12300000,modified:'Oct 3, 2026',icon:'▤'}
   ];
   const demoActivity = [
-    {icon:'↥',title:'File added',detail:'Projeto Zion.pdf was added to the preview.',time:'Hoje, 09:42'},
-    {icon:'◉',title:'Network status checked',detail:'Illustrative summary of 3 nodes.',time:'Hoje, 09:30'},
-    {icon:'▤',title:'File aberto',detail:'Meeting notes.docx was opened in the preview.',time:'Ontem, 14:08'},
-    {icon:'✓',title:'Sample check',detail:'No fictional alerts recorded in this demo.',time:'08 out. 2026'}
+    {icon:'↥',title:'File added',detail:'Zion Project.pdf was added to the preview.',time:'Today, 09:42'},
+    {icon:'◉',title:'Network status checked',detail:'Illustrative summary of 3 nodes.',time:'Today, 09:30'},
+    {icon:'▤',title:'File opened',detail:'Meeting notes.docx was opened in the preview.',time:'Yesterday, 02:08 PM'},
+    {icon:'✓',title:'Sample check',detail:'No fictional alerts recorded in this demo.',time:'Oct 8, 2026'}
   ];
   let files = [...demoFiles];
   let activity = [...demoActivity];
@@ -29,10 +29,10 @@
     $('file-count').textContent = String(128 + Math.max(0, files.length - demoFiles.length));
   }
   function renderFiles(){
-    const q = $('file-search').value.trim().toLocaleLowerCase('pt-BR');
+    const q = $('file-search').value.trim().toLocaleLowerCase('en-US');
     const type = $('file-filter').value;
-    const filtered = files.filter(f => f.name.toLocaleLowerCase('pt-BR').includes(q) && (type === 'todos' || f.type === type));
-    $('all-files').innerHTML = filtered.map((f,i)=>`<tr><td><div class="table-file-name"><span class="file-type-icon ${fileClass(f)}">${safe(iconFor(f))}</span>${safe(f.name)}</div></td><td>${safe(({documento:'Document',imagem:'Image',video:'Video',outro:'Outro'})[f.type] || 'File')}</td><td>${fmtSize(f.size)}</td><td>${safe(f.modified)}</td><td><button class="row-actions" data-file-index="${files.indexOf(f)}" aria-label="Detalhes de ${safe(f.name)}" title="Detalhes">···</button></td></tr>`).join('');
+    const filtered = files.filter(f => f.name.toLocaleLowerCase('en-US').includes(q) && (type === 'todos' || f.type === type));
+    $('all-files').innerHTML = filtered.map((f,i)=>`<tr><td><div class="table-file-name"><span class="file-type-icon ${fileClass(f)}">${safe(iconFor(f))}</span>${safe(f.name)}</div></td><td>${safe(({documento:'Document',imagem:'Image',video:'Video',outro:'Other'})[f.type] || 'File')}</td><td>${fmtSize(f.size)}</td><td>${safe(f.modified)}</td><td><button class="row-actions" data-file-index="${files.indexOf(f)}" aria-label="Details for ${safe(f.name)}" title="Details">···</button></td></tr>`).join('');
     $('empty-files').classList.toggle('hidden', filtered.length > 0);
     $('all-files').parentElement.classList.toggle('hidden', filtered.length === 0);
     $('all-files').closest('.file-table-wrap').classList.toggle('compact', gridView);
@@ -55,7 +55,7 @@
   }
   function addFiles(list){
     const incoming = Array.from(list || []); if(!incoming.length) return;
-    const now = 'Agora';
+    const now = 'Now';
     incoming.forEach(f=>{
       const ext=(f.name.split('.').pop()||'').toLowerCase();
       const type=['png','jpg','jpeg','gif','webp','svg','heic'].includes(ext)?'imagem':['mp4','mov','webm','mkv'].includes(ext)?'video':['pdf','doc','docx','txt','md','ppt','pptx','xls','xlsx','odt','rtf'].includes(ext)?'documento':'outro';
@@ -63,21 +63,21 @@
     });
     activity.unshift({icon:'↥',title:`${incoming.length} file${incoming.length===1?'':'s'} selected`,detail:'Added to the local view; not uploaded to the cloud.',time:now});
     renderRecentFiles();renderFiles();renderActivity();renderActivity('all-activity',activity);
-    toast(`${incoming.length} file${incoming.length===1?'':'s'} added added to the local preview.`);
+    toast(`${incoming.length} file${incoming.length===1?'':'s'} added to the local preview.`);
   }
   const people = [
     {id:'ana',name:'Ana Costa',handle:'@anacosta',bio:'Design and open files',avatar:'A',tone:'teal',following:true},
     {id:'marcos',name:'Marcos Lima',handle:'@marcoslima',bio:'Distributed development',avatar:'M',tone:'',following:false},
-    {id:'bia',name:'Beatriz Souza',handle:'@biasouza',bio:'Fotografia e comunidade',avatar:'B',tone:'rose',following:false},
-    {id:'rafa',name:'Rafael Alves',handle:'@rafaalves',bio:'Privacidade digital',avatar:'R',tone:'gold',following:true}
+    {id:'bia',name:'Beatriz Souza',handle:'@biasouza',bio:'Photography and community',avatar:'B',tone:'rose',following:false},
+    {id:'rafa',name:'Rafael Alves',handle:'@rafaalves',bio:'Digital privacy',avatar:'R',tone:'gold',following:true}
   ];
   const conversations = new Map();
   let activeConversation = null;
-  const nowLabel = () => new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+  const nowLabel = () => new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
   function renderPeople(){
-    const query = $('people-search').value.trim().toLocaleLowerCase('pt-BR');
-    const shown = people.filter(p => `${p.name} ${p.handle} ${p.bio}`.toLocaleLowerCase('pt-BR').includes(query));
-    $('people-list').innerHTML = shown.map(p=>`<div class="person-row"><span class="person-avatar ${p.tone}">${safe(p.avatar)}</span><div class="person-meta"><strong>${safe(p.name)}</strong><small>${safe(p.handle)} · ${safe(p.bio)}</small></div><div class="person-actions"><button class="small-action ${p.following?'following':''}" data-follow="${safe(p.id)}" aria-pressed="${p.following}">${p.following?'Seguindo':'＋ Follow'}</button><button class="small-action" data-message="${safe(p.id)}">Mensagem</button></div></div>`).join('') || '<div class="social-empty">Nenhuma pessoa encontrada. Tente outro nome.</div>';
+    const query = $('people-search').value.trim().toLocaleLowerCase('en-US');
+    const shown = people.filter(p => `${p.name} ${p.handle} ${p.bio}`.toLocaleLowerCase('en-US').includes(query));
+    $('people-list').innerHTML = shown.map(p=>`<div class="person-row"><span class="person-avatar ${p.tone}">${safe(p.avatar)}</span><div class="person-meta"><strong>${safe(p.name)}</strong><small>${safe(p.handle)} · ${safe(p.bio)}</small></div><div class="person-actions"><button class="small-action ${p.following?'following':''}" data-follow="${safe(p.id)}" aria-pressed="${p.following}">${p.following?'Following':'＋ Follow'}</button><button class="small-action" data-message="${safe(p.id)}">Message</button></div></div>`).join('') || '<div class="social-empty">No people found. Try another search.</div>';
   }
   function renderConversations(){
     const list = people.filter(p=>conversations.has(p.id)).sort((a,b)=>{
@@ -86,7 +86,7 @@
     });
     $('conversation-list').innerHTML = list.map(p=>{
       const msgs=conversations.get(p.id)||[], last=msgs.at(-1);
-      return `<button class="conversation-row ${activeConversation===p.id?'selected':''}" data-open-chat="${safe(p.id)}"><span class="person-avatar ${p.tone}">${safe(p.avatar)}</span><span class="person-meta"><strong>${safe(p.name)}</strong><small class="conversation-preview">${safe(last?.text||'Conversa iniciada')}</small></span><small>${safe(last?.time||'')}</small></button>`;
+      return `<button class="conversation-row ${activeConversation===p.id?'selected':''}" data-open-chat="${safe(p.id)}"><span class="person-avatar ${p.tone}">${safe(p.avatar)}</span><span class="person-meta"><strong>${safe(p.name)}</strong><small class="conversation-preview">${safe(last?.text||'Conversation started')}</small></span><small>${safe(last?.time||'')}</small></button>`;
     }).join('') || '<div class="social-empty">You do not have any conversations yet. Use “Message” on a profile to start one.</div>';
     const count = [...conversations.values()].reduce((sum,msgs)=>sum+msgs.filter(m=>m.mine).length,0);
     $('message-count').textContent=String(count);
@@ -116,7 +116,7 @@
     const messages=conversations.get(activeConversation)||[];
     messages.push({text:value,mine:true,time:nowLabel(),order:Date.now()}); conversations.set(activeConversation,messages);
     const person=people.find(p=>p.id===activeConversation);
-    activity.unshift({icon:'✉',title:'Message prepared',detail:`Mensagem para ${person?.name||'contato'} recorded only in this local preview.`,time:'Agora'});
+    activity.unshift({icon:'✉',title:'Message prepared',detail:`Message to ${person?.name||'contact'} recorded only in this local preview.`,time:'Now'});
     input.value=''; openConversation(activeConversation); renderActivity();renderActivity('all-activity',activity);
     toast('Message saved in this preview; it was not sent over the network.');
   });
@@ -160,19 +160,19 @@
     'contribution-paused': { title: 'Contribution paused', icon: 'Ⅱ', style: 'paused' },
     'capacity-reduction-warning': { title: 'Capacity reduction warning', icon: '↓', style: 'warning' },
     'capacity-reduction-pending': { title: 'Capacity reduction pending', icon: '⌛', style: 'warning' },
-    'capacity-reduced': { title: 'Capacidade oferecida reduzida', icon: '↓', style: '' },
+    'capacity-reduced': { title: 'Contributed capacity reduced', icon: '↓', style: '' },
   };
   const notificationDate = value => {
     if (typeof value !== 'string') return 'Date unavailable';
     const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? 'Date unavailable' : date.toLocaleString('pt-BR', { dateStyle: 'medium', timeStyle: 'short' });
+    return Number.isNaN(date.getTime()) ? 'Date unavailable' : date.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
   };
   function updateNotificationCount() {
     const count = notificationRecords.filter(item => !item.viewedAt).length;
     const badge = $('notification-nav-count');
     badge.textContent = count > 99 ? '99+' : String(count);
     badge.classList.toggle('hidden', count === 0);
-    badge.setAttribute('aria-label', `${count} notification${count === 1 ? '' : 's'} unread${count === 1 ? '' : 's'}`);
+    badge.setAttribute('aria-label', `${count} unread notification${count === 1 ? '' : 's'}`);
   }
   function renderNotifications() {
     const list = $('notifications-list');
@@ -183,10 +183,10 @@
       return;
     }
     list.innerHTML = records.map(item => {
-      const type = notificationTypes[item.type] || { title: 'Aviso do Zion', icon: '•', style: '' };
-      const delivery = item.deliveryStatus === 'delivered' ? 'Entregue' : 'Entrega pendente';
+      const type = notificationTypes[item.type] || { title: 'Zion alert', icon: '•', style: '' };
+      const delivery = item.deliveryStatus === 'delivered' ? 'Delivered' : 'Delivery pending';
       const unread = !item.viewedAt;
-      return `<article class="notification-card"><span class="notification-symbol ${type.style}">${type.icon}</span><div class="notification-main"><strong>${safe(type.title)}</strong><p>${safe(item.message || 'Zion recorded an inactivity event.')}</p><div class="notification-meta"><span>${safe(notificationDate(item.createdAt))}</span><span class="notification-state ${item.deliveryStatus === 'delivered' ? 'delivered' : ''}">${delivery}</span><span class="notification-state ${unread ? 'unread' : ''}">${unread ? 'Não visualizada' : 'Visualizada'}</span></div>${unread ? `<div class="notification-actions"><button type="button" data-notification-view="${safe(item.id)}">Marcar como visualizada</button></div>` : ''}</div></article>`;
+      return `<article class="notification-card"><span class="notification-symbol ${type.style}">${type.icon}</span><div class="notification-main"><strong>${safe(type.title)}</strong><p>${safe(item.message || 'Zion recorded an inactivity event.')}</p><div class="notification-meta"><span>${safe(notificationDate(item.createdAt))}</span><span class="notification-state ${item.deliveryStatus === 'delivered' ? 'delivered' : ''}">${delivery}</span><span class="notification-state ${unread ? 'unread' : ''}">${unread ? 'Unread' : 'Read'}</span></div>${unread ? `<div class="notification-actions"><button type="button" data-notification-view="${safe(item.id)}">Mark as read</button></div>` : ''}</div></article>`;
     }).join('');
   }
   async function loadNotifications() {
@@ -207,7 +207,7 @@
       notificationRecords = response.notifications.filter(item => item && typeof item.id === 'string' && typeof item.type === 'string' && typeof item.message === 'string' && ['pending', 'delivered'].includes(item.deliveryStatus));
       updateNotificationCount(); renderNotifications();
       const unread = notificationRecords.filter(item => !item.viewedAt).length;
-      status.textContent = `${notificationRecords.length} notification${notificationRecords.length === 1 ? '' : 's'} carregada${notificationRecords.length === 1 ? '' : 's'} · ${unread} unread${unread === 1 ? '' : 's'}.`;
+      status.textContent = `${notificationRecords.length} notification${notificationRecords.length === 1 ? '' : 's'} loaded · ${unread} unread${unread === 1 ? '' : 's'}.`;
     } catch (error) {
       status.textContent = error.message || 'Could not load notifications.';
       status.classList.add('notification-error');
@@ -227,7 +227,7 @@
       if (item) item.viewedAt = new Date().toISOString();
       updateNotificationCount(); renderNotifications();
       const unread = notificationRecords.filter(record => !record.viewedAt).length;
-      $('notifications-status').textContent = `${notificationRecords.length} notification${notificationRecords.length === 1 ? '' : 's'} carregada${notificationRecords.length === 1 ? '' : 's'} · ${unread} unread${unread === 1 ? '' : 's'}.`;
+      $('notifications-status').textContent = `${notificationRecords.length} notification${notificationRecords.length === 1 ? '' : 's'} loaded · ${unread} unread${unread === 1 ? '' : 's'}.`;
     } catch (error) { toast(error.message || 'Could not mark the notification.'); button.disabled = false; }
   });
   $('notification-nav-count').classList.add('hidden');
