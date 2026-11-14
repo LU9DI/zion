@@ -150,3 +150,8 @@ The next consensus design constraints and adversarial acceptance requirements ar
 ## 12. Mandatory security requirement
 
 Zion's security baseline and release gates are defined in [DECENTRALIZED_SECURITY_REQUIREMENTS.md](DECENTRALIZED_SECURITY_REQUIREMENTS.md). This is a hard requirement of the fully decentralized architecture: peer identity/key lifecycle, encrypted transport, authorization epochs, BFT safety, anti-replay, bounded resource use, Sybil/eclipse resilience, storage integrity, process isolation, supply-chain security, incident containment, and adversarial testing. No central CA, identity provider, DDoS service, or privileged operator may be required for correctness. The requirements document distinguishes implemented foundations from missing defenses; it is not a claim of current security certification.
+
+
+## 14. Decentralized admission and authorization contract
+
+The source-derived migration contract in [DECENTRALIZED_ADMISSION_AUTHORIZATION_CONTRACT.md](DECENTRALIZED_ADMISSION_AUTHORIZATION_CONTRACT.md) defines the state, atomic transitions, revocation tombstones, dispatch authorization boundary, quota/capacity semantics, and acceptance gates required before PostgreSQL can be removed from official runtime. It does not implement a replacement or authorize launcher cutover.
