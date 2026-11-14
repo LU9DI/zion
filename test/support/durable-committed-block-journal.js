@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
-  closeSync, existsSync, fsyncSync, fstatSync, ftruncateSync, mkdirSync, openSync,
+  closeSync, existsSync, fsyncSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync,
   readFileSync, unlinkSync, writeSync,
 } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -72,6 +72,18 @@ function validateState(state, height) {
   return JSON.parse(JSON.stringify(state));
 }
 
+function rejectSymlink(path) {
+  try {
+    if (lstatSync(path).isSymbolicLink()) {
+      throw Object.assign(new Error('Committed block journal path must not be a symbolic link'), {
+        code: 'ZION_JOURNAL_SYMLINK',
+      });
+    }
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+}
+
 function syncDirectory(path) {
   const fd = openSync(dirname(path), 'r');
   try { fsyncSync(fd); } finally { closeSync(fd); }
@@ -136,6 +148,7 @@ export class DurableCommittedBlockJournal {
   }
 
   #load() {
+    rejectSymlink(this.path);
     if (!existsSync(this.path)) return;
     const bytes = readFileSync(this.path);
     if (bytes.length > this.maxBytes) throw Object.assign(new Error('Committed block journal exceeds byte limit'), { code: 'ZION_JOURNAL_TOO_LARGE' });
@@ -212,6 +225,7 @@ export class DurableCommittedBlockJournal {
     if (this.byteLength + line.length > this.maxBytes) {
       throw Object.assign(new Error('Committed block journal byte limit reached'), { code: 'ZION_JOURNAL_TOO_LARGE' });
     }
+    rejectSymlink(this.path);
     const existed = existsSync(this.path);
     const fd = openSync(this.path, 'a', 0o600);
     let originalSize;
