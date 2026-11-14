@@ -99,6 +99,24 @@ test('encrypted identity rejects ciphertext and authenticated metadata tampering
   await assert.rejects(loadEncryptedNodeIdentityRecord(unknownField, keystore), /invalid schema/);
 });
 
+test('encrypted identity wipes the keystore-returned plaintext DEK buffer after restore', async () => {
+  const identity = createNodeIdentity();
+  const backingKeystore = new FakeKeystore();
+  const record = await createEncryptedNodeIdentityRecord(identity, backingKeystore);
+  let returnedPlaintext;
+  const observingKeystore = {
+    async unwrapKey(request) {
+      returnedPlaintext = await backingKeystore.unwrapKey(request);
+      return returnedPlaintext;
+    },
+  };
+
+  const restored = await loadEncryptedNodeIdentityRecord(record, observingKeystore);
+  assert.equal(restored.nodeId, identity.nodeId);
+  assert.ok(Buffer.isBuffer(returnedPlaintext));
+  assert.equal(returnedPlaintext.every(byte => byte === 0), true);
+});
+
 test('encrypted identity rejects a wrong local wrapping credential', async () => {
   const identity = createNodeIdentity();
   const record = await createEncryptedNodeIdentityRecord(identity, new FakeKeystore());
