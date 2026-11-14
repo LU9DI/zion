@@ -133,6 +133,7 @@ test('write-boundary failures roll back the record, poison the writer, and recov
         () => journal.commit(1, block.state),
         { code: 'ZION_JOURNAL_INJECTED_FAILURE' },
       );
+      assert.equal(readFileSync(f.path).length, 0, faultAt);
       assert.throws(
         () => journal.commit(1, block.state),
         { code: 'ZION_JOURNAL_UNAVAILABLE' },
