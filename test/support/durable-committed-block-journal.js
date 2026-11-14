@@ -198,6 +198,7 @@ export class DurableCommittedBlockJournal {
     const existed = existsSync(this.path);
     const fd = openSync(this.path, 'a', 0o600);
     let originalSize;
+    let fdOpen = true;
     try {
       originalSize = fstatSync(fd).size;
       let offset = 0;
@@ -209,17 +210,21 @@ export class DurableCommittedBlockJournal {
       fsyncSync(fd);
       if (!existed) syncDirectory(this.path);
       if (this.crashAfterFsync) process.exit(86);
+      closeSync(fd);
+      fdOpen = false;
     } catch (error) {
       this.poisoned = true;
-      if (originalSize !== undefined) {
+      if (fdOpen && originalSize !== undefined) {
         try {
           ftruncateSync(fd, originalSize);
           fsyncSync(fd);
         } catch {}
       }
+      if (fdOpen) {
+        try { closeSync(fd); } catch {}
+        fdOpen = false;
+      }
       throw error;
-    } finally {
-      closeSync(fd);
     }
     this.height = expectedHeight;
     this.lastHash = record.recordHash;
