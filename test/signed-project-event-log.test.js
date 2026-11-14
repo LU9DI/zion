@@ -473,3 +473,79 @@ test('replica rolls back a deterministic partial write and remains poisoned unti
     f.cleanup();
   }
 });
+
+
+test('event log rolls back when directory fsync fails after the record fsync', async t => {
+  const f = fixture();
+  const log = new SignedProjectEventLog(f.path, { identity: f.identity });
+  const originalFsync = fs.fsyncSync.bind(fs);
+  let calls = 0;
+  try {
+    t.mock.method(fs, 'fsyncSync', fd => {
+      calls++;
+      if (calls === 2) throw Object.assign(new Error('injected directory fsync failure'), { code: 'EIO' });
+      return originalFsync(fd);
+    });
+    syncBuiltinESMExports();
+    await assert.rejects(
+      log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: { value: 'rollback-after-dir-fsync' } }),
+      { code: 'EIO', rollbackSucceeded: true },
+    );
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+
+    assert.equal(calls, 3);
+    assert.equal(readFileSync(f.path).length, 0);
+    assert.equal(log.snapshot().count, 0);
+    await assert.rejects(log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: {} }),
+      { code: 'ZION_EVENT_LOG_UNAVAILABLE' });
+    log.close();
+
+    const recovered = new SignedProjectEventLog(f.path, { identity: f.identity });
+    assert.equal(recovered.snapshot().count, 0);
+    recovered.close();
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    try { log.close(); } catch { /* Preserve the test failure. */ }
+    f.cleanup();
+  }
+});
+
+test('replica rolls back when directory fsync fails after the record fsync', async t => {
+  const f = fixture();
+  const source = new SignedProjectEventLog(f.path, { identity: f.identity });
+  const replicaPath = join(f.dir, 'directory-fsync-replica.events');
+  const replica = new SignedProjectEventReplica(replicaPath, { authorizePeer: () => true });
+  const originalFsync = fs.fsyncSync.bind(fs);
+  let calls = 0;
+  try {
+    await source.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: { value: 'replicated' } });
+    const record = source.snapshotRecords().records[0];
+    t.mock.method(fs, 'fsyncSync', fd => {
+      calls++;
+      if (calls === 2) throw Object.assign(new Error('injected directory fsync failure'), { code: 'EIO' });
+      return originalFsync(fd);
+    });
+    syncBuiltinESMExports();
+    await assert.rejects(replica.ingest(record), { code: 'EIO', rollbackSucceeded: true });
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+
+    assert.equal(calls, 3);
+    assert.equal(readFileSync(replicaPath).length, 0);
+    assert.equal(replica.snapshot().records, 0);
+    await assert.rejects(replica.ingest(record), { code: 'ZION_REPLICA_UNAVAILABLE' });
+    replica.close();
+
+    const recovered = new SignedProjectEventReplica(replicaPath, { authorizePeer: () => true });
+    assert.equal(recovered.snapshot().records, 0);
+    recovered.close();
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    try { replica.close(); } catch { /* Preserve the test failure. */ }
+    source.close();
+    f.cleanup();
+  }
+});
