@@ -327,3 +327,39 @@ A possible future adapter could append one complete, canonical block-commit enve
 Reuse only the journal's proven low-level durability patterns as implementation references. Do not directly wire `SignedProjectEventLog` or `SignedProjectEventReplica` into ABCI `Commit`, do not relabel replicated events as committed state, and do not change production startup paths.
 
 Next gate: prototype a separate append-only committed-block journal in the test area, or select a transactional embedded store after a dependency/runtime compatibility review. The prototype must be tested with real process termination and restart; in-memory fault injection is insufficient.
+
+
+## 13. Durable committed-block journal prototype (2026-11-14)
+
+A separate test-support prototype now exists at:
+
+- `test/support/durable-committed-block-journal.js`
+- `test/durable-committed-block-journal.test.js`
+
+The prototype is deliberately outside `src/` and is not imported by production startup or runtime modules.
+
+### Record and recovery contract
+
+- One complete canonical JSONL record is appended per committed height.
+- Each record contains the height, previous journal-record hash, application state root, full committed snapshot (state data, operation-result index, and outbox), and its own domain-separated record hash.
+- Appends use a single-writer exclusive lock, bounded total journal size, full-write loops, file `fsync`, and directory `fsync` when the journal is first created.
+- Recovery verifies contiguous heights, previous-record hash links, application state roots, and record hashes before exposing the latest snapshot.
+- An incomplete trailing line or any invalid record fails closed; the prototype does not silently truncate or skip uncertain history.
+- A test-only crash hook exits the child process immediately after the record's `fsync`, before in-memory state is advanced. The restart test explicitly clears the abandoned lock only after the child has exited and the test has verified that no writer remains.
+
+### Test coverage authored
+
+1. Append, close, reopen, and recover the complete snapshot; reject a concurrent writer.
+2. Terminate a separate Node process immediately after `fsync`, then recover the committed height and state after restart.
+3. Reject incomplete trailing bytes and a tampered state snapshot.
+4. Reject height gaps and stale-lock cleanup without explicit no-writer verification.
+
+### Strict limitations
+
+This is an experimental, test-only append-only persistence prototype—not a production adapter and not evidence of consensus or quorum finality. The child-process test is authored but must be run by Node CI before it can be called passing. It does not yet establish behavior under physical power loss, filesystem/controller write-cache failure, disk-full conditions, cross-platform directory-`fsync` differences, hostile filesystem paths/symlinks, multi-process recovery races, snapshots/compaction, or long-term storage growth.
+
+The stale-lock cleanup API requires an explicit caller assertion that no writer is active; it is not an automatic liveness detector. A production implementation needs an operator-safe recovery procedure and stronger cross-platform lock design.
+
+### Gate
+
+Do not wire this prototype into ABCI `Commit`, production startup, invitation redemption, or network membership. Before considering an adapter, run the full test suite and syntax checks on supported Node versions and operating systems; add fault injection for short writes, `fsync` failures, disk-full behavior, process termination at every write boundary, and restart after each boundary; define snapshot/compaction and retention; and obtain independent review of filesystem and lock semantics.
