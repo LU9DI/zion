@@ -1758,3 +1758,60 @@ This section narrows the earlier lifecycle assessment: the standalone `stop` com
 The disposable-VM experiment remains **NO-GO** until an actual VM provider/hypervisor and isolated network substrate are selected, credentials and permissions are available to the test controller, resource ceilings and teardown semantics are verified, and failure-injection tests demonstrate destruction on every terminal path. GitHub-hosted Actions' per-job VM lifecycle alone does not supply the required two-VM private network or this Zion-specific resource controller.
 
 This is a source-level audit only. No runner command, test, VM, Docker daemon, provider API, or failure-injection test was executed.
+
+
+## 41. Disposable test substrate: hosted CI versus provider-managed isolated VMs
+
+### Decision criteria
+
+The substrate is for a bounded architecture experiment only. It must not become a Zion runtime dependency, consensus authority, identity provider, key custodian, bootstrap endpoint, or required service. A candidate is acceptable only if the harness can:
+
+- Allocate two independently isolated guests, each with its own Docker daemon and no shared Docker socket.
+- Connect the guests over a private network while keeping testnet ports off the public Internet.
+- Apply explicit CPU, memory, disk, process, and wall-clock ceilings before workload starts.
+- Record immutable provider resource IDs before guest bootstrap; use those IDs (not mutable names or tags alone) for teardown.
+- Destroy both guests on every terminal path and independently verify that the exact resource IDs no longer exist.
+- Reconcile orphaned resources after controller crash/restart, and retain bounded non-secret evidence.
+- Run pinned source revisions and test-only keys; never mount production credentials or Zion node/validator keys.
+
+### Candidate A — GitHub-hosted Actions jobs
+
+- GitHub provisions a fresh VM per hosted job and decommissions it after the job. This gives useful per-job lifecycle isolation.
+- Two jobs do not, by themselves, provide a private network between the guests. The current repository has no configured inter-runner network or controller for this experiment.
+- Nested VMs are not an acceptable workaround: GitHub explicitly says nested virtualization is unsupported and experimental.
+- Therefore, hosted Actions alone is **not sufficient** for the two-project/two-VM experiment. It remains suitable for ordinary CI and source-level checks, not this networked isolation test.
+
+### Candidate B — provider-managed cloud VMs with private networking
+
+- Hetzner Cloud is a concrete technically viable candidate, not a selected provider: its API exposes server create/get/delete operations and immutable numeric server IDs; its Networks feature gives attached servers private addresses on a dedicated interface.
+- The API also exposes firewalls. Its documented default is inbound DROP when no inbound rules exist, but outbound traffic is ACCEPT by default; a safe harness must install and verify explicit ingress and egress rules rather than assume the default is fully restrictive.
+- A server can be created without a public network interface and attached to a private network. Private networking does not itself provide Internet egress, so any package/source retrieval must use a separately controlled path or prebuilt pinned image.
+- Server types provide fixed resource profiles, but the harness still needs provider-side plan selection plus guest/container limits and watchdogs. A Docker cgroup limit alone is not a VM boundary.
+- A provider API token and billable resources are required. No account access, token, budget, region, or authorization to create paid infrastructure has been established in this audit. No provider API call or resource creation was performed.
+
+### Candidate C — local KVM/libvirt host
+
+- A Linux host with hardware virtualization can host two guests, separate Docker daemons, and an isolated virtual network without a hosted cloud control plane.
+- This avoids a cloud provider for the test substrate but still has a shared physical host and hypervisor as a common failure domain. The host must enforce aggregate and per-guest CPU/RAM/storage ceilings, and a host-level controller must destroy guests by stable domain/UUID and verify storage/network cleanup.
+- The known older Windows machine is not an established KVM host, and the newer machine's CPU virtualization support, Linux host availability, RAM headroom, and storage constraints have not been verified. WSL2/Docker availability is not evidence of a supported KVM/libvirt substrate.
+- Therefore local KVM is not currently qualified.
+
+### Comparative outcome
+
+| Candidate | Two isolated guests | Private inter-guest network | Immutable-ID teardown | Current result |
+|---|---|---|---|---|
+| GitHub-hosted jobs only | Yes, one fresh VM per job | Not configured by current repository | GitHub-managed job lifecycle, but no Zion resource controller | Reject for this experiment |
+| Provider VMs + private network | Supported by provider primitives | Supported by private network feature | API exposes server IDs and delete operation | Best technical candidate; unselected |
+| Local KVM/libvirt | Possible on a qualified Linux host | Possible with isolated virtual networking | Requires host controller and verification | Not qualified |
+
+### Current gate and next action
+
+**NO-GO remains in force.** The only viable path identified from current evidence is two provider-managed VMs attached to a private network, with a small external test controller that owns allocation, resource limits, teardown, and post-destruction verification. Hetzner is only a candidate example; choosing it would require an explicit account/budget decision and verification of the exact region, server profiles, firewall semantics, API permissions, and deletion behavior. No cloud provider should be selected implicitly.
+
+Do not add a provider SDK, credentials, workflow, controller, or infrastructure resource until that substrate is explicitly available and the teardown contract can be tested. This is a documented feasibility comparison only; no VMs, Docker daemons, testnets, network, provider API calls, or failure-injection tests were run.
+
+### Official references
+
+- GitHub-hosted runner lifecycle and nested virtualization limitation: https://docs.github.com/en/actions/how-tos/manage-runners/github-hosted-runners/use-github-hosted-runners and https://docs.github.com/en/actions/concepts/runners/github-hosted-runners
+- Hetzner Cloud server IDs and server create/get/delete API: https://docs.hetzner.cloud/reference/cloud
+- Hetzner private Networks, server attachment, and firewall defaults: https://docs.hetzner.cloud/reference/cloud
