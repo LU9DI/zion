@@ -60,6 +60,8 @@ The repository already contains useful components, but they are not an end-to-en
 
 ## Consensus design gate
 
+- `docs/ADMISSION_AUTHORIZATION_SOURCE_AUDIT.md` records the source-level PostgreSQL admission, revocation, dispatch-fence, notification, and retry semantics, including the missing deterministic operation-result identity needed for safe commit reconciliation.
+
 `docs/PROJECT_BFT_COMMIT_PROTOCOL_SPIKE.md` defines the required separation between governance authorization and validator consensus, the safety assumptions, commit evidence, durable anti-equivocation state, epoch reconfiguration, candidate evaluation, and adversarial acceptance suite. No BFT protocol is selected or implemented yet. The governance state machine and signed event replica must not be treated as consensus.
 
 ## Migration order and guardrails
