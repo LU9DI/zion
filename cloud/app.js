@@ -63,7 +63,7 @@
     });
     activity.unshift({icon:'↥',title:`${incoming.length} arquivo${incoming.length===1?'':'s'} selecionado${incoming.length===1?'':'s'}`,detail:'Adicionado(s) à visualização local; não enviado(s) para a nuvem.',time:now});
     renderRecentFiles();renderFiles();renderActivity();renderActivity('all-activity',activity);
-    toast(`${incoming.length} arquivo${incoming.length===1?'':'s'} adicionado${incoming.length===1?'':'s'} à prévia local.`);
+    toast(`${incoming.length} arquivo${incoming.length===1?'':'s'} adicionado${incoming.length===1?'':'s'} added to the local preview.`);
   }
   const people = [
     {id:'ana',name:'Ana Costa',handle:'@anacosta',bio:'Design e arquivos abertos',avatar:'A',tone:'teal',following:true},
@@ -77,7 +77,7 @@
   function renderPeople(){
     const query = $('people-search').value.trim().toLocaleLowerCase('pt-BR');
     const shown = people.filter(p => `${p.name} ${p.handle} ${p.bio}`.toLocaleLowerCase('pt-BR').includes(query));
-    $('people-list').innerHTML = shown.map(p=>`<div class="person-row"><span class="person-avatar ${p.tone}">${safe(p.avatar)}</span><div class="person-meta"><strong>${safe(p.name)}</strong><small>${safe(p.handle)} · ${safe(p.bio)}</small></div><div class="person-actions"><button class="small-action ${p.following?'following':''}" data-follow="${safe(p.id)}" aria-pressed="${p.following}">${p.following?'Seguindo':'＋ Seguir'}</button><button class="small-action" data-message="${safe(p.id)}">Mensagem</button></div></div>`).join('') || '<div class="social-empty">Nenhuma pessoa encontrada. Tente outro nome.</div>';
+    $('people-list').innerHTML = shown.map(p=>`<div class="person-row"><span class="person-avatar ${p.tone}">${safe(p.avatar)}</span><div class="person-meta"><strong>${safe(p.name)}</strong><small>${safe(p.handle)} · ${safe(p.bio)}</small></div><div class="person-actions"><button class="small-action ${p.following?'following':''}" data-follow="${safe(p.id)}" aria-pressed="${p.following}">${p.following?'Seguindo':'＋ Follow'}</button><button class="small-action" data-message="${safe(p.id)}">Mensagem</button></div></div>`).join('') || '<div class="social-empty">Nenhuma pessoa encontrada. Tente outro nome.</div>';
   }
   function renderConversations(){
     const list = people.filter(p=>conversations.has(p.id)).sort((a,b)=>{
@@ -106,7 +106,7 @@
   $('people-list').addEventListener('click',e=>{
     const follow=e.target.closest('[data-follow]');
     const message=e.target.closest('[data-message]');
-    if(follow){const p=people.find(x=>x.id===follow.dataset.follow);if(!p)return;p.following=!p.following;renderPeople();toast(p.following?`Agora você segue ${p.name} nesta prévia.`:`Você deixou de seguir ${p.name} nesta prévia.`);return;}
+    if(follow){const p=people.find(x=>x.id===follow.dataset.follow);if(!p)return;p.following=!p.following;renderPeople();toast(p.following?`You are now following ${p.name} in this preview.`:`You unfollowed ${p.name} in this preview.`);return;}
     if(message){openConversation(message.dataset.message);}
   });
   $('conversation-list').addEventListener('click',e=>{const b=e.target.closest('[data-open-chat]');if(b)openConversation(b.dataset.openChat);});
@@ -118,7 +118,7 @@
     const person=people.find(p=>p.id===activeConversation);
     activity.unshift({icon:'✉',title:'Mensagem preparada',detail:`Mensagem para ${person?.name||'contato'} registrada somente nesta prévia local.`,time:'Agora'});
     input.value=''; openConversation(activeConversation); renderActivity();renderActivity('all-activity',activity);
-    toast('Mensagem registrada nesta prévia; não foi enviada pela rede.');
+    toast('Message saved in this preview; it was not sent over the network.');
   });
   renderPeople();renderConversations();
 
@@ -128,14 +128,14 @@
   $('upload-files').addEventListener('click',()=>$('file-picker').click());
   $('file-picker').addEventListener('change',e=>{addFiles(e.target.files);e.target.value='';});
   $('file-search').addEventListener('input',renderFiles);$('file-filter').addEventListener('change',renderFiles);
-  $('view-toggle').addEventListener('click',()=>{gridView=!gridView;$('view-toggle').textContent=gridView?'☷':'▦';toast(gridView?'Lista compacta ativada.':'Lista confortável ativada.');renderFiles();});
+  $('view-toggle').addEventListener('click',()=>{gridView=!gridView;$('view-toggle').textContent=gridView?'☷':'▦';toast(gridView?'Lista compacta ativada.':'Compact list enabled.');renderFiles();});
   $('all-files').addEventListener('click',e=>{const b=e.target.closest('[data-file-index]');if(!b)return;const f=files[Number(b.dataset.fileIndex)];if(f)toast(`${f.name} · ${fmtSize(f.size)} · demonstração local`);});
   $('mobile-menu').addEventListener('click',()=>$('sidebar').classList.toggle('open'));
   document.querySelector('.notice-close').addEventListener('click',e=>e.currentTarget.closest('.notice').remove());
   $('help-button').addEventListener('click',()=>$('help-dialog').showModal());$('close-help').addEventListener('click',()=>$('help-dialog').close());$('help-ok').addEventListener('click',()=>$('help-dialog').close());
-  $('contribute-toggle').addEventListener('change',e=>{$('contribute-message').textContent=e.target.checked?'Preferência ativada apenas na demonstração. Nenhum serviço real foi iniciado.':'Preferência desativada. Nenhum serviço real foi iniciado.';toast(e.target.checked?'Contribuição simulada ativada.':'Contribuição simulada pausada.');});
+  $('contribute-toggle').addEventListener('change',e=>{$('contribute-message').textContent=e.target.checked?'Preference enabled in the demo only. No real service was started.':'Preference disabled. No real service was started.';toast(e.target.checked?'Simulated contribution enabled.':'Simulated contribution paused.');});
   $('workspace-name').addEventListener('input',e=>document.querySelector('.profile strong').textContent=e.target.value.trim()||'Meu Zion');
-  $('save-settings').addEventListener('click',()=>{$('settings-feedback').textContent='Preferência aplicada nesta sessão.';toast('Preferência atualizada nesta prévia.');});
+  $('save-settings').addEventListener('click',()=>{$('settings-feedback').textContent='Preference applied in this session.';toast('Preferência atualizada in this preview.');});
   const inactivitySettingFields = {
     pauseWarningAtDays: 'idle-pause-warning', pauseAfterDays: 'idle-pause-after',
     reductionWarningAtDays: 'idle-reduction-warning', reduceAfterDays: 'idle-reduction-after',
@@ -157,22 +157,22 @@
   let notificationsLoading = false;
   const notificationTypes = {
     'pause-warning': { title: 'Aviso de pausa por inatividade', icon: '◷', style: 'warning' },
-    'contribution-paused': { title: 'Contribuição pausada', icon: 'Ⅱ', style: 'paused' },
-    'capacity-reduction-warning': { title: 'Aviso de redução de capacidade', icon: '↓', style: 'warning' },
-    'capacity-reduction-pending': { title: 'Redução de capacidade pendente', icon: '⌛', style: 'warning' },
+    'contribution-paused': { title: 'Contribution paused', icon: 'Ⅱ', style: 'paused' },
+    'capacity-reduction-warning': { title: 'Capacity reduction warning', icon: '↓', style: 'warning' },
+    'capacity-reduction-pending': { title: 'Capacity reduction pending', icon: '⌛', style: 'warning' },
     'capacity-reduced': { title: 'Capacidade oferecida reduzida', icon: '↓', style: '' },
   };
   const notificationDate = value => {
-    if (typeof value !== 'string') return 'Data indisponível';
+    if (typeof value !== 'string') return 'Date unavailable';
     const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? 'Data indisponível' : date.toLocaleString('pt-BR', { dateStyle: 'medium', timeStyle: 'short' });
+    return Number.isNaN(date.getTime()) ? 'Date unavailable' : date.toLocaleString('pt-BR', { dateStyle: 'medium', timeStyle: 'short' });
   };
   function updateNotificationCount() {
     const count = notificationRecords.filter(item => !item.viewedAt).length;
     const badge = $('notification-nav-count');
     badge.textContent = count > 99 ? '99+' : String(count);
     badge.classList.toggle('hidden', count === 0);
-    badge.setAttribute('aria-label', `${count} notificação${count === 1 ? '' : 'ões'} não visualizada${count === 1 ? '' : 's'}`);
+    badge.setAttribute('aria-label', `${count} notificação${count === 1 ? '' : 'ões'} unread${count === 1 ? '' : 's'}`);
   }
   function renderNotifications() {
     const list = $('notifications-list');
@@ -193,25 +193,25 @@
     const status = $('notifications-status');
     if (notificationsLoading) return;
     if (!notificationsApi) {
-      status.textContent = 'Sessão autenticada não configurada. O histórico real está indisponível.';
-      $('notifications-list').innerHTML = '<div class="notification-empty">Esta prévia não cria avisos fictícios. Configure ZionAuth e a API de notificações para carregar o histórico.</div>';
+      status.textContent = 'Authenticated session is not configured. Real history is unavailable.';
+      $('notifications-list').innerHTML = '<div class="notification-empty">This preview does not create fictional alerts. Configure ZionAuth and the notifications API to load history.</div>';
       return;
     }
     notificationsLoading = true;
     $('refresh-notifications').disabled = true;
     status.classList.remove('notification-error');
-    status.textContent = 'Carregando notificações da conta…';
+    status.textContent = 'Loading account notifications…';
     try {
       const response = await notificationsApi.list({ status: 'all', limit: 200 });
-      if (!response || response.ok !== true || !Array.isArray(response.notifications)) throw new Error('Resposta incompleta do serviço de notificações.');
+      if (!response || response.ok !== true || !Array.isArray(response.notifications)) throw new Error('Incomplete response from the notifications service.');
       notificationRecords = response.notifications.filter(item => item && typeof item.id === 'string' && typeof item.type === 'string' && typeof item.message === 'string' && ['pending', 'delivered'].includes(item.deliveryStatus));
       updateNotificationCount(); renderNotifications();
       const unread = notificationRecords.filter(item => !item.viewedAt).length;
-      status.textContent = `${notificationRecords.length} notificação${notificationRecords.length === 1 ? '' : 'ões'} carregada${notificationRecords.length === 1 ? '' : 's'} · ${unread} não visualizada${unread === 1 ? '' : 's'}.`;
+      status.textContent = `${notificationRecords.length} notificação${notificationRecords.length === 1 ? '' : 'ões'} carregada${notificationRecords.length === 1 ? '' : 's'} · ${unread} unread${unread === 1 ? '' : 's'}.`;
     } catch (error) {
-      status.textContent = error.message || 'Não foi possível carregar as notificações.';
+      status.textContent = error.message || 'Could not load notifications.';
       status.classList.add('notification-error');
-      $('notifications-list').innerHTML = '<div class="notification-empty">Falha ao consultar o histórico. Verifique a sessão e tente atualizar.</div>';
+      $('notifications-list').innerHTML = '<div class="notification-empty">Failed to load history. Check your session and try refreshing.</div>';
     } finally { notificationsLoading = false; $('refresh-notifications').disabled = false; }
   }
   $('refresh-notifications').addEventListener('click', () => { void loadNotifications(); });
@@ -227,8 +227,8 @@
       if (item) item.viewedAt = new Date().toISOString();
       updateNotificationCount(); renderNotifications();
       const unread = notificationRecords.filter(record => !record.viewedAt).length;
-      $('notifications-status').textContent = `${notificationRecords.length} notificação${notificationRecords.length === 1 ? '' : 'ões'} carregada${notificationRecords.length === 1 ? '' : 's'} · ${unread} não visualizada${unread === 1 ? '' : 's'}.`;
-    } catch (error) { toast(error.message || 'Não foi possível marcar a notificação.'); button.disabled = false; }
+      $('notifications-status').textContent = `${notificationRecords.length} notificação${notificationRecords.length === 1 ? '' : 'ões'} carregada${notificationRecords.length === 1 ? '' : 's'} · ${unread} unread${unread === 1 ? '' : 's'}.`;
+    } catch (error) { toast(error.message || 'Could not mark the notification.'); button.disabled = false; }
   });
   $('notification-nav-count').classList.add('hidden');
   void loadNotifications();
@@ -261,23 +261,23 @@
     const mode = $('inactivity-settings-mode');
     if (inactivityApi) {
       mode.textContent = 'API autenticada';
-      setInactivityFeedback('Carregando configurações da conta…');
+      setInactivityFeedback('Loading account settings…');
       try {
         const response = await inactivityApi.get();
         writeInactivitySettingsForm(response.settings);
         renderInactivitySettingsPreview();
-        setInactivityFeedback(response.appliedToNode ? 'Configurações carregadas; aplicação confirmada pelo serviço.' : 'Configurações da conta carregadas. O serviço informa que ainda não foram aplicadas ao nó.');
+        setInactivityFeedback(response.appliedToNode ? 'Settings loaded; application confirmed by the service.' : 'Account settings loaded. The service reports they have not yet been applied to the node.');
       } catch (error) {
-        setInactivityFeedback(error.message || 'Não foi possível carregar as configurações autenticadas.', true);
+        setInactivityFeedback(error.message || 'Could not load authenticated settings.', true);
       }
       return;
     }
     const loaded = window.ZionInactivitySettings.load(inactivityStorage);
     writeInactivitySettingsForm(loaded);
     renderInactivitySettingsPreview();
-    if (loaded.persistence === 'saved-local') setInactivityFeedback('Preferências locais restauradas; não há sessão de API conectada.');
-    else if (loaded.persistence === 'storage-unavailable') setInactivityFeedback('Armazenamento do navegador indisponível; usando os padrões.');
-    else if (loaded.persistence === 'invalid-reset') setInactivityFeedback('Configuração local inválida; padrões carregados.');
+    if (loaded.persistence === 'saved-local') setInactivityFeedback('Local preferences restored; no API session is connected.');
+    else if (loaded.persistence === 'storage-unavailable') setInactivityFeedback('Browser storage unavailable; using defaults.');
+    else if (loaded.persistence === 'invalid-reset') setInactivityFeedback('Invalid local setting; defaults loaded.');
     mode.textContent = 'Prévia local';
   }
   Object.values(inactivitySettingFields).forEach(id => $(id).addEventListener('input', renderInactivitySettingsPreview));
@@ -290,14 +290,14 @@
         const response = await inactivityApi.put(settings);
         writeInactivitySettingsForm(response.settings);
         renderInactivitySettingsPreview();
-        setInactivityFeedback(response.appliedToNode ? 'Configurações salvas e aplicação confirmada pelo serviço.' : 'Configurações salvas na conta; ainda não aplicadas ao nó.');
+        setInactivityFeedback(response.appliedToNode ? 'Settings saved and application confirmed by the service.' : 'Settings saved to the account; not yet applied to the node.');
       } else {
         const result = window.ZionInactivitySettings.save(inactivityStorage, settings);
         if (!result.ok) throw new Error(result.error);
-        setInactivityFeedback('Prazos salvos neste navegador; ainda não aplicados ao nó.');
-        toast('Preferências de inatividade salvas localmente.');
+        setInactivityFeedback('Schedule saved in this browser; not yet applied to the node.');
+        toast('Inactivity preferences saved locally.');
       }
-    } catch (error) { setInactivityFeedback(error.message || 'Falha ao salvar as configurações.', true); }
+    } catch (error) { setInactivityFeedback(error.message || 'Failed to save settings.', true); }
     finally { button.disabled = false; }
   });
   $('reset-inactivity-settings').addEventListener('click', async () => {
@@ -307,19 +307,19 @@
         const response = await inactivityApi.reset();
         writeInactivitySettingsForm(response.settings);
         renderInactivitySettingsPreview();
-        setInactivityFeedback(response.appliedToNode ? 'Padrões restaurados; aplicação confirmada pelo serviço.' : 'Padrões da conta restaurados; não aplicados ao nó.');
+        setInactivityFeedback(response.appliedToNode ? 'Defaults restored; application confirmed by the service.' : 'Account defaults restored; not applied to the node.');
       } else {
         try { inactivityStorage?.removeItem(window.ZionInactivitySettings.KEY); } catch {}
         writeInactivitySettingsForm(window.ZionInactivitySettings.defaults);
         renderInactivitySettingsPreview();
-        setInactivityFeedback('Padrões restaurados nesta prévia local.');
-        toast('Prazos padrão restaurados.');
+        setInactivityFeedback('Defaults restored in this local preview.');
+        toast('Default schedule restored.');
       }
-    } catch (error) { setInactivityFeedback(error.message || 'Falha ao restaurar as configurações.', true); }
+    } catch (error) { setInactivityFeedback(error.message || 'Failed to restore settings.', true); }
     finally { button.disabled = false; }
   });
   void initializeInactivitySettings();
-  $('clear-activity').addEventListener('click',()=>{activity=[];renderActivity('all-activity',activity);renderActivity();toast('Atividade removida desta visualização.');});
+  $('clear-activity').addEventListener('click',()=>{activity=[];renderActivity('all-activity',activity);renderActivity();toast('Activity removed from this view.');});
   $('help-dialog').addEventListener('click',e=>{if(e.target===$('help-dialog'))$('help-dialog').close();});
   renderRecentFiles();renderFiles();renderActivity();renderActivity('all-activity',activity);
 })();
