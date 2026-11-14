@@ -194,22 +194,25 @@ A narrative-only report or a passing happy-path demo is not proof of feasibility
 
 ## 11. Pinned upstream source baseline (evaluation only)
 
-The source inspection for this spike uses the following immutable upstream baseline:
+The first reproducible spike should use the latest patch release on the upstream README's explicitly listed supported line, rather than assuming the newest version tag is already the supported baseline:
 
 - Repository: `https://github.com/cometbft/cometbft`
-- Release tag: `v0.40.0`
-- Annotated tag object: `06b4cbf4b776554bd2b95fc39c80991e7529e765`
-- Tag target commit: `0880b4d378f347ab16e54ec677ff50d803f37d62`
-- Tag signature: GitHub API reports the annotated tag signature as verified.
-- License: Apache-2.0 (the release's `LICENSE` file).
-- Go module directive: `go 1.25.0` (from `go.mod` at the exact release tag).
-- Release publication: 2026-07-27.
+- Primary evaluation release: `v0.38.26` (published 2026-08-13; not a production selection).
+- Annotated tag object: `2228c7101a00994a14811e15cd8795c7e70713c2`
+- Tag target commit: `94d77f9f51a72e2b7d832798859f6222f08028f8`
+- Tag signature: upstream GitHub API reports the annotated tag signature as verified.
+- License: Apache-2.0 (release `LICENSE`).
+- Go module directive: `go 1.22.11` (from `go.mod` at the exact release tag).
 
-This is a reproducible **spike input pin only**. It does not select CometBFT for Zion, approve a dependency, or establish production suitability. Re-evaluate supported/security status and the exact dependency closure before any future adoption.
+Version-selection caveat:
+
+- The newer tag `v0.40.0` was also inspected; its exact target commit is `0880b4d378f347ab16e54ec677ff50d803f37d62`, its tag signature is reported verified, and its `go.mod` declares `go 1.25.0`.
+- However, the `v0.40.0` README's `Supported Versions` section lists `v0.38.x`, not `v0.40.x`. Therefore `v0.40.0` is recorded as a newer exploratory comparison only; do not treat it as the supported baseline or production recommendation without upstream clarification.
+- The `v0.38.26` pin is a reproducible test input only. Re-evaluate upstream support/security status and the exact dependency closure before any future adoption.
 
 ### 11.1 Source-level isolation observations
 
-Inspection of the exact `v0.40.0` source shows that `node.Node` owns singular per-node fields for its config, genesis document, state store, block store, consensus state/reactor, proxy application connections, and related services. `node/setup.go` constructs the application proxy, block executor, mempool, evidence pool, state-sync reactor, and consensus reactor from one node configuration and one genesis/state context.
+Inspection of the exact `v0.38.26` source shows that `node.Node` owns singular per-node fields for its config, genesis document, state store, block store, consensus state/reactor, proxy application connections, and related services. `node/setup.go` constructs the application proxy and consensus services from one node configuration and one genesis/state context.
 
 Consequences:
 
@@ -226,11 +229,11 @@ The disposable experiment must fetch the exact tag and verify the peeled commit 
 git clone https://github.com/cometbft/cometbft.git cometbft-spike
 cd cometbft-spike
 git fetch --tags --force
-git checkout --detach v0.40.0
+git checkout --detach v0.38.26
 git rev-parse HEAD
-# Expected: 0880b4d378f347ab16e54ec677ff50d803f37d62
+# Expected: 94d77f9f51a72e2b7d832798859f6222f08028f8
 go version
-# Must satisfy the go.mod directive: Go 1.25.0 or compatible newer toolchain.
+# Must satisfy the go.mod directive: Go 1.22.11 or compatible newer toolchain.
 go mod download
 go mod verify
 ```
@@ -239,7 +242,7 @@ Before treating a build as reproducible, record the exact Go toolchain build, OS
 
 ### 11.3 Current conclusion
 
-- `v0.40.0` is pinned as the upstream test baseline only.
+- `v0.38.26` is pinned as the primary upstream test baseline only; `v0.40.0` is a comparison candidate only.
 - No Go toolchain, CometBFT source checkout, binary, container image, or PoC was built or run in this session.
 - No claim is made that multiple in-process nodes are isolated or supported.
 - No topology is selected; one-process-per-project is only the first topology to evaluate, subject to resource and product-constraint gates.
