@@ -111,9 +111,7 @@ export async function createEncryptedNodeIdentityRecord(identity, keystore, opti
       wrappedDek: wrapped.toString('base64'),
     });
   } finally {
-    // The adapter-returned plaintext is key material too. Wipe both its
-    // original mutable byte view and the local copy, including on failure.
-    unwrappedValue?.fill(0);
+    // Wipe the locally generated DEK and exported private-key bytes.
     dek?.fill(0);
     privateDer?.fill(0);
   }
