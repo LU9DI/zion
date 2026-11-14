@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { CommittedStateHarness } from './support/committed-state-harness.js';
 import { DurableCommittedBlockJournal } from './support/durable-committed-block-journal.js';
@@ -43,7 +42,7 @@ test('process termination immediately after fsync is recovered as committed', ()
   const f = fixture();
   try {
     const block = finalized(1, 'durable-operation-0002', 'profile.status', 'active');
-    const moduleUrl = pathToFileURL(new URL('./support/durable-committed-block-journal.js', import.meta.url).pathname).href;
+    const moduleUrl = new URL('./support/durable-committed-block-journal.js', import.meta.url).href;
     const script = [
       'import { DurableCommittedBlockJournal } from ' + JSON.stringify(moduleUrl) + ';',
       'const journal = new DurableCommittedBlockJournal(' + JSON.stringify(f.path) + ', { crashAfterFsync: true });',
