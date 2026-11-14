@@ -36,17 +36,18 @@ jobs:
         env:
           TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           TS_AUDIENCE: ${{ secrets.TS_AUDIENCE }}
+          NETWORK_SMOKE_OPT_IN: ${{ vars.ZION_ENABLE_COMETBFT_NETWORK_SMOKE }}
         shell: bash
         run: |
-          if [[ -n "$TS_OAUTH_CLIENT_ID" && -n "$TS_AUDIENCE" ]]; then
+          if [[ "$NETWORK_SMOKE_OPT_IN" == "true" && -n "$TS_OAUTH_CLIENT_ID" && -n "$TS_AUDIENCE" ]]; then
             echo "configured=true" >> "$GITHUB_OUTPUT"
           else
             echo "configured=false" >> "$GITHUB_OUTPUT"
             {
               echo "## Private runner network: NOT RUN"
               echo
-              echo "Tailscale OIDC federation is not configured. No ephemeral tailnet node was created and no network test was attempted."
-              echo "Configure TS_OAUTH_CLIENT_ID and TS_AUDIENCE after restricting the Tailscale identity to this repository, branch, and workflow."
+              echo "No ephemeral tailnet node was created and no network test was attempted."
+              echo "Set ZION_ENABLE_COMETBFT_NETWORK_SMOKE=true and configure the restricted Tailscale OIDC identity secrets to opt in."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
