@@ -83,16 +83,18 @@ function syncDirectory(path) {
  * implement consensus, snapshots/compaction, or cross-process lock recovery.
  */
 export class DurableCommittedBlockJournal {
-  constructor(path, { maxBytes = 256 * 1024 * 1024, crashAfterFsync = false } = {}) {
+  constructor(path, { maxBytes = 256 * 1024 * 1024, crashAfterFsync = false, faultAt = null } = {}) {
     if (typeof path !== 'string' || !path.trim() ||
         !Number.isSafeInteger(maxBytes) || maxBytes < 1024 || maxBytes > 4 * 1024 * 1024 * 1024 ||
-        typeof crashAfterFsync !== 'boolean') {
+        typeof crashAfterFsync !== 'boolean' ||
+        ![null, 'before-write', 'after-partial-write', 'before-fsync', 'after-fsync'].includes(faultAt)) {
       throw new TypeError('Invalid committed block journal configuration');
     }
     this.path = resolve(path);
     this.lockPath = this.path + '.lock';
     this.maxBytes = maxBytes;
     this.crashAfterFsync = crashAfterFsync;
+    this.faultAt = faultAt;
     this.closed = false;
     this.poisoned = false;
     this.height = 0;
@@ -210,13 +212,25 @@ export class DurableCommittedBlockJournal {
     let fdOpen = true;
     try {
       originalSize = fstatSync(fd).size;
+      if (this.faultAt === 'before-write') {
+        throw Object.assign(new Error('Injected journal failure before write'), { code: 'ZION_JOURNAL_INJECTED_FAILURE' });
+      }
       let offset = 0;
       while (offset < line.length) {
         const written = writeSync(fd, line, offset, line.length - offset);
         if (!Number.isInteger(written) || written <= 0) throw new Error('Journal write made no forward progress');
         offset += written;
+        if (this.faultAt === 'after-partial-write' && offset > 0) {
+          throw Object.assign(new Error('Injected journal failure after partial write'), { code: 'ZION_JOURNAL_INJECTED_FAILURE' });
+        }
+      }
+      if (this.faultAt === 'before-fsync') {
+        throw Object.assign(new Error('Injected journal failure before fsync'), { code: 'ZION_JOURNAL_INJECTED_FAILURE' });
       }
       fsyncSync(fd);
+      if (this.faultAt === 'after-fsync') {
+        throw Object.assign(new Error('Injected journal failure after fsync'), { code: 'ZION_JOURNAL_INJECTED_FAILURE' });
+      }
       if (!existed) syncDirectory(this.path);
       if (this.crashAfterFsync) process.exit(86);
       closeSync(fd);
