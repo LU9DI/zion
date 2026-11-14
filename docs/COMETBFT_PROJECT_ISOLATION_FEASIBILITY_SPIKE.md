@@ -1549,3 +1549,54 @@ The two-project, four-validator experiment in section 34.6 remains blocked. The 
 Sources reviewed:
 - CometBFT E2E runner stages and cleanup behavior: https://github.com/cometbft/cometbft/tree/v0.38.26/test/e2e
 - CometBFT E2E runner README: https://github.com/cometbft/cometbft/blob/v0.38.26/test/e2e/README.md
+
+
+## 36. Source-level audit of CometBFT v0.38.26 E2E cleanup
+
+### 36.1 Confirmed global Docker cleanup
+
+The exact upstream tag used as the audited baseline, `v0.38.26`, was inspected through the following source files:
+
+- `test/e2e/runner/cleanup.go` (Git blob `852612312bebbd1d89ea52134a89b8c4d69bde8e`).
+- `test/e2e/pkg/infra/docker/docker.go` (Git blob `c3588c0930d9e6a59daf39b1226b37217c99285e`).
+- `test/e2e/runner/main.go` (Git blob `23c14a1833dc837ad42a311c7c31070154bfa3cd`).
+
+In `cleanup.go`, `Cleanup(testnet)` calls `cleanupDocker()` before `cleanupDir(testnet.Dir)`. The `cleanupDocker()` implementation explicitly documents that it removes all E2E resources marked `e2e=True`, regardless of which testnet is being cleaned. It executes Docker CLI queries for every container and every network carrying that label, then force-removes the returned resources. It does not scope those Docker queries to the supplied `testnet` object, Compose project, or testnet directory.
+
+The Docker Compose generator in `docker.go` assigns the `e2e: true` label to each generated service and network. Therefore, two independently named testnets on the same Docker daemon still share the cleanup selector. Distinct Compose project names or testnet directories do not narrow this global label-based deletion.
+
+### 36.2 Additional destructive filesystem behavior
+
+The same `cleanup.go` implementation then:
+1. checks `testnet.Dir` with `os.Stat`;
+2. converts the supplied path with `filepath.Abs`;
+3. asks Docker to mount that absolute path at `/network` in an auxiliary `cometbft/e2e-node` container and runs `rm -rf /network/*/`;
+4. calls `os.RemoveAll(dir)` on the host.
+
+This is an additional reason not to treat the upstream cleanup routine as a safe multi-tenant cleanup API. The source does not establish a trusted directory handle, verify every path component against symlinks/reparse points or mount changes, or bind deletion to a provisioning-layer resource identity. The presence of `filepath.Abs` is lexical path normalization, not proof of safe containment or ownership.
+
+The main runner's default `RunE` path invokes `Cleanup(cli.testnet)` before `Setup`; the benchmark path does the same. The standalone `cleanup` command also invokes this function. Thus, accidentally invoking the normal runner or its cleanup command against a daemon containing unrelated E2E-labeled resources is destructive beyond the selected testnet.
+
+### 36.3 Revised harness decision
+
+The earlier disposable-VM requirement is now a hard architectural requirement, not merely a conservative recommendation:
+
+- One exclusive disposable VM and one dedicated Docker daemon per independent test run. No concurrent unrelated E2E workload may share that daemon.
+- For the two-project experiment, project A and project B must each run in their own exclusive VM and daemon. A single VM with one daemon hosting both projects is not accepted for this experiment because the upstream global cleanup selector would span both projects.
+- Never invoke the upstream runner or its cleanup against a developer, CI-shared, or production daemon.
+- Prefer destroying the entire exclusive disposable VM as the final cleanup boundary. Do not invoke the upstream cleanup routine as a host-side cleanup mechanism. If in-guest cleanup is needed for diagnostics, it may run only inside the exclusive VM after the run has ended and its evidence has been captured.
+- The outer controller must destroy a VM only by the immutable VM identifier returned by the provisioning API, never by a guest-controlled name or filesystem path. If ownership is uncertain, preserve the VM and stop.
+- Keep all source, build inputs, generated testnet data, Docker volumes, and logs inside the disposable VM. Export only bounded, validated evidence through a separate artifact channel.
+
+A dedicated daemon is necessary but not sufficient: the VM must also be exclusive to one run, network-restricted, resource-capped by the hypervisor, free of secrets, and disposable. A wrapper that merely changes `DOCKER_HOST`, sets a Compose project name, or creates a unique output directory does not satisfy this gate.
+
+### 36.4 Decision and evidence boundary
+
+**NO-GO remains in force.** The upstream source audit establishes the cleanup blast radius and confirms why a shared daemon is unsafe. It does not establish that Zion currently has a safe VM provisioner, isolated daemon, secure artifact exporter, or verified resource/network policy.
+
+No upstream runner command, Docker command, cleanup routine, VM provisioning action, or CometBFT testnet was executed. No runtime code or dependency was changed. The next implementation task is the disposable-VM controller and its destructive-boundary tests, outside the Zion runtime and without access to production credentials or host Docker.
+
+Sources:
+- CometBFT v0.38.26 cleanup implementation: https://github.com/cometbft/cometbft/blob/v0.38.26/test/e2e/runner/cleanup.go
+- CometBFT v0.38.26 Docker Compose provider: https://github.com/cometbft/cometbft/blob/v0.38.26/test/e2e/pkg/infra/docker/docker.go
+- CometBFT v0.38.26 runner lifecycle: https://github.com/cometbft/cometbft/blob/v0.38.26/test/e2e/runner/main.go
