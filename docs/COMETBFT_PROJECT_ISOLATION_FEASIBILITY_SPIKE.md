@@ -1936,3 +1936,55 @@ Consequences for this repository:
 No API-only tailnet was created, no Tailscale API credentials were exchanged, no CometBFT runtime/testnet was run, and no external resource was provisioned as part of this reassessment.
 
 Sources: Tailscale Tailnets API documentation (alpha status, limits, API-only behavior, and bootstrap model); Tailscale trust credential scopes; Tailscale workload identity federation documentation.
+
+
+## 45. Prefer a persistent API-only CI tailnet over per-run tailnet creation (2026-11-14)
+
+### Decision
+
+For the first isolated network smoke test, prefer one dedicated, persistent API-only tailnet reserved exclusively for Zion CI, with ephemeral tagged runner nodes per workflow execution. Do not create and delete the tailnet on every run.
+
+This is a narrower operational design than an ephemeral-tailnet-per-run controller:
+- Tailnet creation is a one-time, explicitly authorized bootstrap operation.
+- Each workflow run receives only short-lived OIDC-derived authority to register ephemeral `tag:zion-ci` nodes.
+- The existing Tailscale GitHub Action logs out its node in the post-job lifecycle; the node is configured as ephemeral. A separate read-only verification step should confirm that the run's node IDs are no longer present after teardown before this is treated as cleanup evidence.
+- No per-run tailnet deletion permission is needed. The organization-level `tailnets` scope is documented for listing and creating API-only tailnets; the documented trust-credential scope table does not list a least-privilege delete scope. Do not solve that gap by granting `all`.
+- The persistent tailnet is test infrastructure only. It is not a required Zion runtime service and must not become a central dependency in the decentralized architecture.
+
+### Bootstrap and credential boundaries
+
+1. Leave the personal tailnet and its existing unrestricted policy untouched. The dedicated API-only tailnet must be a distinct tailnet created through the organization Tailnets API.
+2. Use a one-time, explicitly authorized bootstrap identity in the parent tailnet with only the documented `tailnets` scope to create the child tailnet. Do not grant `all` to make per-run tailnet recovery or deletion convenient.
+3. Treat the OAuth client returned by the create-tailnet response as bootstrap material. Its exact effective scopes and the supported way to create a child federated identity must be verified against the live API response/reference before implementation. Do not assume that the returned credential has a particular scope merely because it is returned.
+4. Establish a child-tailnet GitHub OIDC identity for node registration with only `auth_keys`, restricted to `tag:zion-ci`, the exact repository, exact branch, and exact workflow. The workflow should receive only its client ID/audience and the GitHub-issued short-lived OIDC token; it must not receive the bootstrap OAuth client secret.
+5. Configure the child policy out of band during bootstrap, then read it back and validate it. It must contain no broad allow-all grant, and must allow only the required runner-to-runner test traffic. Do not enable the CI readiness gate until the effective policy has been read back and independently checked.
+6. If API automation is used for policy configuration, Tailscale documents `policy_file` with the additional `devices:posture_attributes` and `devices:core:read` scopes. Keep that authority in a separate bootstrap/admin identity, not in the node-joining workflow identity.
+7. Revoke bootstrap OAuth credentials after the child federated identity and policy have been verified, provided the child identity remains independently usable. Record the credential IDs and revocation evidence without recording secrets.
+
+### Cleanup and failure handling
+
+- Configure runner nodes as ephemeral and retain the action's logout/post-job behavior.
+- Add a bounded post-join inventory check using a narrowly scoped read-only device credential, or another documented read-only mechanism, to verify that the exact nodes created by the run have disappeared after logout.
+- Treat cancellation, job timeout, API unavailability, and missing cleanup evidence as an unsuccessful/unknown teardown, never as PASS.
+- Do not delete the persistent API-only tailnet during routine CI cleanup. Its eventual decommissioning is a separate, manually authorized operation after the experiment is disabled and all node/credential state is inventoried.
+- Do not store the bootstrap OAuth client secret in GitHub repository secrets, variables, workflow output, logs, or source control. The workflow's existing OIDC secrets/identifiers do not substitute for proof that the child tailnet exists or that its policy is isolated.
+
+### Current status and blockers
+
+This is an architecture decision and implementation plan only. No API-only tailnet has been created; no credential has been exchanged or revoked; no child policy has been configured/read back; no node cleanup verification has run; and no CometBFT runtime test has been executed.
+
+Before changing the workflow, resolve and record:
+- the exact effective scopes of the OAuth client returned by the create-tailnet endpoint;
+- whether that credential can create the required child federated identity using `federated_keys`, or which documented bootstrap route is supported;
+- the least-privilege read-only device inventory scope and endpoint for verifying ephemeral-node removal;
+- the exact child-tailnet policy and its validation/read-back result;
+- a safe, one-time bootstrap and secret-revocation procedure.
+
+Until those checks pass, keep `ZION_ISOLATED_TAILNET_READY` unset/false and the smoke test gated. The existing direct-tailnet workflow is not proof of API-only isolation. PR #68 remains draft; no merge, deployment, release, production credential, Neon operation, or personal-tailnet change is authorized by this plan.
+
+### Official references
+
+- Tailscale Tailnets API (alpha, creation bootstrap, API-only limitations): https://tailscale.com/docs/features/tailnets-api
+- Tailscale trust credential scopes (`tailnets`, `policy_file`, `devices:core:read`, `devices:posture_attributes`, `auth_keys`, and `federated_keys`): https://tailscale.com/docs/reference/trust-credentials
+- Tailscale workload identity federation and ephemeral node registration: https://tailscale.com/docs/features/workload-identity-federation
+- Tailscale GitHub Action: https://tailscale.com/docs/integrations/github/github-action
