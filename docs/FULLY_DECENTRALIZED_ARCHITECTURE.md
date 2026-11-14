@@ -143,6 +143,10 @@ The branch also contains `src/signed-project-event-replica.js`, a durable receiv
 This is deliberately **not** a distributed commit protocol: a local signature and hash chain do not prove quorum agreement, prevent a malicious signer from forking its own log, or establish global ordering. The journal is a durable substrate for later peer replication and quorum certificates. It is not yet wired into the official node launcher or project authorization path. Tests are committed but their CI result must be checked before treating them as passing.
 
 
+## 13. Project BFT commit protocol design gate
+
+The next consensus design constraints and adversarial acceptance requirements are recorded in [PROJECT_BFT_COMMIT_PROTOCOL_SPIKE.md](PROJECT_BFT_COMMIT_PROTOCOL_SPIKE.md). Governance threshold approvals, authenticated transport sessions, signed event records, replica acknowledgements, and storage receipts are not BFT commit certificates. The validator committee, fault model, quorum rules, anti-equivocation persistence, view changes, and safe epoch reconfiguration must be selected and reviewed before implementing consensus. No BFT protocol is selected or implemented by this document.
+
 ## 12. Mandatory security requirement
 
 Zion's security baseline and release gates are defined in [DECENTRALIZED_SECURITY_REQUIREMENTS.md](DECENTRALIZED_SECURITY_REQUIREMENTS.md). This is a hard requirement of the fully decentralized architecture: peer identity/key lifecycle, encrypted transport, authorization epochs, BFT safety, anti-replay, bounded resource use, Sybil/eclipse resilience, storage integrity, process isolation, supply-chain security, incident containment, and adversarial testing. No central CA, identity provider, DDoS service, or privileged operator may be required for correctness. The requirements document distinguishes implemented foundations from missing defenses; it is not a claim of current security certification.
