@@ -34,8 +34,8 @@ jobs:
       - name: Check federated identity configuration
         id: federation
         env:
-          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          TS_AUDIENCE: ${{ secrets.TS_AUDIENCE }}
+          TS_OAUTH_CLIENT_ID: ${{ secrets.ZION_CI_TS_OAUTH_CLIENT_ID }}
+          TS_AUDIENCE: ${{ secrets.ZION_CI_TS_AUDIENCE }}
           NETWORK_SMOKE_OPT_IN: ${{ vars.ZION_ENABLE_COMETBFT_NETWORK_SMOKE }}
           ISOLATED_TAILNET_READY: ${{ vars.ZION_ISOLATED_TAILNET_READY }}
         shell: bash
@@ -56,8 +56,8 @@ jobs:
         if: steps.federation.outputs.configured == 'true'
         uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c
         with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          audience: ${{ secrets.TS_AUDIENCE }}
+          oauth-client-id: ${{ secrets.ZION_CI_TS_OAUTH_CLIENT_ID }}
+          audience: ${{ secrets.ZION_CI_TS_AUDIENCE }}
           tags: tag:zion-ci
           hostname: ${{ matrix.hostname }}
           ping: ${{ matrix.peer }}
