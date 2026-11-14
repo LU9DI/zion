@@ -210,3 +210,20 @@ The dedicated [validator membership and Sybil threat model](DECENTRALIZED_VALIDA
 The required topology comparison and two-project adversarial experiment matrix are specified in [COMETBFT_PROJECT_ISOLATION_FEASIBILITY_SPIKE.md](COMETBFT_PROJECT_ISOLATION_FEASIBILITY_SPIKE.md). This is a test specification only; no PoC has been executed. A single-project ABCI demo is insufficient. The candidate must prove independent project histories, validator committees, failure domains, WAL/recovery boundaries, and bounded resource use without a global chain or hosted coordinator. A shared chain with project namespaces is not an acceptable shortcut under the current architecture.
 
 ABCI application execution is deterministic state-machine replication: the same committed input and prior state must produce identical results. Consensus-critical application state must not be mutated through an out-of-band side channel. This is an integration constraint, not proof that a proposed Zion application is deterministic or isolated.
+
+## 12. Upstream release re-check (2026-11-14)
+
+The upstream CometBFT release page and tagged README were re-checked for this continuation:
+
+- The upstream releases page marks **v0.40.0** (published 2026-07-27) as the latest release at the time of this check.
+- The exact `v0.40.0` README still lists **v0.38.x** in its "Supported Versions" section and does not list v0.40.x. Its `go.mod` declares Go 1.25.0.
+- The `v0.38.26` tag README also lists v0.38.x as supported; its previously recorded Go 1.22.11 baseline remains compatible with the available Go 1.23.2 environment.
+- Therefore the earlier evaluation pin **v0.38.26 remains the reproducible supported-line baseline for the isolation spike**. v0.40.0 remains an exploratory comparison, not an approved production target. Re-check the upstream support matrix and security advisories immediately before any future dependency decision.
+
+Sources inspected:
+- https://github.com/cometbft/cometbft/releases
+- https://github.com/cometbft/cometbft/blob/v0.40.0/README.md
+- https://github.com/cometbft/cometbft/blob/v0.40.0/go.mod
+- https://github.com/cometbft/cometbft/blob/v0.38.26/README.md
+
+This re-check does not alter the protocol-selection gate: CometBFT is still not selected, no topology has passed the two-project isolation matrix, and no BFT implementation or dependency has been added.
