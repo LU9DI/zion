@@ -119,18 +119,29 @@ export class SignedProjectEventReplica {
     if (this.byteLength + line.length > this.maxBytes) throw Object.assign(new Error('Replica byte limit reached'), { code: 'ZION_REPLICA_TOO_LARGE' });
     const existed = existsSync(this.path);
     const fd = openSync(this.path, 'a', 0o600);
+    let fdOpen = true;
     try {
       let offset = 0;
-      while (offset < line.length) offset += writeSync(fd, line, offset, line.length - offset);
+      while (offset < line.length) {
+        const written = writeSync(fd, line, offset, line.length - offset);
+        if (!Number.isInteger(written) || written <= 0) throw new Error('Replica write made no forward progress');
+        offset += written;
+      }
       fsyncSync(fd);
       if (!existed) {
         const dirFd = openSync(dirname(this.path), 'r');
         try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
       }
+      closeSync(fd);
+      fdOpen = false;
     } catch (error) {
       this.persistenceFailed = true;
       throw error;
-    } finally { closeSync(fd); }
+    } finally {
+      if (fdOpen) {
+        try { closeSync(fd); } catch { this.persistenceFailed = true; }
+      }
+    }
     state.sequence = event.sequence;
     state.lastHash = record.recordHash;
     state.hashes.push(record.recordHash);
