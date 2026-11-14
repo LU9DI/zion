@@ -1909,7 +1909,7 @@ The same tag is acceptable only for this isolated smoke test because the rule pe
 
 ### Gate
 
-The network smoke test is **NOT RUN** until the tailnet OIDC identity, tag/ACL, MagicDNS, and two repository secrets are configured. A successful smoke test will qualify only the two-runner private network. It will not qualify CometBFT consensus safety, cross-project state isolation, resource ceilings, crash recovery, or a complete teardown proof. Those require separate tests and review.
+The network smoke test is **NOT RUN** until the tailnet OIDC identity, tag/ACL, MagicDNS, both repository secrets, and the explicit repository opt-in variable `ZION_ENABLE_COMETBFT_NETWORK_SMOKE=true` are configured. A successful smoke test will qualify only the two-runner private network. It will not qualify CometBFT consensus safety, cross-project state isolation, resource ceilings, crash recovery, or a complete teardown proof. Those require separate tests and review.
 
 ### Official references
 
