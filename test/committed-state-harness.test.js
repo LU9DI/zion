@@ -92,7 +92,9 @@ test('stale, out-of-order, and modified finalized states are rejected', () => {
   const modified = { ...finalized, state: { ...finalized.state, data: { k: 'tampered' } } };
   assert.throws(() => app.commit(modified), { code: 'HARNESS_INVALID_FINALIZED_STATE' });
   app.commit(finalized);
-  assert.throws(() => app.commit(finalized), { code: 'HARNESS_COMMIT_CONFLICT' });
+  const competing = new CommittedStateHarness(new MemoryAtomicCommittedStateStore())
+    .finalizeBlock({ height: 1, transactions: [op('operation-00000070', 'other', 'state')] });
+  assert.throws(() => app.commit(competing), { code: 'HARNESS_COMMIT_CONFLICT' });
   assert.throws(
     () => app.finalizeBlock({ height: 3, transactions: [] }),
     { code: 'HARNESS_INVALID_BLOCK' },
