@@ -11,10 +11,10 @@
     {name:'Archive.tar',type:'outro',size:12300000,modified:'03 out. 2026',icon:'▤'}
   ];
   const demoActivity = [
-    {icon:'↥',title:'Arquivo adicionado',detail:'Projeto Zion.pdf foi adicionado à prévia.',time:'Hoje, 09:42'},
-    {icon:'◉',title:'Estado da rede consultado',detail:'Resumo ilustrativo de 3 nós.',time:'Hoje, 09:30'},
-    {icon:'▤',title:'Arquivo aberto',detail:'Meeting notes.docx foi aberto na prévia.',time:'Ontem, 14:08'},
-    {icon:'✓',title:'Verificação de exemplo',detail:'Nenhum alerta fictício registrado nesta demonstração.',time:'08 out. 2026'}
+    {icon:'↥',title:'File added',detail:'Projeto Zion.pdf was added to the preview.',time:'Hoje, 09:42'},
+    {icon:'◉',title:'Network status checked',detail:'Illustrative summary of 3 nodes.',time:'Hoje, 09:30'},
+    {icon:'▤',title:'File aberto',detail:'Meeting notes.docx was opened in the preview.',time:'Ontem, 14:08'},
+    {icon:'✓',title:'Sample check',detail:'No fictional alerts recorded in this demo.',time:'08 out. 2026'}
   ];
   let files = [...demoFiles];
   let activity = [...demoActivity];
@@ -25,14 +25,14 @@
   const fileClass = f => f.type === 'imagem' ? 'image' : f.type === 'video' ? 'video' : f.type === 'outro' ? 'other' : '';
   const iconFor = f => f.icon || (f.type === 'imagem' ? '▧' : f.type === 'video' ? '▶' : f.type === 'outro' ? '▤' : 'DOC');
   function renderRecentFiles(){
-    $('recent-files').innerHTML = files.slice(0,4).map(f=>`<div class="file-row"><span class="file-type-icon ${fileClass(f)}">${safe(iconFor(f))}</span><div class="file-info"><strong>${safe(f.name)}</strong><small>${safe(f.modified)}</small></div><span class="file-size">${fmtSize(f.size)}</span></div>`).join('') || '<p class="subheading">Nenhum arquivo por enquanto.</p>';
+    $('recent-files').innerHTML = files.slice(0,4).map(f=>`<div class="file-row"><span class="file-type-icon ${fileClass(f)}">${safe(iconFor(f))}</span><div class="file-info"><strong>${safe(f.name)}</strong><small>${safe(f.modified)}</small></div><span class="file-size">${fmtSize(f.size)}</span></div>`).join('') || '<p class="subheading">No files yet.</p>';
     $('file-count').textContent = String(128 + Math.max(0, files.length - demoFiles.length));
   }
   function renderFiles(){
     const q = $('file-search').value.trim().toLocaleLowerCase('pt-BR');
     const type = $('file-filter').value;
     const filtered = files.filter(f => f.name.toLocaleLowerCase('pt-BR').includes(q) && (type === 'todos' || f.type === type));
-    $('all-files').innerHTML = filtered.map((f,i)=>`<tr><td><div class="table-file-name"><span class="file-type-icon ${fileClass(f)}">${safe(iconFor(f))}</span>${safe(f.name)}</div></td><td>${safe(({documento:'Documento',imagem:'Imagem',video:'Vídeo',outro:'Outro'})[f.type] || 'Arquivo')}</td><td>${fmtSize(f.size)}</td><td>${safe(f.modified)}</td><td><button class="row-actions" data-file-index="${files.indexOf(f)}" aria-label="Detalhes de ${safe(f.name)}" title="Detalhes">···</button></td></tr>`).join('');
+    $('all-files').innerHTML = filtered.map((f,i)=>`<tr><td><div class="table-file-name"><span class="file-type-icon ${fileClass(f)}">${safe(iconFor(f))}</span>${safe(f.name)}</div></td><td>${safe(({documento:'Document',imagem:'Image',video:'Video',outro:'Outro'})[f.type] || 'File')}</td><td>${fmtSize(f.size)}</td><td>${safe(f.modified)}</td><td><button class="row-actions" data-file-index="${files.indexOf(f)}" aria-label="Detalhes de ${safe(f.name)}" title="Detalhes">···</button></td></tr>`).join('');
     $('empty-files').classList.toggle('hidden', filtered.length > 0);
     $('all-files').parentElement.classList.toggle('hidden', filtered.length === 0);
     $('all-files').closest('.file-table-wrap').classList.toggle('compact', gridView);
@@ -63,10 +63,10 @@
     });
     activity.unshift({icon:'↥',title:`${incoming.length} file${incoming.length===1?'':'s'} selected`,detail:'Added to the local view; not uploaded to the cloud.',time:now});
     renderRecentFiles();renderFiles();renderActivity();renderActivity('all-activity',activity);
-    toast(`${incoming.length} arquivo${incoming.length===1?'':'s'} adicionado${incoming.length===1?'':'s'} added to the local preview.`);
+    toast(`${incoming.length} file${incoming.length===1?'':'s'} added added to the local preview.`);
   }
   const people = [
-    {id:'ana',name:'Ana Costa',handle:'@anacosta',bio:'Design e arquivos abertos',avatar:'A',tone:'teal',following:true},
+    {id:'ana',name:'Ana Costa',handle:'@anacosta',bio:'Design and open files',avatar:'A',tone:'teal',following:true},
     {id:'marcos',name:'Marcos Lima',handle:'@marcoslima',bio:'Distributed development',avatar:'M',tone:'',following:false},
     {id:'bia',name:'Beatriz Souza',handle:'@biasouza',bio:'Fotografia e comunidade',avatar:'B',tone:'rose',following:false},
     {id:'rafa',name:'Rafael Alves',handle:'@rafaalves',bio:'Privacidade digital',avatar:'R',tone:'gold',following:true}
@@ -87,7 +87,7 @@
     $('conversation-list').innerHTML = list.map(p=>{
       const msgs=conversations.get(p.id)||[], last=msgs.at(-1);
       return `<button class="conversation-row ${activeConversation===p.id?'selected':''}" data-open-chat="${safe(p.id)}"><span class="person-avatar ${p.tone}">${safe(p.avatar)}</span><span class="person-meta"><strong>${safe(p.name)}</strong><small class="conversation-preview">${safe(last?.text||'Conversa iniciada')}</small></span><small>${safe(last?.time||'')}</small></button>`;
-    }).join('') || '<div class="social-empty">Você ainda não tem conversas. Use “Mensagem” em um perfil para iniciar uma.</div>';
+    }).join('') || '<div class="social-empty">You do not have any conversations yet. Use “Message” on a profile to start one.</div>';
     const count = [...conversations.values()].reduce((sum,msgs)=>sum+msgs.filter(m=>m.mine).length,0);
     $('message-count').textContent=String(count);
   }
@@ -98,7 +98,7 @@
     $('chat-empty').classList.add('hidden'); $('chat-thread').classList.remove('hidden');
     $('chat-person').innerHTML=`<span class="person-avatar ${person.tone}">${safe(person.avatar)}</span><span>${safe(person.name)}<small style="display:block;color:#8993a4;font-size:10px;font-weight:500">${safe(person.handle)}</small></span>`;
     const msgs=conversations.get(id);
-    $('chat-messages').innerHTML=msgs.map(m=>`<div class="chat-bubble ${m.mine?'mine':''}">${safe(m.text)}<time>${safe(m.time)}${m.mine?' · enviado nesta prévia':''}</time></div>`).join('') || '<div class="social-empty">Conversa iniciada. Escreva sua primeira mensagem abaixo.</div>';
+    $('chat-messages').innerHTML=msgs.map(m=>`<div class="chat-bubble ${m.mine?'mine':''}">${safe(m.text)}<time>${safe(m.time)}${m.mine?' · sent in this preview':''}</time></div>`).join('') || '<div class="social-empty">Conversation started. Write your first message below.</div>';
     renderConversations();
     $('message-input').focus();
   }
@@ -116,7 +116,7 @@
     const messages=conversations.get(activeConversation)||[];
     messages.push({text:value,mine:true,time:nowLabel(),order:Date.now()}); conversations.set(activeConversation,messages);
     const person=people.find(p=>p.id===activeConversation);
-    activity.unshift({icon:'✉',title:'Mensagem preparada',detail:`Mensagem para ${person?.name||'contato'} registrada somente nesta prévia local.`,time:'Agora'});
+    activity.unshift({icon:'✉',title:'Message prepared',detail:`Mensagem para ${person?.name||'contato'} recorded only in this local preview.`,time:'Agora'});
     input.value=''; openConversation(activeConversation); renderActivity();renderActivity('all-activity',activity);
     toast('Message saved in this preview; it was not sent over the network.');
   });
@@ -156,7 +156,7 @@
   let notificationRecords = [];
   let notificationsLoading = false;
   const notificationTypes = {
-    'pause-warning': { title: 'Aviso de pausa por inatividade', icon: '◷', style: 'warning' },
+    'pause-warning': { title: 'Inactivity pause warning', icon: '◷', style: 'warning' },
     'contribution-paused': { title: 'Contribution paused', icon: 'Ⅱ', style: 'paused' },
     'capacity-reduction-warning': { title: 'Capacity reduction warning', icon: '↓', style: 'warning' },
     'capacity-reduction-pending': { title: 'Capacity reduction pending', icon: '⌛', style: 'warning' },
@@ -172,21 +172,21 @@
     const badge = $('notification-nav-count');
     badge.textContent = count > 99 ? '99+' : String(count);
     badge.classList.toggle('hidden', count === 0);
-    badge.setAttribute('aria-label', `${count} notification${count === 1 ? '' : 'ões'} unread${count === 1 ? '' : 's'}`);
+    badge.setAttribute('aria-label', `${count} notification${count === 1 ? '' : 's'} unread${count === 1 ? '' : 's'}`);
   }
   function renderNotifications() {
     const list = $('notifications-list');
     const filter = $('notification-filter').value;
     const records = notificationRecords.filter(item => filter === 'all' || item.deliveryStatus === filter);
     if (!records.length) {
-      list.innerHTML = `<div class="notification-empty">${notificationsApi ? 'Nenhuma notification nesta categoria.' : 'Conecte uma sessão autenticada para consultar suas notificações reais.'}</div>`;
+      list.innerHTML = `<div class="notification-empty">${notificationsApi ? 'No notifications in this category.' : 'Connect an authenticated session to view your real notifications.'}</div>`;
       return;
     }
     list.innerHTML = records.map(item => {
       const type = notificationTypes[item.type] || { title: 'Aviso do Zion', icon: '•', style: '' };
       const delivery = item.deliveryStatus === 'delivered' ? 'Entregue' : 'Entrega pendente';
       const unread = !item.viewedAt;
-      return `<article class="notification-card"><span class="notification-symbol ${type.style}">${type.icon}</span><div class="notification-main"><strong>${safe(type.title)}</strong><p>${safe(item.message || 'O Zion registrou um evento de inatividade.')}</p><div class="notification-meta"><span>${safe(notificationDate(item.createdAt))}</span><span class="notification-state ${item.deliveryStatus === 'delivered' ? 'delivered' : ''}">${delivery}</span><span class="notification-state ${unread ? 'unread' : ''}">${unread ? 'Não visualizada' : 'Visualizada'}</span></div>${unread ? `<div class="notification-actions"><button type="button" data-notification-view="${safe(item.id)}">Marcar como visualizada</button></div>` : ''}</div></article>`;
+      return `<article class="notification-card"><span class="notification-symbol ${type.style}">${type.icon}</span><div class="notification-main"><strong>${safe(type.title)}</strong><p>${safe(item.message || 'Zion recorded an inactivity event.')}</p><div class="notification-meta"><span>${safe(notificationDate(item.createdAt))}</span><span class="notification-state ${item.deliveryStatus === 'delivered' ? 'delivered' : ''}">${delivery}</span><span class="notification-state ${unread ? 'unread' : ''}">${unread ? 'Não visualizada' : 'Visualizada'}</span></div>${unread ? `<div class="notification-actions"><button type="button" data-notification-view="${safe(item.id)}">Marcar como visualizada</button></div>` : ''}</div></article>`;
     }).join('');
   }
   async function loadNotifications() {
@@ -207,7 +207,7 @@
       notificationRecords = response.notifications.filter(item => item && typeof item.id === 'string' && typeof item.type === 'string' && typeof item.message === 'string' && ['pending', 'delivered'].includes(item.deliveryStatus));
       updateNotificationCount(); renderNotifications();
       const unread = notificationRecords.filter(item => !item.viewedAt).length;
-      status.textContent = `${notificationRecords.length} notification${notificationRecords.length === 1 ? '' : 'ões'} carregada${notificationRecords.length === 1 ? '' : 's'} · ${unread} unread${unread === 1 ? '' : 's'}.`;
+      status.textContent = `${notificationRecords.length} notification${notificationRecords.length === 1 ? '' : 's'} carregada${notificationRecords.length === 1 ? '' : 's'} · ${unread} unread${unread === 1 ? '' : 's'}.`;
     } catch (error) {
       status.textContent = error.message || 'Could not load notifications.';
       status.classList.add('notification-error');
@@ -227,7 +227,7 @@
       if (item) item.viewedAt = new Date().toISOString();
       updateNotificationCount(); renderNotifications();
       const unread = notificationRecords.filter(record => !record.viewedAt).length;
-      $('notifications-status').textContent = `${notificationRecords.length} notification${notificationRecords.length === 1 ? '' : 'ões'} carregada${notificationRecords.length === 1 ? '' : 's'} · ${unread} unread${unread === 1 ? '' : 's'}.`;
+      $('notifications-status').textContent = `${notificationRecords.length} notification${notificationRecords.length === 1 ? '' : 's'} carregada${notificationRecords.length === 1 ? '' : 's'} · ${unread} unread${unread === 1 ? '' : 's'}.`;
     } catch (error) { toast(error.message || 'Could not mark the notification.'); button.disabled = false; }
   });
   $('notification-nav-count').classList.add('hidden');
@@ -249,7 +249,7 @@
       feedback.classList.add('error');
       return false;
     }
-    preview.textContent = `Aviso no dia ${result.pauseWarningAtDays}; pausa no dia ${result.pauseAfterDays}; aviso de redução no dia ${result.reductionWarningAtDays}; redução no dia ${result.reduceAfterDays}. A oferta cairia ${result.reductionPercent}%, preservando ${result.remainingCapacityPercent}% da capacidade anterior.`;
+    preview.textContent = `Warning on day ${result.pauseWarningAtDays}; pause on day ${result.pauseAfterDays}; reduction warning on day ${result.reductionWarningAtDays}; reduction on day ${result.reduceAfterDays}. The offer would decrease by ${result.reductionPercent}%, preserving ${result.remainingCapacityPercent}% of the previous capacity.`;
     return true;
   }
   function setInactivityFeedback(message, isError = false) {
