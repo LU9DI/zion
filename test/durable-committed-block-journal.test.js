@@ -122,6 +122,31 @@ test('same-height commit retry is idempotent and conflicting replay fails closed
   } finally { f.cleanup(); }
 });
 
+
+test('write-boundary failures roll back the record, poison the writer, and recover empty', () => {
+  for (const faultAt of ['before-write', 'after-partial-write', 'before-fsync', 'after-fsync']) {
+    const f = fixture();
+    try {
+      const journal = new DurableCommittedBlockJournal(f.path, { faultAt });
+      const block = finalized(1, 'durable-fault-operation-0001', 'fault.test', faultAt);
+      assert.throws(
+        () => journal.commit(1, block.state),
+        { code: 'ZION_JOURNAL_INJECTED_FAILURE' },
+      );
+      assert.throws(
+        () => journal.commit(1, block.state),
+        { code: 'ZION_JOURNAL_UNAVAILABLE' },
+      );
+      journal.close();
+
+      const recovered = new DurableCommittedBlockJournal(f.path);
+      assert.equal(recovered.info().lastBlockHeight, 0, faultAt);
+      assert.equal(recovered.read(), null, faultAt);
+      recovered.close();
+    } finally { f.cleanup(); }
+  }
+});
+
 test('multiple committed heights recover the latest state through a verified hash chain', () => {
   const f = fixture();
   try {
