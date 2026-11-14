@@ -774,3 +774,59 @@ These checks are additive. They do not make a shared-daemon topology acceptable 
 - Runner invocation under two simultaneous testnets: not executed.
 - No VM, Docker daemon, container, network, or volume was provisioned or changed.
 - No Zion runtime, consensus implementation, dependency, launcher, database, migration, or production configuration was changed.
+
+
+## 23. Global E2E cleanup is unsafe for concurrent runs on a shared daemon
+
+A read-only source inspection of the pinned CometBFT v0.38.26 runner identified a destructive cleanup scope that is broader than the selected testnet.
+
+### 23.1 Exact source behavior
+
+The upstream file `test/e2e/runner/cleanup.go` (blob `852612312bebbd1d89ea52134a89b8c4d69bde8e`) defines:
+
+- `Cleanup(testnet)` first calls `cleanupDocker()`, and only after that succeeds calls `cleanupDir(testnet.Dir)`.
+- `cleanupDocker()` runs `docker container ls -qa --filter label=e2e | xargs ... docker container rm -f`.
+- It then runs `docker network ls -q --filter label=e2e | xargs ... docker network rm`.
+- The source comment explicitly says that it removes all E2E resources with label `e2e=True`, regardless of testnet.
+- The selected testnet directory is handled separately: `cleanupDir` checks the directory, runs a temporary `cometbft/e2e-node` container with the directory bind-mounted to remove nested contents, and then calls `os.RemoveAll(dir)`.
+
+The upstream file `test/e2e/runner/main.go` (blob `23c14a1833dc837ad42a311c7c31070154bfa3cd`) shows that:
+
+- The root full-run command invokes `Cleanup(cli.testnet)` before `Setup`, and invokes it again after successful tests unless `--preserve` is selected.
+- The `benchmark` command also invokes `Cleanup(cli.testnet)` before setup and after the benchmark.
+- The explicit `cleanup` subcommand invokes the same `Cleanup(cli.testnet)`.
+- The separate `stop` subcommand calls the provider's Compose `down`, which is project-scoped; this does not change the global scope of `cleanupDocker()`.
+
+### 23.2 Isolation consequence
+
+The label filter is not scoped by testnet identity, Compose project, workspace, or experiment owner. Therefore, on a shared Docker daemon:
+
+- Starting a full runner or benchmark can forcibly remove another experiment's labeled containers before the current testnet is set up.
+- Its cleanup can also remove the other experiment's labeled networks.
+- The explicit `cleanup` subcommand has the same cross-testnet effect.
+- A unique Compose project name or a unique workspace directory does not constrain these global label-based deletion commands.
+- Running independent CometBFT experiments concurrently against one daemon is unsafe with this upstream cleanup behavior, even if ordinary Compose resource names are unique.
+
+This is a source-proven destructive-scope issue, not merely a theoretical name-collision risk. No destructive command was executed during this audit.
+
+### 23.3 Required containment and experiment policy
+
+For the planned isolation feasibility experiment:
+
+1. Treat one dedicated disposable VM and one Docker daemon per concurrent testnet as mandatory containment. Do not share a daemon between independent testnets while using the unmodified upstream runner.
+2. Never run the full runner, benchmark, or explicit `cleanup` command on a daemon that contains resources outside that single disposable experiment.
+3. Capture the pre-run container/network inventory and daemon identity before any runner invocation; preserve the evidence outside the VM.
+4. Keep the testnet directory exclusive to one run and verify its canonical path before cleanup, because `cleanupDir` removes that directory recursively.
+5. If a future isolated-daemon experiment is impossible and shared-daemon execution is proposed, first design and review a source-level cleanup correction that scopes deletion to a cryptographically or otherwise unambiguously owned experiment namespace; do not patch upstream behavior speculatively or treat labels alone as a security boundary.
+6. Test cleanup failure, partial failure, interrupted execution, and repeated cleanup only inside disposable VMs, with sentinel resources that must survive outside the experiment's ownership boundary.
+
+A per-run Compose project name remains useful for ordinary Compose lifecycle operations, but it cannot neutralize the runner's global label-based cleanup.
+
+### 23.4 Evidence and status
+
+- Global container/network cleanup scope: source-inspected at the pinned v0.38.26 tag.
+- Full-run and benchmark cleanup call sites: source-inspected at the pinned v0.38.26 tag.
+- Selected testnet directory deletion behavior: source-inspected; no filesystem cleanup was executed.
+- Cross-testnet deletion on one shared daemon: directly implied by the global label selectors; not experimentally exercised.
+- No runner, Docker command, VM, container, network, or volume was executed, provisioned, or modified.
+- No Zion runtime, consensus implementation, dependency, launcher, database, migration, or production configuration was changed.
