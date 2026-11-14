@@ -10,6 +10,19 @@ const NODE_ID_RE = /^[a-f0-9]{64}$/;
 const KEY_ID_RE = /^[a-zA-Z0-9._:-]{1,128}$/;
 const MAX_WRAPPED_KEY_BYTES = 4096;
 const MAX_CIPHERTEXT_BYTES = 16 * 1024;
+// Capture the intrinsic once so an adapter-returned typed array cannot bypass
+// cleanup with an own-property or subclass override of .fill().
+const typedArrayFill = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Uint8Array.prototype), 'fill',
+).value;
+
+function wipeBytes(value) {
+  if (!(value instanceof Uint8Array)) return;
+  try { Reflect.apply(typedArrayFill, value, [0]); } catch {
+    // Detached/proxy-backed views cannot be reliably wiped. Never mask the
+    // cryptographic/adapter error that caused cleanup to run.
+  }
+}
 
 function exactKeys(value, keys, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
@@ -99,9 +112,17 @@ export async function createEncryptedNodeIdentityRecord(identity, keystore, opti
     cipher.setAAD(aadFor(record));
     const ciphertext = Buffer.concat([cipher.update(privateDer), cipher.final()]);
     const authTag = cipher.getAuthTag();
-    const wrappedValue = await keystore.wrapKey({ keyId, plaintextKey: dek });
-    if (!(wrappedValue instanceof Uint8Array)) throw new TypeError('Local keystore must return wrapped key bytes');
-    const wrapped = Buffer.from(wrappedValue);
+    // Give the adapter an isolated borrowed copy: its mutation cannot alter
+    // the DEK used by AES-GCM, and any retained alias is zeroed on settlement.
+    const wrappingInput = Buffer.from(dek);
+    let wrapped;
+    try {
+      const wrappedValue = await keystore.wrapKey({ keyId, plaintextKey: wrappingInput });
+      if (!(wrappedValue instanceof Uint8Array)) throw new TypeError('Local keystore must return wrapped key bytes');
+      wrapped = Buffer.from(wrappedValue);
+    } finally {
+      wipeBytes(wrappingInput);
+    }
     if (wrapped.length < 1 || wrapped.length > MAX_WRAPPED_KEY_BYTES) throw new RangeError('Wrapped DEK has an invalid size');
     return Object.freeze({
       ...record,
@@ -112,8 +133,8 @@ export async function createEncryptedNodeIdentityRecord(identity, keystore, opti
     });
   } finally {
     // Wipe the locally generated DEK and exported private-key bytes.
-    dek?.fill(0);
-    privateDer?.fill(0);
+    wipeBytes(dek);
+    wipeBytes(privateDer);
   }
 }
 
@@ -165,8 +186,8 @@ export async function loadEncryptedNodeIdentityRecord(record, keystore) {
       privateKey,
     });
   } finally {
-    if (unwrappedValue instanceof Uint8Array) unwrappedValue.fill(0);
-    dek?.fill(0);
-    privateDer?.fill(0);
+    wipeBytes(unwrappedValue);
+    wipeBytes(dek);
+    wipeBytes(privateDer);
   }
 }
