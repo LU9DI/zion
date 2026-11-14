@@ -20,6 +20,8 @@ A valid governance certificate, authenticated Noise session, signed journal reco
 
 ## 2. Safety assumptions that must be explicit
 
+**Genesis and reconfiguration gate:** the initial governor trust ceremony, recovery policy, DKG boundaries, and validator handoff requirements are specified in [PROJECT_GENESIS_AND_VALIDATOR_ROTATION_SPEC.md](PROJECT_GENESIS_AND_VALIDATOR_ROTATION_SPEC.md). No BFT engine may be selected until genesis trust assumptions and the engine's safe committee-reconfiguration/resharing model are compatible and reviewed.
+
 **Validator-membership gate:** before choosing a committee protocol or assuming a 3f+1 / 2f+1 fault model, resolve [DECENTRALIZED_VALIDATOR_SYBIL_MODEL.md](DECENTRALIZED_VALIDATOR_SYBIL_MODEL.md). Distinct public keys are not evidence of independent operators; VRF selection does not create Sybil resistance. Until the membership assumptions are approved, no committee algorithm or BFT engine can be selected responsibly.
 
 A protocol proposal must define, rather than imply:
