@@ -216,13 +216,19 @@ export class DurableCommittedBlockJournal {
         throw Object.assign(new Error('Injected journal failure before write'), { code: 'ZION_JOURNAL_INJECTED_FAILURE' });
       }
       let offset = 0;
+      if (this.faultAt === 'after-partial-write') {
+        const partialTarget = Math.max(1, Math.floor(line.length / 2));
+        while (offset < partialTarget) {
+          const written = writeSync(fd, line, offset, partialTarget - offset);
+          if (!Number.isInteger(written) || written <= 0) throw new Error('Journal write made no forward progress');
+          offset += written;
+        }
+        throw Object.assign(new Error('Injected journal failure after partial write'), { code: 'ZION_JOURNAL_INJECTED_FAILURE' });
+      }
       while (offset < line.length) {
         const written = writeSync(fd, line, offset, line.length - offset);
         if (!Number.isInteger(written) || written <= 0) throw new Error('Journal write made no forward progress');
         offset += written;
-        if (this.faultAt === 'after-partial-write' && offset > 0) {
-          throw Object.assign(new Error('Injected journal failure after partial write'), { code: 'ZION_JOURNAL_INJECTED_FAILURE' });
-        }
       }
       if (this.faultAt === 'before-fsync') {
         throw Object.assign(new Error('Injected journal failure before fsync'), { code: 'ZION_JOURNAL_INJECTED_FAILURE' });
