@@ -20,6 +20,8 @@ A valid governance certificate, authenticated Noise session, signed journal reco
 
 ## 2. Safety assumptions that must be explicit
 
+**Validator-membership gate:** before choosing a committee protocol or assuming a 3f+1 / 2f+1 fault model, resolve [DECENTRALIZED_VALIDATOR_SYBIL_MODEL.md](DECENTRALIZED_VALIDATOR_SYBIL_MODEL.md). Distinct public keys are not evidence of independent operators; VRF selection does not create Sybil resistance. Until the membership assumptions are approved, no committee algorithm or BFT engine can be selected responsibly.
+
 A protocol proposal must define, rather than imply:
 
 1. Validator committee membership and the exact committed state from which it is derived.
@@ -190,3 +192,8 @@ Tests must assert both safety (no two honest nodes commit conflicting values at 
 - No central database, hosted scheduler, CA, bootstrap endpoint, or privileged peer is introduced.
 - No launcher cutover, migration execution, Neon change, merge, deployment, or release is performed.
 - No production-readiness or Byzantine-safety claim is made.
+
+
+## 10. Validator membership and Sybil decision gate
+
+The dedicated [validator membership and Sybil threat model](DECENTRALIZED_VALIDATOR_SYBIL_MODEL.md) records the incompatibility between unrestricted cheap identity creation and strong identity-counted committee security, compares candidate scarcity/uniqueness mechanisms, and defines the interim boundary of project-governed validator eligibility. It is a design gate, not an implementation. The BFT protocol-selection step remains blocked until the project explicitly accepts the membership and independence assumptions. In particular, a VRF, random beacon, threshold signature, or 3f+1 committee calculation must not be represented as a Sybil defense.
