@@ -81,7 +81,13 @@ test('height gaps and unverified stale-lock cleanup are rejected', () => {
   const f = fixture();
   try {
     const journal = new DurableCommittedBlockJournal(f.path);
-    assert.throws(() => journal.commit(2, finalized(2, 'durable-operation-0004', 'k', 'v').state), {
+    const base = finalized(1, 'durable-operation-0004', 'base', 'v1');
+    const next = new CommittedStateHarness(new MemoryAtomicCommittedStateStore(base.state))
+      .finalizeBlock({
+        height: 2,
+        transactions: [{ operationId: 'durable-operation-0009', type: 'SET', key: 'k', value: 'v' }],
+      });
+    assert.throws(() => journal.commit(2, next.state), {
       code: 'ZION_JOURNAL_HEIGHT_CONFLICT',
     });
     assert.throws(() => DurableCommittedBlockJournal.clearStaleLockAfterVerification(f.path), /Explicit confirmation/);
