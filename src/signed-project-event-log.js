@@ -31,6 +31,60 @@ function acquireLock(lockPath) {
   }
 }
 
+
+function cloneAndFreezeJsonValue(value, ancestors = new WeakSet()) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new TypeError('Event payload numbers must be finite');
+    return value;
+  }
+  if (typeof value !== 'object') throw new TypeError('Event payload must contain only JSON values');
+  if (ancestors.has(value)) throw new TypeError('Event payload must not contain cycles');
+  const prototype = Object.getPrototypeOf(value);
+  if (Array.isArray(value)) {
+    if (prototype !== Array.prototype) throw new TypeError('Event payload arrays must be plain arrays');
+    ancestors.add(value);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(descriptors);
+    if (keys.some(key => key !== 'length' && (!/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= value.length))) {
+      throw new TypeError('Event payload arrays must not contain extra properties');
+    }
+    const copy = [];
+    for (let index = 0; index < value.length; index++) {
+      const descriptor = descriptors[String(index)];
+      if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) {
+        throw new TypeError('Event payload arrays must be dense data arrays');
+      }
+      copy.push(cloneAndFreezeJsonValue(descriptor.value, ancestors));
+    }
+    ancestors.delete(value);
+    return Object.freeze(copy);
+  }
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError('Event payload objects must be plain objects');
+  }
+  ancestors.add(value);
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Reflect.ownKeys(descriptors).some(key => typeof key !== 'string')) {
+    throw new TypeError('Event payload objects must not contain symbol keys');
+  }
+  const copy = {};
+  for (const key of Object.keys(descriptors)) {
+    const descriptor = descriptors[key];
+    if (!descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) {
+      throw new TypeError('Event payload objects must contain enumerable data properties only');
+    }
+    Object.defineProperty(copy, key, {
+      value: cloneAndFreezeJsonValue(descriptor.value, ancestors),
+      enumerable: true,
+      configurable: false,
+      writable: false,
+    });
+  }
+  ancestors.delete(value);
+  return Object.freeze(copy);
+}
+
 function validatePayload(payload) {
   return payload !== null && typeof payload === 'object' && !Array.isArray(payload) &&
     (Object.getPrototypeOf(payload) === Object.prototype || Object.getPrototypeOf(payload) === null);
@@ -113,8 +167,8 @@ export class SignedProjectEventLog {
           checked.event.sequence !== records.length + 1 || checked.event.previousHash !== previousHash) {
         throw Object.assign(new Error(`Event log integrity validation failed: ${checked.reason ?? 'chain-or-identity-mismatch'}`), { code: 'ZION_EVENT_LOG_CORRUPT' });
       }
-      records.push(Object.freeze({ ...checked.event }));
-      this.signedRecords.push(Object.freeze({ envelope: record.envelope, recordHash: record.recordHash }));
+      records.push(cloneAndFreezeJsonValue(checked.event));
+      this.signedRecords.push(cloneAndFreezeJsonValue({ envelope: record.envelope, recordHash: record.recordHash }));
       previousHash = record.recordHash;
     }
     this.records = records;
@@ -135,16 +189,17 @@ export class SignedProjectEventLog {
       throw new TypeError('Invalid project event');
     }
     if (this.records.length >= this.maxRecords) throw Object.assign(new Error('Event log record limit reached'), { code: 'ZION_EVENT_LOG_TOO_LARGE' });
+    const immutableData = cloneAndFreezeJsonValue(data);
     const event = {
       type: 'PROJECT_EVENT',
       projectId,
       sequence: this.records.length + 1,
       eventId: randomUUID().replaceAll('-', ''),
       eventType,
-      data,
+      data: immutableData,
       previousHash: this.lastHash,
     };
-    const envelope = signPeerMessage(this.identity, event, { now: this.now() });
+    const envelope = cloneAndFreezeJsonValue(signPeerMessage(this.identity, event, { now: this.now() }));
     const recordHash = hash(Buffer.from(JSON.stringify({ envelope, previousHash: event.previousHash })));
     const line = Buffer.from(JSON.stringify({ envelope, recordHash }) + '\n');
     if (this.byteLength + line.length > this.maxBytes) throw Object.assign(new Error('Event log byte limit reached'), { code: 'ZION_EVENT_LOG_TOO_LARGE' });
@@ -163,15 +218,15 @@ export class SignedProjectEventLog {
       throw error;
     } finally { closeSync(fd); }
     this.byteLength += line.length;
-    this.records.push(Object.freeze({ ...event }));
-    this.signedRecords.push(Object.freeze({ envelope, recordHash }));
+    this.records.push(cloneAndFreezeJsonValue(event));
+    this.signedRecords.push(cloneAndFreezeJsonValue({ envelope, recordHash }));
     this.lastHash = recordHash;
-    return Object.freeze({ ...event, recordHash, signerNodeId: this.identity.nodeId });
+    return cloneAndFreezeJsonValue({ ...event, recordHash, signerNodeId: this.identity.nodeId });
   }
 
   snapshot() {
     return Object.freeze({ count: this.records.length, lastHash: this.lastHash,
-      events: Object.freeze(this.records.map(event => Object.freeze({ ...event }))) });
+      events: Object.freeze(this.records.map(event => cloneAndFreezeJsonValue(event))) });
   }
 
   /** Signed journal records for authenticated replication; receivers must still commit via quorum. */
@@ -181,7 +236,7 @@ export class SignedProjectEventLog {
       throw new RangeError('Invalid signed event replication cursor or limit');
     }
     const records = this.signedRecords.slice(afterSequence, afterSequence + limit)
-      .map(record => Object.freeze(JSON.parse(JSON.stringify(record))));
+      .map(record => cloneAndFreezeJsonValue(record));
     return Object.freeze({ fromSequence: afterSequence + 1, nextSequence: afterSequence + records.length + 1,
       lastSequence: this.signedRecords.length, records: Object.freeze(records) });
   }
