@@ -74,6 +74,12 @@ test('incomplete and modified journal records fail closed on recovery', () => {
     parsed.state.data.k = 'tampered';
     writeFileSync(f.path, JSON.stringify(parsed) + '\n');
     assert.throws(() => new DurableCommittedBlockJournal(f.path), { code: 'ZION_JOURNAL_STATE_ROOT_MISMATCH' });
+
+    writeFileSync(f.path, original);
+    const hashTamper = JSON.parse(original.toString('utf8').trim());
+    hashTamper.recordHash = '0'.repeat(64);
+    writeFileSync(f.path, JSON.stringify(hashTamper) + '\n');
+    assert.throws(() => new DurableCommittedBlockJournal(f.path), { code: 'ZION_JOURNAL_CORRUPT' });
   } finally { f.cleanup(); }
 });
 
