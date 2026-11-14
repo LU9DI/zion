@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -386,4 +388,88 @@ test('replica refuses to release its writer lock while ingests are pending', asy
     reopened.close();
     source.close();
   } finally { f.cleanup(); }
+});
+
+
+test('event log rolls back a deterministic partial write and remains poisoned until restart', async t => {
+  const f = fixture();
+  const log = new SignedProjectEventLog(f.path, { identity: f.identity });
+  const originalWrite = fs.writeSync.bind(fs);
+  let injected = false;
+  try {
+    t.mock.method(fs, 'writeSync', (...args) => {
+      if (!injected) {
+        injected = true;
+        originalWrite(args[0], args[1], args[2], Math.min(7, args[3]));
+        throw Object.assign(new Error('injected partial write failure'), { code: 'EIO' });
+      }
+      return originalWrite(...args);
+    });
+    syncBuiltinESMExports();
+    await assert.rejects(
+      log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: { value: 'must-roll-back' } }),
+      { code: 'EIO', rollbackSucceeded: true },
+    );
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+
+    assert.equal(readFileSync(f.path).length, 0);
+    assert.equal(log.snapshot().count, 0);
+    await assert.rejects(
+      log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: {} }),
+      { code: 'ZION_EVENT_LOG_UNAVAILABLE' },
+    );
+    log.close();
+
+    const recovered = new SignedProjectEventLog(f.path, { identity: f.identity });
+    assert.equal(recovered.snapshot().count, 0);
+    recovered.close();
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    try { log.close(); } catch { /* Preserve the test failure. */ }
+    f.cleanup();
+  }
+});
+
+test('replica rolls back a deterministic partial write and remains poisoned until restart', async t => {
+  const f = fixture();
+  const source = new SignedProjectEventLog(f.path, { identity: f.identity });
+  const replicaPath = join(f.dir, 'partial-write-replica.events');
+  let replica;
+  const originalWrite = fs.writeSync.bind(fs);
+  let injected = false;
+  try {
+    await source.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: { value: 'replicated' } });
+    const record = source.snapshotRecords().records[0];
+    replica = new SignedProjectEventReplica(replicaPath, { authorizePeer: () => true });
+
+    t.mock.method(fs, 'writeSync', (...args) => {
+      if (!injected) {
+        injected = true;
+        originalWrite(args[0], args[1], args[2], Math.min(7, args[3]));
+        throw Object.assign(new Error('injected partial write failure'), { code: 'EIO' });
+      }
+      return originalWrite(...args);
+    });
+    syncBuiltinESMExports();
+    await assert.rejects(replica.ingest(record), { code: 'EIO', rollbackSucceeded: true });
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+
+    assert.equal(readFileSync(replicaPath).length, 0);
+    assert.equal(replica.snapshot().records, 0);
+    await assert.rejects(replica.ingest(record), { code: 'ZION_REPLICA_UNAVAILABLE' });
+    replica.close();
+
+    const recovered = new SignedProjectEventReplica(replicaPath, { authorizePeer: () => true });
+    assert.equal(recovered.snapshot().records, 0);
+    recovered.close();
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    try { replica?.close(); } catch { /* Preserve the test failure. */ }
+    source.close();
+    f.cleanup();
+  }
 });
