@@ -1733,3 +1733,28 @@ This section narrows the earlier lifecycle assessment: the standalone `stop` com
 - CometBFT tag `v0.38.26`: `test/e2e/runner/main.go`, `test/e2e/pkg/infra/docker/docker.go`, and `test/e2e/pkg/testnet.go`.
 - Docker's Compose project-name documentation confirms that the default project name comes from the Compose file's parent directory unless explicitly overridden.
 - Docker's service documentation defines `container_name` as a custom container name, separate from Compose's default project-prefixed naming convention.
+
+
+## 40. CometBFT E2E runner failure-path cleanup and command composition
+
+### Source-level findings
+
+- In `test/e2e/runner/main.go`, the root command's `RunE` calls `Cleanup` before `Setup`, then runs load generation, `Start`, waits, optional perturbations/evidence, and `Test`. Its final `Cleanup` is reached only after all those operations return successfully and only when `--preserve` is false.
+- Errors from `Setup`, `Start`, either `Wait`, `Perturb`, `InjectEvidence`, the load goroutine result, or `Test` return early. There is no deferred cleanup of the testnet in this root callback. The deferred function only cancels the transaction-load context.
+- The `benchmark` command has the same structural weakness: it calls `Cleanup` before setup and at the successful end, but intermediate errors return without a deferred cleanup.
+- The standalone `start` command can create/setup the testnet directory when absent and then start nodes; it does not arrange cleanup. The standalone `test` command only invokes Go tests against an already-running testnet and does not stop or clean it. The standalone `stop` command stops the Compose project but does not perform the runner's global filesystem/label cleanup.
+- Consequently, a failed or interrupted run can leave containers, networks, and generated testnet files behind. Relying on the upstream runner to clean up after failure is not a valid resource-lifecycle guarantee.
+- The standalone `test` command executes `go test -count 1 ./tests/...` and passes the manifest/infrastructure selection through environment variables. It does not itself provide a process/VM isolation boundary for the Docker daemon used by the testnet.
+
+### Required teardown contract
+
+- The experiment harness must own the lifecycle outside the upstream runner: allocate an exclusive disposable VM and dedicated daemon; record the immutable VM/provider resource identifier before running workload; and destroy that exact resource in a failure-safe finalization path after success, test failure, timeout, cancellation, guest crash, or controller disconnect.
+- The controller must reconcile resources that outlive its own process. A bounded lease/expiry policy may be used only as a cleanup backstop, not as a Zion runtime dependency or as a substitute for explicit teardown and post-destruction verification.
+- Teardown must not invoke the upstream global `cleanup` command against a shared daemon. It must verify that the targeted VM is destroyed and retain bounded evidence (run ID, immutable resource ID, lifecycle timestamps, exit status, teardown result) without exporting private keys or testnet secrets.
+- A runner patch that adds deferred cleanup could reduce guest-local residue, but it is not sufficient as the sole safety boundary: abrupt VM/controller loss and Docker daemon compromise still require provider-level destruction. No runner patch is made in this PR.
+
+### Decision
+
+The disposable-VM experiment remains **NO-GO** until an actual VM provider/hypervisor and isolated network substrate are selected, credentials and permissions are available to the test controller, resource ceilings and teardown semantics are verified, and failure-injection tests demonstrate destruction on every terminal path. GitHub-hosted Actions' per-job VM lifecycle alone does not supply the required two-VM private network or this Zion-specific resource controller.
+
+This is a source-level audit only. No runner command, test, VM, Docker daemon, provider API, or failure-injection test was executed.
