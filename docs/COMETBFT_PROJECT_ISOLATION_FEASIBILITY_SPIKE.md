@@ -2203,3 +2203,75 @@ First-party references:
 - https://tailscale.com/docs/integrations/github/github-action (GitHub Action requires `auth_keys` for federated OIDC registration)
 - https://tailscale.com/docs/features/workload-identity-federation (OIDC scope, tags, claims, and GitHub integration)
 - https://tailscale.com/docs/reference/trust-credentials (scope definitions)
+
+## 51. Minimal isolated-tailnet policy for the two CI runners (2026-11-14)
+
+### Policy target
+
+The private-network smoke workflow has two ephemeral runner nodes. Both use only `tag:zion-ci`; the responder listens on TCP `26656`. The intended network rule is symmetric runner-to-runner access on that single TCP port, with deny-by-default for all other traffic.
+
+Tailscale recommends grants for new policy and documents that grants are additive: a narrower grant does not cancel a broader existing grant. Therefore this policy is safe only as the complete access policy of a dedicated, isolated Zion tailnet—not as an additive rule in the personal tailnet or any tailnet that retains a broad `src: ["*"]` grant.
+
+### Candidate HuJSON policy for a dedicated tailnet
+
+This is a minimal policy shape to validate in the Tailscale policy editor before enabling the workflow. It is not applied, and it must be merged with any mandatory platform defaults only after confirming that no broader grant remains.
+
+```json
+{
+  "tagOwners": {
+    "tag:zion-ci": []
+  },
+  "grants": [
+    {
+      "src": ["tag:zion-ci"],
+      "dst": ["tag:zion-ci"],
+      "ip": ["tcp:26656"]
+    }
+  ],
+  "tests": [
+    {
+      "src": "tag:zion-ci",
+      "proto": "tcp",
+      "accept": ["tag:zion-ci:26656"],
+      "deny": [
+        "tag:zion-ci:22",
+        "tag:zion-ci:443",
+        "tag:zion-ci:2379",
+        "tag:zion-ci:2380"
+      ]
+    },
+    {
+      "src": "tag:zion-ci",
+      "proto": "udp",
+      "deny": [
+        "tag:zion-ci:53",
+        "tag:zion-ci:41641"
+      ]
+    }
+  ]
+}
+```
+
+The empty tag-owner list leaves tag assignment to tailnet Owners/Admins/Network admins; Tailscale documents that an OAuth/workload identity whose requested tag exactly matches its configured tag can use that tag without a broader tag-owner hierarchy. The federated identity must still be restricted to the single `tag:zion-ci` tag and `auth_keys` scope. Do not add a second deployment/owner tag merely to make tag assignment work.
+
+### Required preflight checks
+
+1. Confirm the target is a dedicated child/isolated tailnet with no personal devices and no pre-existing broad allow grants.
+2. Load the policy in the editor and require all policy tests to pass before saving.
+3. Inspect the effective saved policy and confirm the only runner-to-runner network grant is TCP `26656`; no SSH, DNS-to-peer, UDP, subnet, exit-node, or Internet grant is added by Zion policy.
+4. Read back the federated identity and verify exact issuer, subject, workflow claim, audience, `auth_keys` scope, and `tag:zion-ci` restriction.
+5. Run the opt-in GitHub workflow only after the dedicated tailnet policy and identity are verified. Confirm both ephemeral nodes register, resolve each other, and pass TCP in both directions; confirm both nodes disappear after the job.
+6. Keep the readiness variable false until the run has produced inspectable evidence. A successful TCP smoke still does not prove CometBFT consensus or Byzantine fault tolerance.
+
+### Important limits
+
+- The `tests` entries above are regression assertions for representative allowed and denied ports, not a proof over every possible protocol/port. The deny-by-default grant model and inspection of the complete effective policy remain mandatory.
+- Tailscale grants are additive. If a broad grant exists elsewhere in the same policy, these tests must be expanded to detect the exposure and the broad grant must be removed in the isolated tailnet; adding this narrow grant cannot override it.
+- The workflow currently runs a fixed TCP health responder, not CometBFT. This policy only creates the network boundary for that smoke test.
+- No policy was saved, no tailnet was created, no credential was changed, and no runner/network test was executed in this step.
+
+First-party references:
+- https://tailscale.com/docs/reference/syntax/grants (grant syntax and deny-by-default behavior)
+- https://tailscale.com/docs/reference/syntax/policy-file (tag owners, grant policy, and policy tests)
+- https://tailscale.com/docs/features/tags (exact-match tag ownership behavior and tag semantics)
+- https://tailscale.com/docs/features/workload-identity-federation (federated identity scope and tag restrictions)
