@@ -271,3 +271,17 @@ Before implementation, the adapter design must now include these explicit rules:
 ### Audit conclusion
 
 The v0.38.26 interface is compatible with the planned deterministic state-machine boundary, but it does not provide an atomic transaction spanning CometBFT's block/state stores and the application's own database. Zion must implement and fault-test the application-side commit/replay contract described above. This audit does not select CometBFT for production, add a dependency, implement an ABCI application, prove two-project isolation, or authorize runtime integration.
+
+
+## 11. Test-only committed-state harness (2026-11-14)
+
+A deliberately isolated Node.js test harness was added:
+
+- `test/support/committed-state-harness.js`
+- `test/committed-state-harness.test.js`
+
+The harness exercises deterministic state-root calculation, proposal/finalization without mutating committed state, operation-ID idempotency, conflicting operation reuse, a single-snapshot atomic-commit model, outbox creation, stale/forked finalization rejection, and injected failures before, during, and immediately after the modeled commit.
+
+**Scope limitation:** `MemoryAtomicCommittedStateStore` is an in-memory test double whose atomicity is a single JavaScript snapshot replacement. It does not implement filesystem durability, WAL, database transactions, process recovery, power-loss guarantees, ABCI, or consensus. The tests validate state-machine expectations and test wiring only. They must not be cited as proof of durable storage or BFT safety.
+
+Next implementation gate: replace the test double with a separately reviewed durable adapter, then run process-kill/restart tests against its actual storage engine before any ABCI integration. Keep this harness outside production imports and startup paths.
