@@ -354,3 +354,52 @@ If the script or runner shares a global output path, colliding resource names, o
 - Two concurrent independent testnets: **not executed**.
 - Docker isolation, port uniqueness, cleanup independence, and cross-project failure isolation: **not proven**.
 - No code, dependency, launcher, database, migration, or production runtime was changed by this finding.
+
+
+## 16. Pinned v0.38.26 E2E runner audit — sequential execution and global cleanup
+
+The earlier Section 15 uncertainty has now been narrowed by read-only inspection of the exact pinned release sources at tag `v0.38.26` (peeled commit `94d77f9f51a72e2b7d832798859f6222f08028f8`). The upstream `run-multiple.sh`, `pkg/testnet.go`, `pkg/infrastructure.go`, `pkg/infra/docker/docker.go`, `runner/setup.go`, and `runner/cleanup.go` were fetched from the exact tag through read-only GitHub source access. No source was built or executed.
+
+### 16.1 The helper is sequential, not concurrent
+
+The pinned `run-multiple.sh` loops over manifest arguments and invokes `./build/runner -f "$MANIFEST"` inside that loop. The next manifest is not started until the previous runner invocation returns. On failure, it dumps that manifest's logs, invokes cleanup, records the failed manifest, and then continues to the remaining manifests.
+
+**Conclusion:** this helper is useful for batch-running independent testnets one after another. It cannot demonstrate simultaneous project liveness or prove that a fault in A leaves B committing while both are running.
+
+### 16.2 The default cleanup is global across all E2E testnets
+
+The pinned `runner/cleanup.go` implements `cleanupDocker()` by listing and force-removing **all** Docker containers labelled `e2e`, then removing **all** Docker networks labelled `e2e`. The cleanup is not scoped to the `Testnet` argument or to a particular Compose project. `Cleanup(testnet)` subsequently removes only that testnet's local directory, but its Docker cleanup step is global.
+
+The normal runner path invokes cleanup before setup, and the failure path in `run-multiple.sh` also invokes cleanup. Therefore, running two instances of this runner concurrently is unsafe: one runner's cleanup can terminate the other testnet's E2E-labelled containers and networks.
+
+**This is a concrete harness-level cross-testnet failure coupling**, not a claim about CometBFT consensus itself.
+
+### 16.3 Additional default resource collisions
+
+The pinned source also reveals default values that make concurrent runs unsafe without explicit namespacing:
+
+- `NewDockerInfrastructureData` allocates the same default IPv4 subnet (`10.186.73.0/24`) for every Docker testnet and initializes its host proxy-port generator at `5701` for each manifest.
+- `NewTestnetFromManifest` derives the testnet name and output directory from the manifest filename. The generated Compose file uses node names as literal `container_name` values, rather than namespacing them by project/testnet.
+- The generated Compose file publishes each node's proxy port from the generated `ProxyPort`; each separate testnet's default port generator begins at the same value. Reusing common node names and default settings therefore risks global container-name and host-port collisions.
+- The Compose template mounts each node's data directory relative to that manifest's testnet directory. This is a useful per-manifest data separation, but it does not cancel the global cleanup, shared default subnet, or host-level naming/port collisions.
+
+These are source-level observations. No concurrent Compose stacks were started, so no runtime collision was reproduced.
+
+### 16.4 Decision for Zion
+
+- Do **not** use the unmodified `run-multiple.sh` as the simultaneous two-project isolation harness.
+- Sequential batch execution may still be useful for independent functional smoke tests, but it does not satisfy the cross-project failure-isolation acceptance criterion.
+- Do **not** start concurrent instances of the unmodified runner: its global cleanup is sufficient to make that unsafe, even before considering subnet, container-name, and port collisions.
+- Do not patch CometBFT's upstream test harness as part of Zion's production code. If a disposable test-only harness is considered, it must scope cleanup to exact resources owned by that testnet, give each stack a unique network/subnet, unique container names, unique host ports, and separate output directories, and test its own cleanup under concurrent execution.
+- Any such wrapper must not use broad label-based deletion. It should record the exact resources it created and remove only those exact resources, with verification that another testnet's resources remain intact.
+- The two-project PoC still needs eight validators and the full adversarial matrix. A modified test harness is not itself proof of consensus isolation.
+
+### 16.5 Revised evidence status
+
+- Exact `v0.38.26` README documents multiple-testnet batch execution: **verified**.
+- Exact `v0.38.26` `run-multiple.sh` execution order: **verified sequential**.
+- Exact `v0.38.26` cleanup scope: **verified global across E2E-labelled containers and networks**.
+- Default subnet/port/container-name collision risks: **identified from source; not runtime-reproduced**.
+- Concurrent two-project E2E run: **not executed**.
+- Cross-project consensus, resource, and failure isolation: **not proven**.
+- No CometBFT code was changed; no Zion runtime, dependency, launcher, database, migration, or production code was changed.
