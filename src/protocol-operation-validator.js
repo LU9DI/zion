@@ -1,6 +1,6 @@
 const HEX32 = /^[a-f0-9]{32}$/;
 const HEX64 = /^[a-f0-9]{64}$/;
-const TYPES = new Set(['PING', 'PONG', 'STORE_CHUNK', 'GET_CHUNK', 'CHUNK_DATA', 'MANIFEST', 'STORE_REQUEST', 'STORE_RECEIPT', 'STORE_REJECTED']);
+const TYPES = new Set(['PING', 'PONG', 'STORE_CHUNK', 'GET_CHUNK', 'CHUNK_DATA', 'MANIFEST', 'STORE_REQUEST', 'STORE_RECEIPT', 'STORE_REJECTED', 'PROJECT_EVENT_REPLICATION', 'PROJECT_EVENT_REPLICATION_ACK']);
 
 function int(value, min, max) { return Number.isSafeInteger(value) && value >= min && value <= max; }
 function text(value, max = 256) { return typeof value === 'string' && value.length > 0 && value.length <= max; }
@@ -21,6 +21,21 @@ export function validateProtocolOperation(payload, { genesis, now = Date.now() }
   const limits = { ...genesis.limits, maxClockSkewMs: genesis.replay.maxClockSkewMs };
   const fail = reason => ({ ok: false, reason });
   switch (payload.type) {
+    case 'PROJECT_EVENT_REPLICATION': {
+      const record = payload.record;
+      const event = record?.envelope?.payload;
+      if (!HEX32.test(payload.requestId ?? '') || !record || typeof record !== 'object' ||
+          !HEX64.test(record.recordHash ?? '') || !record.envelope || typeof record.envelope !== 'object' ||
+          event?.type !== 'PROJECT_EVENT' || !HEX64.test(event.projectId ?? '') ||
+          !int(event.sequence, 1, Number.MAX_SAFE_INTEGER)) return fail('invalid-project-event-replication');
+      return Buffer.byteLength(JSON.stringify(record), 'utf8') <= limits.maxMessageBytes - 512
+        ? { ok: true } : fail('project-event-replication-too-large');
+    }
+    case 'PROJECT_EVENT_REPLICATION_ACK':
+      return HEX32.test(payload.requestId ?? '') && HEX64.test(payload.nodeId ?? '') &&
+        int(payload.sequence, 1, Number.MAX_SAFE_INTEGER) && HEX64.test(payload.recordHash ?? '') &&
+        typeof payload.accepted === 'boolean' && typeof payload.duplicate === 'boolean' &&
+        payload.accepted === !payload.duplicate ? { ok: true } : fail('invalid-project-event-replication-ack');
     case 'PING': case 'PONG':
       return text(payload.nonce, 128) ? { ok: true } : fail('invalid-ping-nonce');
     case 'GET_CHUNK':
