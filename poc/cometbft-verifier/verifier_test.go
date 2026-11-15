@@ -177,8 +177,15 @@ func TestVerifyCommitEvidenceRejectsInvalidEvidence(t *testing.T) {
 }
 
 func TestVerifyTransactionDataAcceptsCanonicalEmptyBlock(t *testing.T) {
-	if err := verifyTransactionData(nil, nil); err != nil {
+	canonicalEmptyDataHash := (types.Txs{}).Hash()
+	if len(canonicalEmptyDataHash) == 0 {
+		t.Fatal("CometBFT canonical empty data hash unexpectedly empty")
+	}
+	if err := verifyTransactionData(nil, canonicalEmptyDataHash); err != nil {
 		t.Fatalf("canonical empty block data rejected: %v", err)
+	}
+	if err := verifyTransactionData(nil, nil); !errors.Is(err, ErrDataHashMismatch) {
+		t.Fatalf("nil data hash must not be accepted as canonical empty block hash, got %v", err)
 	}
 }
 
