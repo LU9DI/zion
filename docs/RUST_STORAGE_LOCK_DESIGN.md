@@ -1,6 +1,6 @@
 # Rust storage lock design proposal
 
-**Status:** proposed design; not implemented or approved for production use  
+**Status:** implemented and CI-validated on Ubuntu, macOS, and Windows; independent security review and production approval remain outstanding  
 **Scope:** local cross-process mutual exclusion for `rust-core` storage operations  
 **Out of scope:** distributed consensus, quorum commitment, network membership, and the test-only committed-block journal
 
@@ -138,3 +138,52 @@ newer toolchain.
 
 The CI evidence above belongs to the earlier validation commit and does not
 constitute a build or test of this proposed locking design.
+
+
+## 8. Implementation and CI evidence (2026-11-15)
+
+**Implementation status:** implemented in `rust-core/src/lib.rs`; cross-platform CI
+passed for commit
+`4196717f23cf41d993b6b4352019978a541fba56`. This section supersedes the
+proposal-only status statements in sections 6 and 7 where they describe the
+current repository state.
+
+The implementation uses the Rust standard-library `File::try_lock` API
+(minimum Rust 1.89), a persistent lock file, handle-based validation, and
+bounded contention waiting. The lock file is retained; the implementation
+does not reclaim locks based on PID or file age and does not unlink the lock
+file during normal acquisition or release.
+
+### Verified on the implementation commit
+
+- Rust storage-lock test matrix: Ubuntu, macOS, and Windows — all passed.
+- Lock tests cover persistent-file retention and exclusivity, contention
+  timeout, cross-process exclusion, release after child-process termination,
+  and Unix symlink rejection.
+- Rust 1.89 test run: 13 passed, 0 failed.
+- Stable Rust test run: 13 passed, 0 failed.
+- Release build of `rea-storage-cli`: passed.
+- Node-to-Rust sidecar integration test: 1 passed, 0 failed.
+- Repository Node suite: 843 tests, 840 passed, 0 failed, 3 skipped.
+- PostgreSQL-backed validation and ClamAV integration jobs: passed.
+- CodeQL JavaScript/TypeScript and Rust analyses: passed.
+- CometBFT private-runner network smoke: passed.
+
+CI run references:
+- Validation: https://github.com/LU9DI/zion/actions/runs/43659902255
+- CodeQL: https://github.com/LU9DI/zion/actions/runs/43659902247
+- Private-runner smoke: https://github.com/LU9DI/zion/actions/runs/43659896865
+
+### Remaining limits and review gates
+
+These results validate the repository's tested lock behavior on the listed
+hosted CI operating systems. They do not establish support for NFS, SMB,
+FUSE, overlay/shared volumes, or every local filesystem and mount option.
+The current test suite also does not constitute a full hostile-parent-directory
+ACL/permission audit, exhaustive concurrent pathname-replacement testing, or
+an independent security review. Those remain explicit pre-production review
+gates. The lock is local process coordination only; it is not distributed
+consensus, BFT finality, or a global admission authority.
+
+The PR remains a draft. Passing CI does not authorize merge, deployment, or
+production use.
