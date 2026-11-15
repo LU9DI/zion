@@ -305,3 +305,60 @@ test('two project journals keep committed histories and corruption failures inde
     beta.cleanup();
   }
 });
+
+
+test('separate OS processes isolate two project journal recovery failures', () => {
+  const alpha = fixture();
+  const beta = fixture();
+  const moduleUrl = new URL('./support/durable-committed-block-journal.js', import.meta.url).href;
+  const harnessUrl = new URL('./support/committed-state-harness.js', import.meta.url).href;
+  const childScript = [
+    'import { DurableCommittedBlockJournal } from ' + JSON.stringify(moduleUrl) + ';',
+    'import { CommittedStateHarness } from ' + JSON.stringify(harnessUrl) + ';',
+    'const [path, mode, key, value] = process.argv.slice(1);',
+    'try {',
+    '  const journal = new DurableCommittedBlockJournal(path);',
+    '  if (mode === "commit") {',
+    '    const block = new CommittedStateHarness().finalizeBlock({ height: 1, transactions: [{ operationId: "process-isolation-" + key, type: "SET", key, value }] });',
+    '    journal.commit(1, block.state);',
+    '    journal.close();',
+    '    process.stdout.write(JSON.stringify({ status: "committed", appHash: block.appHash }));',
+    '  } else {',
+    '    process.stdout.write(JSON.stringify({ info: journal.info(), state: journal.read() }));',
+    '    journal.close();',
+    '  }',
+    '} catch (error) {',
+    '  process.stdout.write(JSON.stringify({ error: error.code ?? error.message }));',
+    '  process.exitCode = 2;',
+    '}',
+  ].join('\\n');
+  const runChild = (path, mode, key = '', value = '') => spawnSync(
+    process.execPath,
+    ['--input-type=module', '-e', childScript, path, mode, key, value],
+    { encoding: 'utf8' },
+  );
+
+  try {
+    const alphaCommit = runChild(alpha.path, 'commit', 'alpha', 'alpha-state');
+    const betaCommit = runChild(beta.path, 'commit', 'beta', 'beta-state');
+    assert.equal(alphaCommit.status, 0, alphaCommit.stderr);
+    assert.equal(betaCommit.status, 0, betaCommit.stderr);
+    assert.equal(JSON.parse(alphaCommit.stdout).status, 'committed');
+    assert.equal(JSON.parse(betaCommit.stdout).status, 'committed');
+
+    writeFileSync(alpha.path, Buffer.concat([readFileSync(alpha.path), Buffer.from('{"corrupt":true}')]));
+    const alphaRecovery = runChild(alpha.path, 'recover');
+    assert.equal(alphaRecovery.status, 2);
+    assert.equal(JSON.parse(alphaRecovery.stdout).error, 'ZION_JOURNAL_CORRUPT');
+
+    const betaRecovery = runChild(beta.path, 'recover');
+    assert.equal(betaRecovery.status, 0, betaRecovery.stderr);
+    const recovered = JSON.parse(betaRecovery.stdout);
+    assert.equal(recovered.info.lastBlockHeight, 1);
+    assert.equal(recovered.info.appHash, JSON.parse(betaCommit.stdout).appHash);
+    assert.equal(recovered.state.data.beta, 'beta-state');
+  } finally {
+    alpha.cleanup();
+    beta.cleanup();
+  }
+});
