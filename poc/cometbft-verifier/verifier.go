@@ -27,6 +27,8 @@ var (
 	ErrHeaderMismatch        = errors.New("signed header does not match expected block context")
 	ErrAppHashMismatch       = errors.New("post-block application hash mismatch")
 	ErrPreBlockAppHashMismatch = errors.New("pre-block application hash does not match the signed header")
+	ErrMissingPostBlockAnchor = errors.New("missing authenticated next-header anchor")
+	ErrPostBlockAnchorMismatch = errors.New("next-header anchor does not authenticate the post-block state")
 	ErrDataHashMismatch      = errors.New("header data hash does not match supplied ordered transactions")
 	ErrDataBounds            = errors.New("block transaction data exceeds verifier bounds")
 	ErrSignatureVectorLength = errors.New("commit signature vector length does not match validator set")
@@ -36,8 +38,8 @@ var (
 // signed header, ordered raw transaction bytes, and commit. ValidatorSetHash
 // must come from an independently authenticated validator-set record.
 // ExpectedPreBlockAppHash must match Header.AppHash at the start of this block.
-// ExpectedPostBlockAppHash must be independently authenticated (for example by
-// the next verified header) and is distinct from Header.AppHash.
+// ExpectedPostBlockAppHash must match the next verified header AppHash; replay
+// rejects it unless a PostBlockAnchor authenticates that next header and commit.
 type Evidence struct {
 	ChainID          string
 	Height           int64
@@ -48,6 +50,16 @@ type Evidence struct {
 	Transactions     [][]byte
 	Header           *types.Header
 	Commit           *types.Commit
+}
+
+
+// PostBlockAnchor authenticates the application hash after Evidence.Height by
+// verifying the next committed header and its validator-set transition.
+type PostBlockAnchor struct {
+	Header *types.Header
+	BlockID types.BlockID
+	Commit *types.Commit
+	Validators *types.ValidatorSet
 }
 
 // VerifyCommitEvidence binds the signed header to the committed block ID,
@@ -84,9 +96,6 @@ func VerifyCommitEvidence(e Evidence, validators *types.ValidatorSet) error {
 	if len(e.ExpectedPreBlockAppHash) == 0 || !bytes.Equal(e.Header.AppHash, e.ExpectedPreBlockAppHash) {
 		return ErrPreBlockAppHashMismatch
 	}
-	if len(e.ExpectedPostBlockAppHash) == 0 {
-		return ErrAppHashMismatch
-	}
 	if err := verifyTransactionData(e.Transactions, e.Header.DataHash); err != nil {
 		return err
 	}
@@ -118,11 +127,10 @@ func VerifyCommitEvidence(e Evidence, validators *types.ValidatorSet) error {
 	return nil
 }
 
-// VerifyCommitEvidenceWithReplay binds the trusted initial state to Header.AppHash
-// (the pre-block state), replays the ordered block transactions, compares the
-// result to a separately authenticated post-block app hash, and verifies the commit.
-// The supplied initial state is never mutated.
-func VerifyCommitEvidenceWithReplay(e Evidence, validators *types.ValidatorSet, initial *StateMachine) (*StateMachine, error) {
+// VerifyCommitEvidenceWithReplay binds the pre-block state, replays the exact
+// ordered transactions, and requires a separately committed next-header anchor
+// to authenticate the post-block application hash. The supplied state is never mutated.
+func VerifyCommitEvidenceWithReplay(e Evidence, validators *types.ValidatorSet, initial *StateMachine, anchor *PostBlockAnchor) (*StateMachine, error) {
 	if initial == nil || e.Header == nil {
 		return nil, ErrMissingEvidence
 	}
@@ -133,13 +141,56 @@ func VerifyCommitEvidenceWithReplay(e Evidence, validators *types.ValidatorSet, 
 	if err := replayed.Replay(e.Transactions); err != nil {
 		return nil, fmt.Errorf("deterministic application replay failed: %w", err)
 	}
-	if len(e.ExpectedPostBlockAppHash) == 0 || !bytes.Equal(replayed.AppHash(), e.ExpectedPostBlockAppHash) {
-		return nil, ErrAppHashMismatch
+	if anchor == nil || anchor.Header == nil || anchor.Commit == nil || anchor.Validators == nil {
+		return nil, ErrMissingPostBlockAnchor
+	}
+	if err := verifyPostBlockAnchor(e, anchor, replayed.AppHash()); err != nil {
+		return nil, err
 	}
 	if err := VerifyCommitEvidence(e, validators); err != nil {
 		return nil, err
 	}
 	return replayed, nil
+}
+
+
+func verifyPostBlockAnchor(e Evidence, anchor *PostBlockAnchor, replayedAppHash []byte) error {
+	next := anchor.Header
+	if e.Header == nil || next == nil || anchor.Commit == nil || anchor.Validators == nil {
+		return ErrMissingPostBlockAnchor
+	}
+	if e.Height == int64(^uint64(0)>>1) || next.Height != e.Height+1 ||
+		next.ChainID != e.ChainID || !next.LastBlockID.Equals(e.BlockID) ||
+		!bytes.Equal(next.AppHash, replayedAppHash) ||
+		!bytes.Equal(next.AppHash, e.ExpectedPostBlockAppHash) {
+		return ErrPostBlockAnchorMismatch
+	}
+	if err := anchor.Validators.ValidateBasic(); err != nil {
+		return fmt.Errorf("invalid next-height validator set: %w", err)
+	}
+	nextValidatorHash := anchor.Validators.Hash()
+	if len(nextValidatorHash) == 0 ||
+		!bytes.Equal(e.Header.NextValidatorsHash, nextValidatorHash) ||
+		!bytes.Equal(next.ValidatorsHash, nextValidatorHash) {
+		return ErrPostBlockAnchorMismatch
+	}
+	if err := next.ValidateBasic(); err != nil {
+		return fmt.Errorf("invalid next-height header: %w", err)
+	}
+	if err := anchor.BlockID.ValidateBasic(); err != nil || !anchor.BlockID.IsComplete() ||
+		!bytes.Equal(next.Hash(), anchor.BlockID.Hash) {
+		return ErrPostBlockAnchorMismatch
+	}
+	if err := anchor.Commit.ValidateBasic(); err != nil {
+		return fmt.Errorf("invalid next-height commit: %w", err)
+	}
+	if anchor.Commit.Height != next.Height || !anchor.Commit.BlockID.Equals(anchor.BlockID) {
+		return ErrPostBlockAnchorMismatch
+	}
+	if err := anchor.Validators.VerifyCommit(e.ChainID, anchor.BlockID, next.Height, anchor.Commit); err != nil {
+		return fmt.Errorf("next-height CometBFT commit verification failed: %w", err)
+	}
+	return nil
 }
 
 func verifyTransactionData(raw [][]byte, expectedDataHash []byte) error {
