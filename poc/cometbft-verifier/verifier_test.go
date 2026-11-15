@@ -152,7 +152,6 @@ func TestVerifyCommitEvidenceRejectsInvalidEvidence(t *testing.T) {
 		{"header pre-block app hash mismatch", func(e *Evidence) { e.Header.AppHash = tmhash.Sum([]byte("substituted pre-block app hash")) }},
 		{"expected pre-block app hash mismatch", func(e *Evidence) { e.ExpectedPreBlockAppHash = tmhash.Sum([]byte("wrong pre-block state root")) }},
 		{"header validator hash mismatch", func(e *Evidence) { e.Header.ValidatorsHash = tmhash.Sum([]byte("substituted validators")) }},
-		{"independently expected app hash mismatch", func(e *Evidence) { e.ExpectedPostBlockAppHash = tmhash.Sum([]byte("wrong post-block state root")) }},
 		{"validator set digest mismatch", func(e *Evidence) { e.ValidatorSetHash[0] ^= 0xff }},
 		{"altered transaction bytes", func(e *Evidence) { e.Transactions[0][0] ^= 0xff }},
 		{"omitted transaction", func(e *Evidence) { e.Transactions = e.Transactions[:2] }},
@@ -327,6 +326,16 @@ func TestVerifyCommitEvidenceWithReplayBindsPreAndPostBlockStateHashes(t *testin
 	}
 }
 
+
+
+func TestVerifyCommitEvidenceWithReplayRejectsWrongPostBlockHash(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	evidence.ExpectedPostBlockAppHash = tmhash.Sum([]byte("wrong post-block state root"))
+	initial := newTestState(t, "project-alpha", "genesis-alpha")
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial); !errors.Is(err, ErrAppHashMismatch) {
+		t.Fatalf("expected post-block app hash mismatch, got %v", err)
+	}
+}
 
 func TestVerifyCommitEvidenceRejectsMissingPostBlockHash(t *testing.T) {
 	evidence, validators := signedEvidence(t)
