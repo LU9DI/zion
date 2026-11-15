@@ -85,8 +85,9 @@ type ProtoEvidence struct {
 	ChainID          string
 	Height           int64
 	BlockID          *cmtproto.BlockID
-	ValidatorSet     *cmtproto.ValidatorSet
-	Commit           *cmtproto.Commit
+	ValidatorSet          *cmtproto.ValidatorSet
+	ExpectedValidatorHash []byte
+	Commit                *cmtproto.Commit
 }
 
 // VerifyProtoCommitEvidence converts untrusted protobuf objects using
@@ -112,7 +113,7 @@ func VerifyProtoCommitEvidence(e ProtoEvidence) error {
 		ChainID:          e.ChainID,
 		Height:           e.Height,
 		BlockID:          *blockID,
-		ValidatorSetHash: validators.Hash(),
+		ValidatorSetHash: e.ExpectedValidatorHash,
 		Commit:           commit,
 	}, validators)
 }
