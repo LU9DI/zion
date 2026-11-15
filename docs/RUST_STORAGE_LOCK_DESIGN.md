@@ -63,3 +63,61 @@ Any lock API error, unsupported filesystem behavior, failed handle validation, o
 This document is a design proposal only. No dependency has been added, no Rust source or lockfile has been modified, and no tests have been run for this proposal. The existing directory/PID lock remains unchanged and retains the limitations recorded in `docs/PROJECT_COMMITTED_STATE_MACHINE_CONTRACT.md`.
 
 The design must be reviewed and validated before implementation. Even after local storage locking is improved, this does not solve the separate Zion-wide global-admission consensus conflict or provide BFT finality.
+
+## 7. Re-evaluation: Rust standard-library file locks (2026-11-14)
+
+A better first candidate than adding `fs2` is the Rust standard library API
+`std::fs::File::lock` / `File::try_lock`, both stable since Rust 1.89. The
+standard-library documentation states that the current Unix implementation
+uses `flock(LOCK_EX)` and the current Windows implementation uses
+`LockFileEx(LOCKFILE_EXCLUSIVE_LOCK)`. It also documents that the lock is
+released when the file and any duplicated/inherited handles are closed, or
+when explicitly unlocked. See the official Rust API documentation:
+
+- https://doc.rust-lang.org/std/fs/struct.File.html#method.lock
+- https://doc.rust-lang.org/std/fs/struct.File.html#method.try_lock
+
+This removes the need to introduce a third-party locking dependency for the
+initial implementation candidate. It also gives a concrete minimum compiler
+requirement: Rust 1.89.0 or newer. The repository currently has no explicit
+`rust-version` declaration in `rust-core/Cargo.toml` and no checked-in
+`rust-toolchain.toml` was found at the project root or under `rust-core` in
+the inspected branch. Before implementation, the CI toolchain must be
+inspected and the minimum version made explicit in crate metadata and CI.
+
+### Standard-library caveats to carry into implementation
+
+- The standard-library docs say locking may be advisory or mandatory, and
+  that interactions with ordinary reads/writes are platform-specific. Every
+  writer must therefore cooperate with the same lock protocol.
+- The docs explicitly warn that locking again through the same file handle
+  or a clone has unspecified, platform-dependent behavior, potentially
+  including deadlock. The implementation must own one lock handle per
+  critical section and must not clone it or reacquire through it.
+- The lock remains held while duplicated or inherited handles remain open.
+  Child-process inheritance and handle duplication must be tested or
+  prohibited by the process model; closing only the parent variable is not
+  sufficient if another handle remains alive.
+- On Windows, the file must not be opened append-only. Use a documented
+  read/write open mode and test it on Windows CI.
+- The standard library's current OS mapping is documented as current behavior
+  and may change in future Rust releases. Pin the minimum compiler and retain
+  platform-specific contention/termination tests.
+- The API does not make path resolution safe. The lock path still needs
+  no-follow/reparse-point validation, a trusted parent directory, and
+  verification that the opened handle is a regular file. A pathname must
+  never be unlinked or replaced during the lock's lifetime.
+- Do not assume semantics on NFS, SMB, FUSE, overlay filesystems, or shared
+  volumes without dedicated tests. Initially support only explicitly tested
+  local filesystems; reject or document all others as unsupported.
+
+### Updated direction
+
+Prefer the standard-library `File::try_lock` / `File::lock` APIs over adding
+`fs2`, provided the repository's CI and declared MSRV can be raised to Rust
+1.89 or newer and the platform/path gates above are implemented. If that MSRV
+is unacceptable, evaluate a pinned third-party crate by auditing its exact
+Unix and Windows source rather than assuming portability from its API name.
+
+This is still a design decision, not an implementation. No dependency,
+minimum Rust version, Rust source, or lockfile was changed in this commit.
