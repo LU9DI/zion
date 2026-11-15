@@ -382,7 +382,7 @@ This evidence applies to that exact source SHA. The subsequent commits that add 
 
 ### 11.4 Remaining verifier gaps and explicit limits
 
-The current implementation is only Mode A's full commit-certificate check relative to a caller-authenticated validator set. It does not yet verify the signed header and its hash binding, header validator-set hash, app hash against independently replayed application state, transaction inclusion/order, validator-set transitions, or Mode B light-client trust from an authenticated checkpoint.
+The current implementation is Mode A's full commit-certificate check relative to a caller-authenticated validator set, with signed-header and ordered block-data binding. It compares (but does not recompute) the app hash against an independently supplied state hash. It does not authenticate validator-set transitions or implement Mode B light-client trust from an authenticated checkpoint.
 
 It also does not run CometBFT nodes, implement the test ABCI application, establish a genesis trust ceremony, or prove validator/operator independence, Byzantine fault tolerance, project isolation, or Zion-wide admission ordering. No Zion production runtime imports this package. No production keys, databases, peers, user accounts, or invitation state are involved.
 
@@ -399,6 +399,19 @@ Implemented in the follow-up verifier increment:
 
 The verifier does not itself recompute ExpectedAppHash. The caller must derive it by deterministic replay of canonical application history or validate it from a separately verified state snapshot. This comparison binds the signed header to an independently obtained state root; it does not prove correct application execution by itself.
 
-### 11.6 Next bounded implementation gate
+### 11.6 Ordered transaction and block-data binding increment
 
-The next gate is transaction/block-data binding: retain the canonical block data bytes, verify the transaction list and ordering against the committed header's DataHash using CometBFT's upstream data-hash implementation, and add positive/negative inclusion, omission, reordering, and cross-project replay tests. Keep state-machine replay and light-client trust as separate subsequent gates.
+Implemented in the follow-up verifier increment:
+
+- evidence now carries the original ordered transaction byte strings;
+- the verifier bounds evidence to at most 10,000 transactions, 1 MiB per transaction, and 16 MiB total transaction bytes before hashing;
+- it converts the byte strings to CometBFT v0.38.26 `types.Txs` and recomputes the Merkle data hash with the upstream `Txs.Hash()` implementation;
+- it requires the recomputed hash to equal the signed header's `DataHash`;
+- protobuf evidence carries the same transaction bytes and follows the same verification path;
+- tests cover valid ordered transactions, modified bytes, omission, reordering, a project-beta transaction replayed into project-alpha evidence, oversized transaction/count rejection, protobuf tampering, and input non-mutation.
+
+This verifies that the supplied ordered transaction bytes match the transaction-data commitment in the signed header. It does not independently validate each transaction's business semantics, prove that the application executed them correctly, or recompute the post-block application state. CometBFT's block data hash commits to order; the application state transition remains a separate deterministic replay gate.
+
+### 11.7 Next bounded implementation gate
+
+The next gate is deterministic application-state replay: define canonical genesis/state serialization and a deterministic transaction state machine; replay the exact verified transaction sequence; and compare the resulting state root to the independently supplied expected app hash and signed header AppHash. Add replay vectors, duplicate-operation/idempotency cases, invalid-operation behavior, and cross-project genesis/state substitution tests. Keep validator-set transition and light-client trust as separate later gates.
