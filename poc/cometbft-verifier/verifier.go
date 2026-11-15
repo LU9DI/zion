@@ -52,7 +52,8 @@ type Evidence struct {
 
 // VerifyCommitEvidence binds the signed header to the committed block ID,
 // chain/height, authenticated validator-set digest, independently expected
-// application state hash, and ordered transaction bytes. It then delegates
+// pre-block state hash, independently expected post-block state hash, and ordered
+// transaction bytes. It then delegates
 // full certificate checks to CometBFT v0.38.26.
 //
 // This does not authenticate the validator set, recompute the app hash, or
@@ -117,12 +118,12 @@ func VerifyCommitEvidence(e Evidence, validators *types.ValidatorSet) error {
 	return nil
 }
 
-// VerifyCommitEvidenceWithReplay independently executes the ordered transaction
-// bytes against a trusted initial state, compares the resulting app hash with
-// the expected/header app hash, and only then verifies the CometBFT commit.
+// VerifyCommitEvidenceWithReplay binds the trusted initial state to Header.AppHash
+// (the pre-block state), replays the ordered block transactions, compares the
+// result to a separately authenticated post-block app hash, and verifies the commit.
 // The supplied initial state is never mutated.
 func VerifyCommitEvidenceWithReplay(e Evidence, validators *types.ValidatorSet, initial *StateMachine) (*StateMachine, error) {
-	if initial == nil {
+	if initial == nil || e.Header == nil {
 		return nil, ErrMissingEvidence
 	}
 	if len(e.ExpectedPreBlockAppHash) == 0 || !bytes.Equal(initial.AppHash(), e.ExpectedPreBlockAppHash) || !bytes.Equal(initial.AppHash(), e.Header.AppHash) {
