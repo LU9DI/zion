@@ -160,7 +160,8 @@ func verifyPostBlockAnchor(e Evidence, anchor *PostBlockAnchor, replayedAppHash 
 	if e.Height == int64(^uint64(0)>>1) || next.Height != e.Height+1 ||
 		next.ChainID != e.ChainID || !next.LastBlockID.Equals(e.BlockID) ||
 		!bytes.Equal(next.AppHash, replayedAppHash) ||
-		!bytes.Equal(next.AppHash, e.ExpectedPostBlockAppHash) {
+		!bytes.Equal(next.AppHash, e.ExpectedPostBlockAppHash) ||
+		!bytes.Equal(next.LastCommitHash, e.Commit.Hash()) {
 		return ErrPostBlockAnchorMismatch
 	}
 	if err := anchor.Validators.ValidateBasic(); err != nil {
