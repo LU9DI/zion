@@ -221,3 +221,18 @@ func (s *StateMachine) AppHash() []byte {
 	sum := sha256.Sum256(b.Bytes())
 	return sum[:]
 }
+
+// Clone returns an independent in-memory copy suitable for speculative replay.
+func (s *StateMachine) Clone() *StateMachine {
+	if s == nil { return nil }
+	out := &StateMachine{
+		projectID: s.projectID,
+		genesisDigest: s.genesisDigest,
+		sequence: s.sequence,
+		kv: make(map[string][]byte, len(s.kv)),
+		operations: make(map[string]stateOperation, len(s.operations)),
+	}
+	for key, value := range s.kv { out.kv[key] = append([]byte(nil), value...) }
+	for id, op := range s.operations { out.operations[id] = op }
+	return out
+}
