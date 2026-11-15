@@ -151,7 +151,7 @@ func TestVerifyProtoCommitEvidence(t *testing.T) {
 	}
 }
 
-func TestVerifyProtoCommitEvidenceRejectsUnknownValidatorSignature(t *testing.T) {
+func TestVerifyCommitEvidenceRejectsUnknownValidatorSignature(t *testing.T) {
 	evidence, validators := signedEvidence(t)
 	outsider, outsiderPrivate := types.RandValidator(false, 1)
 	vote := &types.Vote{
