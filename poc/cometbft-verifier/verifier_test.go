@@ -133,6 +133,13 @@ func cloneTransactions(in [][]byte) [][]byte {
 	return out
 }
 
+func cloneBlockID(in types.BlockID) types.BlockID {
+	out := in
+	out.Hash = append([]byte(nil), in.Hash...)
+	out.PartSetHeader.Hash = append([]byte(nil), in.PartSetHeader.Hash...)
+	return out
+}
+
 func cloneEvidence(in Evidence) Evidence {
 	out := in
 	out.ValidatorSetHash = append([]byte(nil), in.ValidatorSetHash...)
@@ -151,6 +158,7 @@ func cloneEvidence(in Evidence) Evidence {
 	headerCopy.ProposerAddress = append([]byte(nil), in.Header.ProposerAddress...)
 	out.Header = &headerCopy
 	commitCopy := *in.Commit
+	commitCopy.BlockID = cloneBlockID(in.Commit.BlockID)
 	out.Commit = &commitCopy
 	out.Commit.Signatures = append([]types.CommitSig(nil), in.Commit.Signatures...)
 	for i := range out.Commit.Signatures {
@@ -172,9 +180,10 @@ func cloneEvidence(in Evidence) Evidence {
 			h.ProposerAddress = append([]byte(nil), h.ProposerAddress...)
 			anchorCopy.Header = &h
 		}
-		anchorCopy.BlockID.PartSetHeader.Hash = append([]byte(nil), in.PostBlockAnchor.BlockID.PartSetHeader.Hash...)
+		anchorCopy.BlockID = cloneBlockID(in.PostBlockAnchor.BlockID)
 		if in.PostBlockAnchor.Commit != nil {
 			c := *in.PostBlockAnchor.Commit
+			c.BlockID = cloneBlockID(in.PostBlockAnchor.Commit.BlockID)
 			c.Signatures = append([]types.CommitSig(nil), in.PostBlockAnchor.Commit.Signatures...)
 			for i := range c.Signatures {
 				c.Signatures[i].ValidatorAddress = append([]byte(nil), in.PostBlockAnchor.Commit.Signatures[i].ValidatorAddress...)
