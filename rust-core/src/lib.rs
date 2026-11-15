@@ -5,7 +5,7 @@
 //! is an application-level payload quota, not an operating-system disk quota.
 
 use sha2::{Digest, Sha256};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{Read, Write};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -42,9 +42,10 @@ pub struct PutReceipt {
 
 /// Opaque encrypted block store with bounded payload quota.
 ///
-/// Separate processes sharing a root coordinate through an atomic lock directory.
-/// For strong protection against unrelated/malicious local processes, place this
-/// directory on a dedicated filesystem with an OS-enforced quota as well.
+/// Separate processes sharing a root coordinate through a persistent lock file
+/// and the operating system's exclusive file-lock primitive. For strong protection
+/// against unrelated/malicious local processes, place this directory on a dedicated
+/// filesystem with an OS-enforced quota as well.
 pub struct StorageCore {
     root: PathBuf,
     max_chunk_bytes: u64,
@@ -229,8 +230,8 @@ impl StorageCore {
         for shard in fs::read_dir(&self.root)? {
             let shard = shard?;
             let name = shard.file_name().to_string_lossy().into_owned();
-            // Only the active lock directory is metadata. Silently skipping every
-            // dotfile would let unexpected root entries evade quota accounting.
+            // The persistent OS lock file and quota config are metadata, not payload.
+            // Silently skipping every other dotfile would evade quota accounting.
             if name == ".rea-rust-storage-lock" || name == ".rea-rust-storage-config" { continue; }
             let meta = fs::symlink_metadata(shard.path())?;
             if !meta.is_dir() || meta.file_type().is_symlink() || name.len() != 2 || !name.bytes().all(is_hex) { return Err(StorageError::UnsafePath); }
@@ -269,11 +270,11 @@ impl StorageCore {
         loop {
             match file.try_lock() {
                 Ok(()) => break,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                Err(TryLockError::WouldBlock) => {
                     if started.elapsed() >= self.lock_wait { return Err(StorageError::LockTimeout); }
                     thread::sleep(Duration::from_millis(15));
                 }
-                Err(error) => return Err(StorageError::Io(error.to_string())),
+                Err(TryLockError::Error(error)) => return Err(StorageError::Io(error.to_string())),
             }
         }
         // Keep the unique handle alive for the critical section. Never unlink this file.
@@ -315,7 +316,7 @@ mod tests {
         let first = OpenOptions::new().read(true).write(true).open(&path).unwrap();
         first.try_lock().unwrap();
         let second = OpenOptions::new().read(true).write(true).open(&path).unwrap();
-        assert_eq!(second.try_lock().unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+        assert!(matches!(second.try_lock(), Err(TryLockError::WouldBlock)));
         drop(first);
         second.try_lock().expect("closing the owning handle releases the lock");
         assert!(path.is_file());
