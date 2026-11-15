@@ -335,7 +335,7 @@ test('separate OS processes isolate two project journal recovery failures', () =
   const runChild = (path, mode, key = '', value = '') => spawnSync(
     process.execPath,
     ['--input-type=module', '-e', childScript, path, mode, key, value],
-    { encoding: 'utf8' },
+    { encoding: 'utf8', timeout: 15_000, maxBuffer: 1024 * 1024 },
   );
 
   try {
