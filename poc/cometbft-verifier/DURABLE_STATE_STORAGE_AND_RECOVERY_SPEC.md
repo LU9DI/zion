@@ -1,6 +1,6 @@
 # Durable State Storage and Recovery Protocol (PoC Specification)
 
-**Status:** design specification only; not implemented or validated.  
+**Status:** design specification; D1 pure codec has been added to the isolated PoC but has not yet been validated by CI. No filesystem persistence is implemented.  
 **Scope:** isolated CometBFT verifier/replay PoC under `poc/cometbft-verifier/`.  
 **Non-goal:** this document does not authorize production Zion integration, invitation admission, validator operation, or a deployment.
 
@@ -74,7 +74,7 @@ A future versioned WAL record should include:
 
 All integers use a single specified byte order. The decoder must reject unknown versions, non-canonical encodings, integer overflow, truncated fields, oversized lengths, trailing bytes, invalid digest links, wrong project/genesis, and non-monotonic record numbers.
 
-A checksum/hash chain detects accidental damage and some local edits; it does **not** authenticate a writer or prevent an attacker from rewriting the entire chain. Authentication comes from independently verified consensus evidence, not from the local WAL hash chain.
+A checksum/hash chain detects accidental damage and some local edits; it does **not** authenticate a writer or prevent an attacker from rewriting the entire chain. Authentication comes from independently verified consensus evidence, not from the local WAL hash chain.\n\n### D1 codec wire format\n\nThe current isolated codec in `wal_codec.go` defines `ZWL1` version 1 as the following exact sequence: magic (4 bytes), version (u16), total frame length including checksum (u32), record number (u64), project ID length (u16), UTF-8 project ID bytes, genesis digest (32), height (u64), block ID hash (32), transaction index (u32), transaction length (u32), exact transaction bytes, previous-record digest (32), resulting app hash (32), and SHA-256 checksum (32) over every preceding byte. All integers are big-endian. The current limits are 2 MiB per encoded frame, 128 project-ID bytes, `MaxTransactionBytes` per transaction, and transaction index below `MaxTransactionsPerBlock`. The decoder requires exact total length and rejects trailing bytes, unsupported versions, invalid UTF-8, malformed lengths, and checksum mismatch. `WALRecordDigest` validates before hashing the complete frame; `VerifyWALRecordLink` checks adjacent record number, project/genesis continuity, nondecreasing height, and previous-record digest. These helpers validate encoding and local chain continuity only; they do not verify commit evidence or authenticate the record source.
 
 ## 6. Commit and fsync ordering
 
@@ -194,4 +194,4 @@ Passing D1-D4 would establish only local storage behavior. It would not prove BF
 
 ## 14. Current decision
 
-No storage implementation is approved by this specification. The next safe code increment is D1 (pure WAL record codec and test vectors), followed by review of its exact wire format before filesystem mutation is introduced. The existing in-memory state machine and snapshot codec remain unchanged until that format is independently reviewed.
+No filesystem storage implementation is approved by this specification. D1's pure codec and canonical golden-vector/adversarial tests have been added in `wal_codec.go` and `wal_codec_test.go`; their CI status must be checked on the exact PR head before treating them as passing. The next safe step is to review the wire format and then consider D2 separately. No filesystem mutation, fsync, WAL append, or runtime integration is implemented. The existing in-memory state machine and snapshot codec remain unchanged.
