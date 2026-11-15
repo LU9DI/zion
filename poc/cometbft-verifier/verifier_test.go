@@ -61,7 +61,8 @@ func signedEvidence(t *testing.T) (Evidence, *types.ValidatorSet) {
 func cloneEvidence(in Evidence) Evidence {
 	out := in
 	out.ValidatorSetHash = append([]byte(nil), in.ValidatorSetHash...)
-	out.Commit = *in.Commit
+	commitCopy := *in.Commit
+	out.Commit = &commitCopy
 	out.Commit.Signatures = append([]types.CommitSig(nil), in.Commit.Signatures...)
 	for i := range out.Commit.Signatures {
 		out.Commit.Signatures[i].ValidatorAddress = append([]byte(nil), in.Commit.Signatures[i].ValidatorAddress...)
