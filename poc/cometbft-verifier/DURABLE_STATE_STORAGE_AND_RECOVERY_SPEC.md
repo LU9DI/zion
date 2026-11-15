@@ -122,7 +122,7 @@ The test-only StateMachine currently models only ordered transaction mutations; 
 
 Required corrective gate:
 1. The verifier checks the pre-block app hash against Header(H).AppHash and uses a distinct post-block hash.
-2. Signed fixtures now bind the post-block hash to a fully signed H+1 header whose LastBlockID points to H, whose AppHash equals the replay result, and whose validator set is committed by Header(H).NextValidatorsHash.
+2. Signed fixtures now bind the post-block hash to a fully signed H+1 header whose LastBlockID points to H, whose LastCommitHash binds the H commit, whose AppHash equals the replay result, and whose validator set is committed by Header(H).NextValidatorsHash.
 3. Tests now cover wrong pre-state, wrong post-state, missing next-height anchor, wrong next height, and validator-transition mismatch. CI must confirm this implementation.
 4. The remaining trust-bootstrap requirement is to define the authenticated genesis/InitChain app hash and the validator-set history at the initial height. The next-header chain can extend a trusted checkpoint but cannot create the initial trust anchor itself.
 5. Only after those tests pass and the genesis trust bootstrap is specified may the block-atomic WAL format proceed. A D1 checksum, block DataHash, or commit certificate alone does not authenticate the resulting application state.
