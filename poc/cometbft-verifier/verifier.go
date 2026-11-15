@@ -207,10 +207,12 @@ func verifyTransactionData(raw [][]byte, expectedDataHash []byte) error {
 		if len(tx) > MaxTransactionBytes {
 			return ErrDataBounds
 		}
-		total += len(tx)
-		if total > MaxBlockDataBytes {
+		// Check by subtraction so the aggregate bound cannot be bypassed
+		// by integer overflow on narrower architectures.
+		if len(tx) > MaxBlockDataBytes-total {
 			return ErrDataBounds
 		}
+		total += len(tx)
 		txs[i] = append(types.Tx(nil), tx...)
 	}
 	// CometBFT represents an empty transaction list with the RFC-6962
