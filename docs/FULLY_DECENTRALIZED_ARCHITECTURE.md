@@ -155,3 +155,10 @@ Zion's security baseline and release gates are defined in [DECENTRALIZED_SECURIT
 ## 14. Decentralized admission and authorization contract
 
 The source-derived migration contract in [DECENTRALIZED_ADMISSION_AUTHORIZATION_CONTRACT.md](DECENTRALIZED_ADMISSION_AUTHORIZATION_CONTRACT.md) defines the state, atomic transitions, revocation tombstones, dispatch authorization boundary, quota/capacity semantics, and acceptance gates required before PostgreSQL can be removed from official runtime. It does not implement a replacement or authorize launcher cutover.
+
+
+## 15. Trusted genesis, checkpoints, and state synchronization
+
+The node-join and recovery trust boundary is specified in [PROJECT_TRUSTED_CHECKPOINT_AND_STATE_SYNC_SPEC.md](PROJECT_TRUSTED_CHECKPOINT_AND_STATE_SYNC_SPEC.md). Discovery peers and snapshot providers are untrusted data sources; they cannot establish the initial project trust root. New nodes must authenticate the canonical genesis digest and a trusted checkpoint before accepting a validator history or state snapshot. Nodes that exceed the selected trusting period require an authenticated fresh checkpoint under the precommitted recovery policy; they must not silently trust the current RPC provider.
+
+The specification also records the upstream CometBFT v0.38.26 light-client assumptions (trusted height/hash, validator-set overlap, target commit verification, witnesses, clock drift, and trusting-period expiry). This is a source audit only, not a CometBFT adoption or a claim that Zion currently has a production light client.
