@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 
+	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
 	"github.com/cometbft/cometbft/types"
 )
 
@@ -75,4 +76,43 @@ func VerifyCommitEvidence(e Evidence, validators *types.ValidatorSet) error {
 		return fmt.Errorf("CometBFT commit verification failed: %w", err)
 	}
 	return nil
+}
+
+
+// ProtoEvidence is the wire-format form exported by a CometBFT block store.
+// The validator set must still be authenticated by the caller's trust process.
+type ProtoEvidence struct {
+	ChainID          string
+	Height           int64
+	BlockID          *cmtproto.BlockID
+	ValidatorSet     *cmtproto.ValidatorSet
+	Commit           *cmtproto.Commit
+}
+
+// VerifyProtoCommitEvidence converts untrusted protobuf objects using
+// CometBFT's pinned v0.38.26 conversion routines, then performs full commit
+// verification against the converted validator set.
+func VerifyProtoCommitEvidence(e ProtoEvidence) error {
+	if e.BlockID == nil || e.ValidatorSet == nil || e.Commit == nil {
+		return ErrMissingEvidence
+	}
+	validators, err := types.ValidatorSetFromProto(e.ValidatorSet)
+	if err != nil {
+		return fmt.Errorf("decode validator set: %w", err)
+	}
+	blockID, err := types.BlockIDFromProto(e.BlockID)
+	if err != nil {
+		return fmt.Errorf("decode block ID: %w", err)
+	}
+	commit, err := types.CommitFromProto(e.Commit)
+	if err != nil {
+		return fmt.Errorf("decode commit: %w", err)
+	}
+	return VerifyCommitEvidence(Evidence{
+		ChainID:          e.ChainID,
+		Height:           e.Height,
+		BlockID:          *blockID,
+		ValidatorSetHash: validators.Hash(),
+		Commit:           commit,
+	}, validators)
 }
