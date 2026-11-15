@@ -450,3 +450,38 @@ For this prototype, recovery must remain an explicit operator procedure:
 4. If the journal is incomplete or fails verification, keep writes disabled and preserve the evidence for investigation; do not truncate or skip uncertain records automatically.
 
 `clearStaleLockAfterVerification` accepts a caller-supplied boolean assertion; it does not itself verify process liveness, lock ownership, or directory-entry identity. Its path-based unlink also shares the previously documented replacement race. It is a test helper, not an operator-safe production recovery interface. No automatic stale-lock deletion or production recovery procedure is implemented.
+
+### Latest exact-commit CI evidence (2026-11-14 local date)
+
+The follow-up fix for the partial lock-initialization fault-injection allowlist is at
+commit `1ffc5074ba85d495c6ee1f7f56cedcc5df011ebf`. GitHub Actions completed
+successfully for that exact commit:
+
+- Zion validation run `43657455050`: completed successfully. The Node TAP
+  step reported 843 tests, 840 passed, 0 failed, and 3 skipped. The new
+  partial-lock-initialization recovery test passed. The real PostgreSQL
+  integration step passed, as did the Node/Rust interoperability step.
+- The real ClamAV integration job in the same validation run passed (2 tests,
+  0 failures).
+- CodeQL run `43657455075`: completed successfully for both
+  JavaScript/TypeScript and Rust analysis jobs.
+
+This is CI evidence for this exact commit on the configured GitHub-hosted
+runner environment. It is not a cross-platform filesystem certification or
+production-readiness finding.
+
+The lock cleanup review remains unresolved. Both constructor/test recovery and
+normal `close()` cleanup ultimately remove a lock by pathname. The close path
+reads and checks the token/PID before unlinking; a concurrent replacement
+between that check and `unlinkSync` remains a time-of-check/time-of-use window.
+The explicit `verifiedNoWriter: true` argument to the test helper is only a
+caller assertion, not an independently verified liveness proof. Neither
+mechanism is approved for production recovery or adversarial multi-process
+coordination. Parent-directory traversal/replacement is also outside the
+prototype's protection.
+
+Do not treat successful CI as closing these design limitations. Keep this
+journal test-only and do not wire it into ABCI `Commit`, production startup,
+invitation redemption, or network membership until a stronger, reviewed
+cross-platform lock/recovery design and the remaining durability gates are
+satisfied.
