@@ -6,7 +6,8 @@ This directory contains a disposable verification/replay prototype pinned to Com
 
 - `verifier.go`: verifies a supplied header, ordered transaction-data root, authenticated validator-set digest, expected app hash, and full CometBFT commit signatures. `VerifyCommitEvidenceWithReplay` replays the ordered transactions from a caller-supplied initial state and compares the computed app hash before accepting the commit evidence.
 - `state_machine.go`: decodes a bounded canonical binary transaction envelope, deterministically replays PUT/DELETE operations against an in-memory project-scoped state, and encodes/decodes bounded canonical snapshots with checksum, app-hash, project, and genesis checks.
-- `*_test.go`: adversarial verifier and state-machine tests.
+- `wal_codec.go`: encodes and strictly decodes bounded canonical `ZWL1` v1 records, preserves the complete CometBFT block ID (block hash and part-set header), computes validated record digests, and checks adjacent hash-chain continuity.
+- `*_test.go`: adversarial verifier, state-machine, snapshot, and WAL codec tests, including a canonical decoder fuzz target.
 
 Run from this directory:
 
@@ -25,7 +26,7 @@ The app hash is SHA-256 over domain-separated canonical bytes, including schema 
 
 [`DURABLE_STATE_STORAGE_AND_RECOVERY_SPEC.md`](./DURABLE_STATE_STORAGE_AND_RECOVERY_SPEC.md) defines the proposed WAL/snapshot/commit-evidence separation, fsync and generation-publication ordering, crash-recovery states, CometBFT block-store reconciliation boundary, cross-platform locking requirements, rollback threat model, adversarial test matrix, and staged implementation gates.
 
-The D1 WAL codec and canonical golden-vector/adversarial tests have been added, but must not be considered passing until CI completes successfully for the exact PR head. The codec is pure: no filesystem persistence, fsync, WAL append, crash recovery, or runtime integration is implemented or claimed.
+The D1 WAL codec, canonical golden vector, adversarial tests, and decoder fuzz target have been added, but must not be considered passing until CI completes successfully for the exact PR head. The codec is pure: no filesystem persistence, fsync, WAL append, crash recovery, or runtime integration is implemented or claimed.
 
 ## Explicit limitations
 
