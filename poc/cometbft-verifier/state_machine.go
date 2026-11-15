@@ -16,6 +16,9 @@ const (
 	maxStateKeyBytes   = 256
 	maxStateValueBytes = 4096
 	maxStateTxBytes    = 8192
+	maxSnapshotBytes   = 64 << 20
+	maxSnapshotEntries = 100_000
+	maxSnapshotOps     = 1_000_000
 )
 
 var (
@@ -26,6 +29,11 @@ var (
 	ErrMissingStateKey    = errors.New("delete target does not exist")
 	ErrSequenceExhausted  = errors.New("application sequence is exhausted")
 	ErrInvalidGenesis     = errors.New("invalid state genesis")
+	ErrInvalidSnapshot = errors.New("invalid state snapshot")
+	ErrSnapshotBounds = errors.New("state snapshot exceeds bounds or count invariants")
+	ErrSnapshotChecksum = errors.New("state snapshot checksum mismatch")
+	ErrSnapshotTrustMismatch = errors.New("state snapshot does not match trusted project/genesis")
+	ErrSnapshotAppHashMismatch = errors.New("state snapshot app hash mismatch")
 )
 
 const (
@@ -235,4 +243,117 @@ func (s *StateMachine) Clone() *StateMachine {
 	for key, value := range s.kv { out.kv[key] = append([]byte(nil), value...) }
 	for id, op := range s.operations { out.operations[id] = op }
 	return out
+}
+
+
+// EncodeSnapshot returns a bounded canonical snapshot with a checksum and the
+// state app hash. It is a serialization format only; it does not persist or
+// authenticate the snapshot's source.
+func (s *StateMachine) EncodeSnapshot() ([]byte, error) {
+	if s == nil || s.projectID == "" || len(s.projectID) > maxProjectIDBytes ||
+		len(s.kv) > maxSnapshotEntries || len(s.operations) > maxSnapshotOps ||
+		uint64(len(s.operations)) != s.sequence {
+		return nil, ErrInvalidSnapshot
+	}
+	var b bytes.Buffer
+	b.WriteString("ZST1")
+	_ = binary.Write(&b, binary.BigEndian, stateSchemaVersion)
+	_ = binary.Write(&b, binary.BigEndian, uint16(len(s.projectID)))
+	b.WriteString(s.projectID)
+	b.Write(s.genesisDigest[:])
+	_ = binary.Write(&b, binary.BigEndian, s.sequence)
+	keys := make([]string, 0, len(s.kv))
+	for key := range s.kv { keys = append(keys, key) }
+	sort.Slice(keys, func(i, j int) bool { return bytes.Compare([]byte(keys[i]), []byte(keys[j])) < 0 })
+	_ = binary.Write(&b, binary.BigEndian, uint32(len(keys)))
+	for _, key := range keys {
+		value := s.kv[key]
+		if len(key) == 0 || len(key) > maxStateKeyBytes || len(value) > maxStateValueBytes { return nil, ErrInvalidSnapshot }
+		_ = binary.Write(&b, binary.BigEndian, uint16(len(key)))
+		b.WriteString(key)
+		_ = binary.Write(&b, binary.BigEndian, uint32(len(value)))
+		b.Write(value)
+	}
+	opIDs := make([]string, 0, len(s.operations))
+	for id := range s.operations { opIDs = append(opIDs, id) }
+	sort.Slice(opIDs, func(i, j int) bool { return bytes.Compare([]byte(opIDs[i]), []byte(opIDs[j])) < 0 })
+	_ = binary.Write(&b, binary.BigEndian, uint32(len(opIDs)))
+	for _, id := range opIDs {
+		op := s.operations[id]
+		if len(id) != maxOperationIDBytes || op.result != 1 { return nil, ErrInvalidSnapshot }
+		b.WriteString(id)
+		b.Write(op.digest[:])
+		b.WriteByte(op.result)
+	}
+	appHash := s.AppHash()
+	b.Write(appHash)
+	if b.Len()+sha256.Size > maxSnapshotBytes { return nil, ErrSnapshotBounds }
+	checksum := sha256.Sum256(b.Bytes())
+	b.Write(checksum[:])
+	return b.Bytes(), nil
+}
+
+// DecodeStateSnapshot strictly decodes a canonical snapshot and binds it to
+// caller-supplied expected project/genesis values. Those values must themselves
+// come from an authenticated trust source.
+func DecodeStateSnapshot(raw []byte, expectedProject string, expectedGenesisDigest []byte) (*StateMachine, error) {
+	if len(raw) < 4+2+2+1+sha256.Size+8+4+4+sha256.Size+sha256.Size || len(raw) > maxSnapshotBytes {
+		return nil, ErrSnapshotBounds
+	}
+	body, checksum := raw[:len(raw)-sha256.Size], raw[len(raw)-sha256.Size:]
+	sum := sha256.Sum256(body)
+	if !bytes.Equal(sum[:], checksum) { return nil, ErrSnapshotChecksum }
+	r := bytes.NewReader(body)
+	magic := make([]byte, 4)
+	if _, err := r.Read(magic); err != nil || string(magic) != "ZST1" { return nil, ErrInvalidSnapshot }
+	var version uint16
+	if binary.Read(r, binary.BigEndian, &version) != nil || version != stateSchemaVersion { return nil, ErrInvalidSnapshot }
+	var projectLen uint16
+	if binary.Read(r, binary.BigEndian, &projectLen) != nil || projectLen == 0 || projectLen > maxProjectIDBytes || int(projectLen) > r.Len() { return nil, ErrInvalidSnapshot }
+	projectBytes := make([]byte, projectLen)
+	if _, err := r.Read(projectBytes); err != nil { return nil, ErrInvalidSnapshot }
+	project := string(projectBytes)
+	genesis := make([]byte, sha256.Size)
+	if _, err := r.Read(genesis); err != nil { return nil, ErrInvalidSnapshot }
+	if expectedProject == "" || project != expectedProject || len(expectedGenesisDigest) != sha256.Size || !bytes.Equal(genesis, expectedGenesisDigest) { return nil, ErrSnapshotTrustMismatch }
+	s, err := NewStateMachine(project, genesis)
+	if err != nil { return nil, err }
+	if binary.Read(r, binary.BigEndian, &s.sequence) != nil { return nil, ErrInvalidSnapshot }
+	var entryCount uint32
+	if binary.Read(r, binary.BigEndian, &entryCount) != nil || entryCount > maxSnapshotEntries { return nil, ErrSnapshotBounds }
+	var previousKey []byte
+	for i := uint32(0); i < entryCount; i++ {
+		var keyLen uint16
+		if binary.Read(r, binary.BigEndian, &keyLen) != nil || keyLen == 0 || keyLen > maxStateKeyBytes || int(keyLen) > r.Len() { return nil, ErrInvalidSnapshot }
+		key := make([]byte, keyLen)
+		if _, err := r.Read(key); err != nil { return nil, ErrInvalidSnapshot }
+		if i > 0 && bytes.Compare(previousKey, key) >= 0 { return nil, ErrInvalidSnapshot }
+		previousKey = append(previousKey[:0], key...)
+		var valueLen uint32
+		if binary.Read(r, binary.BigEndian, &valueLen) != nil || valueLen > maxStateValueBytes || uint64(valueLen) > uint64(r.Len()) { return nil, ErrInvalidSnapshot }
+		value := make([]byte, valueLen)
+		if valueLen > 0 { if _, err := r.Read(value); err != nil { return nil, ErrInvalidSnapshot } }
+		s.kv[string(key)] = value
+	}
+	var opCount uint32
+	if binary.Read(r, binary.BigEndian, &opCount) != nil || opCount > maxSnapshotOps || uint64(opCount) != s.sequence { return nil, ErrSnapshotBounds }
+	var previousID []byte
+	for i := uint32(0); i < opCount; i++ {
+		id := make([]byte, maxOperationIDBytes)
+		if _, err := r.Read(id); err != nil { return nil, ErrInvalidSnapshot }
+		if i > 0 && bytes.Compare(previousID, id) >= 0 { return nil, ErrInvalidSnapshot }
+		previousID = append(previousID[:0], id...)
+		digest := make([]byte, sha256.Size)
+		if _, err := r.Read(digest); err != nil { return nil, ErrInvalidSnapshot }
+		result, err := r.ReadByte()
+		if err != nil || result != 1 { return nil, ErrInvalidSnapshot }
+		var d [32]byte
+		copy(d[:], digest)
+		s.operations[string(id)] = stateOperation{digest: d, result: result}
+	}
+	if r.Len() != sha256.Size { return nil, ErrInvalidSnapshot }
+	expectedAppHash := make([]byte, sha256.Size)
+	if _, err := r.Read(expectedAppHash); err != nil { return nil, ErrInvalidSnapshot }
+	if !bytes.Equal(s.AppHash(), expectedAppHash) { return nil, ErrSnapshotAppHashMismatch }
+	return s, nil
 }
