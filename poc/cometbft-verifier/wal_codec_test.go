@@ -13,11 +13,13 @@ func testWALRecord() WALRecord {
 		RecordNumber: 1,
 		ProjectID: "p",
 		Height: 7,
+		BlockIDPartSetTotal: 1,
 		TransactionIndex: 0,
 		Transaction: []byte{0xaa, 0xbb},
 	}
 	for i := range record.GenesisDigest { record.GenesisDigest[i] = 0x22 }
 	for i := range record.BlockIDHash { record.BlockIDHash[i] = 0x33 }
+	for i := range record.BlockIDPartSetHash { record.BlockIDPartSetHash[i] = 0x55 }
 	for i := range record.AppHash { record.AppHash[i] = 0x44 }
 	return record
 }
@@ -25,7 +27,7 @@ func testWALRecord() WALRecord {
 func TestWALRecordCanonicalGoldenVector(t *testing.T) {
 	raw, err := EncodeWALRecord(testWALRecord())
 	if err != nil { t.Fatalf("encode golden record: %v", err) }
-	const expected = "5a574c310001000000c700000000000000010001702222222222222222222222222222222222222222222222222222222222222222000000000000000733333333333333333333333333333333333333333333333333333333333333330000000000000002aabb000000000000000000000000000000000000000000000000000000000000000044444444444444444444444444444444444444444444444444444444444444447f55fdcd6b2f5f790854b4fa3b311d046b317e227f1c3a61077cb4aefb3d2eb8"
+	const expected = "5a574c310001000000eb00000000000000010001702222222222222222222222222222222222222222222222222222222222222222000000000000000733333333333333333333333333333333333333333333333333333333333333330000000155555555555555555555555555555555555555555555555555555555555555550000000000000002aabb00000000000000000000000000000000000000000000000000000000000000004444444444444444444444444444444444444444444444444444444444444444d6e965f920f3b12228574ef26f63de85bd08804874dba6361149ba04643f9fbb"
 	if got := hex.EncodeToString(raw); got != expected {
 		t.Fatalf("canonical WAL vector changed:\n got %s\nwant %s", got, expected)
 	}
@@ -86,6 +88,8 @@ func TestWALRecordRejectsInvalidFieldsAndBounds(t *testing.T) {
 		{"NUL project", func(r *WALRecord) { r.ProjectID = "project\x00alpha" }},
 		{"zero genesis digest", func(r *WALRecord) { r.GenesisDigest = [walDigestSize]byte{} }},
 		{"zero block ID hash", func(r *WALRecord) { r.BlockIDHash = [walDigestSize]byte{} }},
+		{"zero block part-set total", func(r *WALRecord) { r.BlockIDPartSetTotal = 0 }},
+		{"zero block part-set hash", func(r *WALRecord) { r.BlockIDPartSetHash = [walDigestSize]byte{} }},
 		{"zero application hash", func(r *WALRecord) { r.AppHash = [walDigestSize]byte{} }},
 		{"first record has predecessor", func(r *WALRecord) { r.PreviousDigest[0] = 1 }},
 		{"later record lacks predecessor", func(r *WALRecord) { r.RecordNumber = 2 }},
