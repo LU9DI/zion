@@ -190,3 +190,12 @@ No implementation gate may be waived by documentation wording or a successful un
 - The project governance primitive, Ed25519 node identities, local journal, and replica do not implement this lifecycle.
 - No runtime, launcher, database, migration, dependency, or deployment is changed by this specification.
 - PostgreSQL/Neon remain transitional and untouched; PR #63/#64 and their bases remain untouched.
+
+
+## 12. Follow-up trusted checkpoint and state synchronization specification
+
+The companion [Trusted Checkpoint and State Sync Specification](PROJECT_TRUSTED_CHECKPOINT_AND_STATE_SYNC_SPEC.md) defines how a new/restored node authenticates the genesis digest, obtains a trusted signed-header checkpoint, verifies validator-set transitions, handles witness diversity and long-offline expiry, protects local trusted state against rollback, and validates snapshots.
+
+The key distinction is that a light client verifies history only after it has an authenticated trust anchor. A collection of peer responses, a DHT majority, or a checkpoint signed by an unanchored validator set cannot establish the initial project identity. A node that cannot authenticate a checkpoint must remain untrusted for critical operations.
+
+This companion specification does not conduct the genesis ceremony, select an engine, define numeric trust/freshness parameters, or implement a checkpoint service.
