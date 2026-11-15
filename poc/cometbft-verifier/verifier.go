@@ -130,8 +130,8 @@ func verifyTransactionData(raw [][]byte, expectedDataHash []byte) error {
 		}
 		txs[i] = append(types.Tx(nil), tx...)
 	}
-	// CometBFT represents an empty transaction list with a nil data hash.
-	// Equality must therefore accept nil/nil for valid empty blocks.
+	// CometBFT represents an empty transaction list with the RFC-6962
+	// Merkle empty-root hash. Do not special-case nil: it is not that root.
 	if !bytes.Equal(txs.Hash(), expectedDataHash) {
 		return ErrDataHashMismatch
 	}
