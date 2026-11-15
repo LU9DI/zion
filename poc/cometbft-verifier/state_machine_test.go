@@ -112,3 +112,49 @@ func TestStateMachineRejectsSequenceOverflow(t *testing.T) {
 		t.Fatal("sequence overflow mutated state")
 	}
 }
+
+
+func TestStateSnapshotRoundTripPreservesStateAndIdempotency(t *testing.T) {
+	initial := newTestState(t, "project-alpha", "genesis-alpha")
+	txs := [][]byte{
+		testStateTx(t, "project-alpha", 11, statePut, 0, "z", "last"),
+		testStateTx(t, "project-alpha", 12, statePut, 1, "a", "first"),
+		testStateTx(t, "project-alpha", 13, stateDelete, 2, "z", ""),
+	}
+	if err := initial.Replay(txs); err != nil { t.Fatal(err) }
+	snapshot, err := initial.EncodeSnapshot()
+	if err != nil { t.Fatalf("encode snapshot: %v", err) }
+	genesis := sha256.Sum256([]byte("genesis-alpha"))
+	restored, err := DecodeStateSnapshot(snapshot, "project-alpha", genesis[:])
+	if err != nil { t.Fatalf("decode snapshot: %v", err) }
+	if restored.Sequence() != initial.Sequence() || !bytes.Equal(restored.AppHash(), initial.AppHash()) {
+		t.Fatal("snapshot round trip changed application state")
+	}
+	if _, err := restored.Apply(txs[2]); err != nil {
+		t.Fatalf("idempotent operation retry after restore failed: %v", err)
+	}
+	if !bytes.Equal(restored.AppHash(), initial.AppHash()) { t.Fatal("idempotent retry after restore changed state") }
+}
+
+func TestStateSnapshotRejectsTamperingAndWrongTrustContext(t *testing.T) {
+	s := newTestState(t, "project-alpha", "genesis-alpha")
+	if _, err := s.Apply(testStateTx(t, "project-alpha", 21, statePut, 0, "key", "value")); err != nil { t.Fatal(err) }
+	snapshot, err := s.EncodeSnapshot()
+	if err != nil { t.Fatal(err) }
+	corrupt := append([]byte(nil), snapshot...)
+	corrupt[len(corrupt)/2] ^= 0x80
+	genesis := sha256.Sum256([]byte("genesis-alpha"))
+	if _, err := DecodeStateSnapshot(corrupt, "project-alpha", genesis[:]); !errors.Is(err, ErrSnapshotChecksum) {
+		t.Fatalf("expected checksum rejection, got %v", err)
+	}
+	wrongGenesis := sha256.Sum256([]byte("wrong-genesis"))
+	if _, err := DecodeStateSnapshot(snapshot, "project-alpha", wrongGenesis[:]); !errors.Is(err, ErrSnapshotTrustMismatch) {
+		t.Fatalf("expected genesis trust rejection, got %v", err)
+	}
+	if _, err := DecodeStateSnapshot(snapshot, "project-beta", genesis[:]); !errors.Is(err, ErrSnapshotTrustMismatch) {
+		t.Fatalf("expected project trust rejection, got %v", err)
+	}
+	if _, err := DecodeStateSnapshot(snapshot[:len(snapshot)-1], "project-alpha", genesis[:]); err == nil {
+		t.Fatal("truncated snapshot unexpectedly accepted")
+	}
+}
