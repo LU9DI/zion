@@ -25,7 +25,8 @@ var (
 	ErrValidatorSetMismatch  = errors.New("validator set digest mismatch")
 	ErrCommitMismatch        = errors.New("commit does not match expected block")
 	ErrHeaderMismatch        = errors.New("signed header does not match expected block context")
-	ErrAppHashMismatch       = errors.New("header app hash does not match independently expected state hash")
+	ErrAppHashMismatch       = errors.New("post-block application hash mismatch")
+	ErrPreBlockAppHashMismatch = errors.New("pre-block application hash does not match the signed header")
 	ErrDataHashMismatch      = errors.New("header data hash does not match supplied ordered transactions")
 	ErrDataBounds            = errors.New("block transaction data exceeds verifier bounds")
 	ErrSignatureVectorLength = errors.New("commit signature vector length does not match validator set")
@@ -34,14 +35,16 @@ var (
 // Evidence carries the expected project-chain context alongside a CometBFT
 // signed header, ordered raw transaction bytes, and commit. ValidatorSetHash
 // must come from an independently authenticated validator-set record.
-// ExpectedAppHash must come from independently replayed application history
-// or a separately verified state snapshot.
+// ExpectedPreBlockAppHash must match Header.AppHash at the start of this block.
+// ExpectedPostBlockAppHash must be independently authenticated (for example by
+// the next verified header) and is distinct from Header.AppHash.
 type Evidence struct {
 	ChainID          string
 	Height           int64
 	BlockID          types.BlockID
 	ValidatorSetHash []byte
-	ExpectedAppHash  []byte
+	ExpectedPreBlockAppHash  []byte
+	ExpectedPostBlockAppHash []byte
 	Transactions     [][]byte
 	Header           *types.Header
 	Commit           *types.Commit
@@ -77,7 +80,10 @@ func VerifyCommitEvidence(e Evidence, validators *types.ValidatorSet) error {
 	if len(e.ValidatorSetHash) == 0 || !bytes.Equal(validators.Hash(), e.ValidatorSetHash) {
 		return ErrValidatorSetMismatch
 	}
-	if len(e.ExpectedAppHash) == 0 || !bytes.Equal(e.Header.AppHash, e.ExpectedAppHash) {
+	if len(e.ExpectedPreBlockAppHash) == 0 || !bytes.Equal(e.Header.AppHash, e.ExpectedPreBlockAppHash) {
+		return ErrPreBlockAppHashMismatch
+	}
+	if len(e.ExpectedPostBlockAppHash) == 0 {
 		return ErrAppHashMismatch
 	}
 	if err := verifyTransactionData(e.Transactions, e.Header.DataHash); err != nil {
@@ -119,11 +125,14 @@ func VerifyCommitEvidenceWithReplay(e Evidence, validators *types.ValidatorSet, 
 	if initial == nil {
 		return nil, ErrMissingEvidence
 	}
+	if len(e.ExpectedPreBlockAppHash) == 0 || !bytes.Equal(initial.AppHash(), e.ExpectedPreBlockAppHash) || !bytes.Equal(initial.AppHash(), e.Header.AppHash) {
+		return nil, ErrPreBlockAppHashMismatch
+	}
 	replayed := initial.Clone()
 	if err := replayed.Replay(e.Transactions); err != nil {
 		return nil, fmt.Errorf("deterministic application replay failed: %w", err)
 	}
-	if len(e.ExpectedAppHash) == 0 || !bytes.Equal(replayed.AppHash(), e.ExpectedAppHash) {
+	if len(e.ExpectedPostBlockAppHash) == 0 || !bytes.Equal(replayed.AppHash(), e.ExpectedPostBlockAppHash) {
 		return nil, ErrAppHashMismatch
 	}
 	if err := VerifyCommitEvidence(e, validators); err != nil {
@@ -169,7 +178,8 @@ type ProtoEvidence struct {
 	Header                *cmtproto.Header
 	ValidatorSet          *cmtproto.ValidatorSet
 	ExpectedValidatorHash []byte
-	ExpectedAppHash       []byte
+	ExpectedPreBlockAppHash  []byte
+	ExpectedPostBlockAppHash []byte
 	Transactions          [][]byte
 	Commit                *cmtproto.Commit
 }
@@ -202,7 +212,8 @@ func VerifyProtoCommitEvidence(e ProtoEvidence) error {
 		Height:           e.Height,
 		BlockID:          *blockID,
 		ValidatorSetHash: e.ExpectedValidatorHash,
-		ExpectedAppHash:  e.ExpectedAppHash,
+		ExpectedPreBlockAppHash:  e.ExpectedPreBlockAppHash,
+		ExpectedPostBlockAppHash: e.ExpectedPostBlockAppHash,
 		Transactions:     e.Transactions,
 		Header:           &header,
 		Commit:           commit,
