@@ -314,13 +314,16 @@ mod tests {
         store.init().unwrap();
         let path = root.join(".rea-rust-storage-lock");
         assert!(path.is_file());
-        let first = OpenOptions::new().read(true).write(true).open(&path).unwrap();
-        first.try_lock().unwrap();
-        let second = OpenOptions::new().read(true).write(true).open(&path).unwrap();
-        assert!(matches!(second.try_lock(), Err(TryLockError::WouldBlock)));
-        assert!(path.is_file(), "the persistent lock file must not be replaced or unlinked");
-        drop(second);
-        drop(first);
+
+        // Exercise the production acquisition path, then verify a distinct handle
+        // cannot acquire the same advisory lock while the critical section is live.
+        store.with_lock(|| {
+            let second = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+            assert!(matches!(second.try_lock(), Err(TryLockError::WouldBlock)));
+            assert!(path.is_file(), "the persistent lock file must not be replaced or unlinked");
+            Ok(())
+        }).unwrap();
+
         let _ = fs::remove_dir_all(root);
     }
 
