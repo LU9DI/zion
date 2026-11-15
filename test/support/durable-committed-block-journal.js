@@ -155,7 +155,7 @@ export class DurableCommittedBlockJournal {
     if (typeof path !== 'string' || !path.trim() ||
         !Number.isSafeInteger(maxBytes) || maxBytes < 1024 || maxBytes >= bufferConstants.MAX_LENGTH ||
         typeof crashAfterFsync !== 'boolean' ||
-        ![null, 'before-write', 'after-partial-write', 'before-fsync', 'after-fsync'].includes(faultAt)) {
+        ![null, 'before-write', 'after-partial-write', 'before-fsync', 'after-fsync', 'lock-after-partial-write'].includes(faultAt)) {
       throw new TypeError('Invalid committed block journal configuration');
     }
     this.path = resolve(path);
