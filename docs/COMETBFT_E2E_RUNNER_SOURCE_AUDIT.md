@@ -134,3 +134,51 @@ Therefore a successful run of this workflow proves only bidirectional private TC
 The workflow also has an explicit opt-in and isolated-tailnet readiness gate. When that gate is not configured, it records a skip and creates no tailnet node. A skipped run must not be reported as a successful network test.
 
 **Required reporting rule:** keep the existing workflow's result labeled as a private runner connectivity smoke. Do not cite it as a CometBFT network/consensus test. A future consensus smoke must separately provision disposable test-only validators and an ABCI test app, verify committed heights/app hashes and commit evidence, and clean up only resources it owns. It must remain opt-in and isolated from production keys and runtime.
+
+
+## 7. Private-runner workflow configuration and security-boundary audit
+
+A read-only review of the complete workflow at the Zion PR branch found the following:
+
+### 7.1 Controls present in the repository workflow
+
+- The workflow requests only the GitHub Actions OIDC token permission (id-token: write); it does not check out repository code or request repository contents access.
+- The Tailscale action is pinned to a full commit SHA rather than a mutable version tag.
+- The action receives the OAuth client ID and audience through step-scoped environment/input values. The preflight checks presence only and writes a boolean to the step output; it does not print either value.
+- Network execution is gated by both explicit repository opt-in and an isolated-tailnet readiness flag, as well as non-empty OIDC configuration.
+- The responder binds to the runner's Tailscale IPv4 address rather than all interfaces. The client validates every resolved peer IPv4 address against the Tailscale CGNAT range and connects to the validated literal address.
+- The HTTP handler exposes only a fixed /health response. The test uses a bounded connection timeout and overall retry deadline, and shuts down the local responder in a finally block.
+- The two matrix entries test opposite directions. fail-fast: false allows the second direction to report independently if the first fails.
+
+### 7.2 External trust and isolation assumptions not verified by this workflow
+
+The repository YAML cannot establish that the external Tailscale control-plane configuration is safe. In particular, this audit did not inspect or verify:
+
+- which principals can use the OAuth client and which tags that client is authorized to assign;
+- whether tag:zion-ci is restricted to the intended CI identity and devices;
+- the tailnet ACL/grant policy for TCP port 26656 and whether it permits only the two intended runner identities;
+- whether the tailnet is genuinely isolated from production devices and other projects;
+- device expiry/ephemeral-node policy, session cleanup, or revocation behavior after a job ends;
+- whether the configured OAuth audience is restricted to the intended GitHub repository, workflow, branch, and environment claims.
+
+The two boolean readiness variables are operator assertions, not cryptographic evidence of those external policies. A successful preflight therefore means only that the required values are present and the operator enabled the gate; it does not independently validate tailnet isolation or least privilege.
+
+### 7.3 Protocol and reporting limits
+
+The HTTP health responder has no application-layer authentication or challenge-response protocol. Its fixed payload is suitable only as a narrow reachability probe inside a correctly configured, access-controlled tailnet. It must not be exposed on a public interface or treated as proof of peer identity beyond the guarantees supplied by the Tailscale control plane and its ACL policy.
+
+The workflow's static concurrency group serializes workflow runs in this repository; the two matrix jobs within one run may execute in parallel. This is a CI scheduling control, not a network isolation mechanism.
+
+When the gate is false, the summary explicitly reports NOT RUN and no Tailscale join or HTTP test step executes. The final skip step is informational; its successful completion must not be interpreted as a passed connectivity check.
+
+### 7.4 Required hardening before relying on this smoke as a security control
+
+Before treating this workflow as a security control rather than an optional connectivity diagnostic:
+
+1. Document and independently review the Tailscale OAuth client restrictions, tag ownership, ACL/grants, tailnet boundary, and device-expiry policy.
+2. Bind the OIDC trust policy to the exact repository and intended workflow/ref/environment claims; do not rely only on the presence of client ID and audience strings.
+3. Confirm that the two runner identities can reach only the intended peer and port, and cannot reach production or unrelated project networks.
+4. Confirm ephemeral-device cleanup and revocation behavior with the actual Tailscale configuration and retain evidence of that check.
+5. Keep the result name and summary explicit that this is private TCP/HTTP reachability only. A skipped run remains NOT RUN, never PASS.
+
+Audit boundary: no Tailscale account, ACL, OAuth client, GitHub secret, repository variable, workflow execution, or runner configuration was accessed or changed during this review. The external policy items above remain unverified. This section is a source/configuration review, not a penetration test or proof of tailnet isolation.
