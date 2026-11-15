@@ -104,6 +104,14 @@ jobs:
       - name: Resolve pinned module and generate checksum file
         working-directory: poc/cometbft-verifier
         run: go mod tidy
+      - name: Preserve generated Go module lock metadata for review
+        uses: actions/upload-artifact@v4
+        with:
+          name: cometbft-verifier-module-lock
+          path: |
+            poc/cometbft-verifier/go.mod
+            poc/cometbft-verifier/go.sum
+          if-no-files-found: error
       - name: Test commit verifier
         working-directory: poc/cometbft-verifier
         run: go test -race -count=1 ./...
