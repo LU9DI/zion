@@ -133,7 +133,9 @@ func decodeStateTransaction(raw []byte) (StateTransaction, error) {
 	var valueLen uint32
 	if binary.Read(r, binary.BigEndian, &valueLen) != nil || valueLen > maxStateValueBytes || uint64(valueLen) > uint64(r.Len()) { return tx, ErrInvalidTransaction }
 	tx.Value = make([]byte, valueLen)
-	if _, err := r.Read(tx.Value); err != nil { return tx, ErrInvalidTransaction }
+	if valueLen > 0 {
+		if _, err := r.Read(tx.Value); err != nil { return tx, ErrInvalidTransaction }
+	}
 	if r.Len() != 0 || (tx.Kind == stateDelete && len(tx.Value) != 0) { return tx, ErrInvalidTransaction }
 	return tx, nil
 }
