@@ -111,6 +111,27 @@ func VerifyCommitEvidence(e Evidence, validators *types.ValidatorSet) error {
 	return nil
 }
 
+// VerifyCommitEvidenceWithReplay independently executes the ordered transaction
+// bytes against a trusted initial state, compares the resulting app hash with
+// the expected/header app hash, and only then verifies the CometBFT commit.
+// The supplied initial state is never mutated.
+func VerifyCommitEvidenceWithReplay(e Evidence, validators *types.ValidatorSet, initial *StateMachine) (*StateMachine, error) {
+	if initial == nil {
+		return nil, ErrMissingEvidence
+	}
+	replayed := initial.Clone()
+	if err := replayed.Replay(e.Transactions); err != nil {
+		return nil, fmt.Errorf("deterministic application replay failed: %w", err)
+	}
+	if len(e.ExpectedAppHash) == 0 || !bytes.Equal(replayed.AppHash(), e.ExpectedAppHash) {
+		return nil, ErrAppHashMismatch
+	}
+	if err := VerifyCommitEvidence(e, validators); err != nil {
+		return nil, err
+	}
+	return replayed, nil
+}
+
 func verifyTransactionData(raw [][]byte, expectedDataHash []byte) error {
 	if len(raw) > MaxTransactionsPerBlock {
 		return ErrDataBounds
