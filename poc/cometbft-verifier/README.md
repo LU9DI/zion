@@ -21,6 +21,12 @@ The v1 envelope is length-delimited and rejects unknown operations, wrong projec
 
 The app hash is SHA-256 over domain-separated canonical bytes, including schema version, project ID, genesis digest, sequence, sorted key/value entries, and sorted idempotency records.
 
+## Durable storage and recovery
+
+[`DURABLE_STATE_STORAGE_AND_RECOVERY_SPEC.md`](./DURABLE_STATE_STORAGE_AND_RECOVERY_SPEC.md) defines the proposed WAL/snapshot/commit-evidence separation, fsync and generation-publication ordering, crash-recovery states, CometBFT block-store reconciliation boundary, cross-platform locking requirements, rollback threat model, adversarial test matrix, and staged implementation gates.
+
+This is a specification only. The next safe implementation increment is a pure, bounded WAL codec and canonical test vectors; no filesystem persistence or runtime integration is claimed.
+
 ## Explicit limitations
 
 - The snapshot codec is currently serialization/recovery logic only: no filesystem persistence, fsync, WAL, crash recovery protocol, or atomic coupling to CometBFT's block store. A checksum detects accidental corruption; it is not an authenticity proof or rollback protection.
