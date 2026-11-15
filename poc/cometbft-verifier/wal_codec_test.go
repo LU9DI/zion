@@ -142,3 +142,27 @@ func TestWALRecordHashChainRequiresSequenceAndDigestContinuity(t *testing.T) {
 		t.Fatalf("expected sequence rejection, got %v", err)
 	}
 }
+
+
+func FuzzDecodeWALRecordCanonicalRoundTrip(f *testing.F) {
+	valid, err := EncodeWALRecord(testWALRecord())
+	if err != nil {
+		f.Fatalf("encode fuzz seed: %v", err)
+	}
+	f.Add(valid)
+	f.Add([]byte("ZWL1"))
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		decoded, err := DecodeWALRecord(raw)
+		if err != nil {
+			return
+		}
+		encoded, err := EncodeWALRecord(decoded)
+		if err != nil {
+			t.Fatalf("decoded record could not be re-encoded: %v", err)
+		}
+		if !bytes.Equal(encoded, raw) {
+			t.Fatal("accepted WAL encoding was not canonical")
+		}
+	})
+}
