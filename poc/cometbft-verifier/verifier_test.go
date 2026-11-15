@@ -157,7 +157,53 @@ func cloneEvidence(in Evidence) Evidence {
 		out.Commit.Signatures[i].ValidatorAddress = append([]byte(nil), in.Commit.Signatures[i].ValidatorAddress...)
 		out.Commit.Signatures[i].Signature = append([]byte(nil), in.Commit.Signatures[i].Signature...)
 	}
+	if in.PostBlockAnchor != nil {
+		anchorCopy := *in.PostBlockAnchor
+		if in.PostBlockAnchor.Header != nil {
+			h := *in.PostBlockAnchor.Header
+			h.ValidatorsHash = append([]byte(nil), h.ValidatorsHash...)
+			h.NextValidatorsHash = append([]byte(nil), h.NextValidatorsHash...)
+			h.ConsensusHash = append([]byte(nil), h.ConsensusHash...)
+			h.AppHash = append([]byte(nil), h.AppHash...)
+			h.LastResultsHash = append([]byte(nil), h.LastResultsHash...)
+			h.LastCommitHash = append([]byte(nil), h.LastCommitHash...)
+			h.DataHash = append([]byte(nil), h.DataHash...)
+			h.EvidenceHash = append([]byte(nil), h.EvidenceHash...)
+			h.ProposerAddress = append([]byte(nil), h.ProposerAddress...)
+			anchorCopy.Header = &h
+		}
+		anchorCopy.BlockID.PartSetHeader.Hash = append([]byte(nil), in.PostBlockAnchor.BlockID.PartSetHeader.Hash...)
+		if in.PostBlockAnchor.Commit != nil {
+			c := *in.PostBlockAnchor.Commit
+			c.Signatures = append([]types.CommitSig(nil), in.PostBlockAnchor.Commit.Signatures...)
+			for i := range c.Signatures {
+				c.Signatures[i].ValidatorAddress = append([]byte(nil), in.PostBlockAnchor.Commit.Signatures[i].ValidatorAddress...)
+				c.Signatures[i].Signature = append([]byte(nil), in.PostBlockAnchor.Commit.Signatures[i].Signature...)
+			}
+			anchorCopy.Commit = &c
+		}
+		out.PostBlockAnchor = &anchorCopy
+	}
 	return out
+}
+
+func TestCloneEvidenceDeepCopiesPostBlockAnchor(t *testing.T) {
+	base, _ := signedEvidence(t)
+	cloned := cloneEvidence(base)
+	cloned.PostBlockAnchor.Header.AppHash[0] ^= 0xff
+	cloned.PostBlockAnchor.Header.LastCommitHash[0] ^= 0xff
+	cloned.PostBlockAnchor.BlockID.Hash[0] ^= 0xff
+	cloned.PostBlockAnchor.BlockID.PartSetHeader.Hash[0] ^= 0xff
+	cloned.PostBlockAnchor.Commit.Signatures[0].Signature[0] ^= 0xff
+	cloned.PostBlockAnchor.Commit.Signatures[0].ValidatorAddress[0] ^= 0xff
+	if bytes.Equal(cloned.PostBlockAnchor.Header.AppHash, base.PostBlockAnchor.Header.AppHash) ||
+		bytes.Equal(cloned.PostBlockAnchor.Header.LastCommitHash, base.PostBlockAnchor.Header.LastCommitHash) ||
+		bytes.Equal(cloned.PostBlockAnchor.BlockID.Hash, base.PostBlockAnchor.BlockID.Hash) ||
+		bytes.Equal(cloned.PostBlockAnchor.BlockID.PartSetHeader.Hash, base.PostBlockAnchor.BlockID.PartSetHeader.Hash) ||
+		bytes.Equal(cloned.PostBlockAnchor.Commit.Signatures[0].Signature, base.PostBlockAnchor.Commit.Signatures[0].Signature) ||
+		bytes.Equal(cloned.PostBlockAnchor.Commit.Signatures[0].ValidatorAddress, base.PostBlockAnchor.Commit.Signatures[0].ValidatorAddress) {
+		t.Fatal("mutating cloned post-block anchor changed the original evidence")
+	}
 }
 
 func TestVerifyCommitEvidenceAcceptsValidFourValidatorCommitHeaderAndOrderedTransactions(t *testing.T) {
