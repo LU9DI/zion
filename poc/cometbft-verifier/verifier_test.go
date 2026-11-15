@@ -29,7 +29,8 @@ func signedEvidence(t *testing.T) (Evidence, *types.ValidatorSet) {
 	if err := finalState.Replay(transactions); err != nil {
 		t.Fatalf("replay signed test transactions: %v", err)
 	}
-	appHash := finalState.AppHash()
+	preBlockAppHash := initialState.AppHash()
+	postBlockAppHash := finalState.AppHash()
 	cometTxs := make(types.Txs, len(transactions))
 	for i := range transactions {
 		cometTxs[i] = append(types.Tx(nil), transactions[i]...)
@@ -43,7 +44,7 @@ func signedEvidence(t *testing.T) (Evidence, *types.ValidatorSet) {
 		ValidatorsHash:      append([]byte(nil), validators.Hash()...),
 		NextValidatorsHash:  append([]byte(nil), validators.Hash()...),
 		ConsensusHash:       tmhash.Sum([]byte("consensus params")),
-		AppHash:             append([]byte(nil), appHash...),
+		AppHash:             append([]byte(nil), preBlockAppHash...),
 		LastResultsHash:     tmhash.Sum([]byte("last results")),
 		LastCommitHash:      tmhash.Sum([]byte("last commit")),
 		DataHash:            append([]byte(nil), cometTxs.Hash()...),
@@ -87,7 +88,8 @@ func signedEvidence(t *testing.T) (Evidence, *types.ValidatorSet) {
 		Height:           height,
 		BlockID:          blockID,
 		ValidatorSetHash: append([]byte(nil), validators.Hash()...),
-		ExpectedAppHash:  append([]byte(nil), appHash...),
+		ExpectedPreBlockAppHash:  append([]byte(nil), preBlockAppHash...),
+		ExpectedPostBlockAppHash: append([]byte(nil), postBlockAppHash...),
 		Transactions:     cloneTransactions(transactions),
 		Header:           header,
 		Commit:           commit,
@@ -105,7 +107,8 @@ func cloneTransactions(in [][]byte) [][]byte {
 func cloneEvidence(in Evidence) Evidence {
 	out := in
 	out.ValidatorSetHash = append([]byte(nil), in.ValidatorSetHash...)
-	out.ExpectedAppHash = append([]byte(nil), in.ExpectedAppHash...)
+	out.ExpectedPreBlockAppHash = append([]byte(nil), in.ExpectedPreBlockAppHash...)
+	out.ExpectedPostBlockAppHash = append([]byte(nil), in.ExpectedPostBlockAppHash...)
 	out.Transactions = cloneTransactions(in.Transactions)
 	headerCopy := *in.Header
 	headerCopy.ValidatorsHash = append([]byte(nil), in.Header.ValidatorsHash...)
@@ -148,7 +151,7 @@ func TestVerifyCommitEvidenceRejectsInvalidEvidence(t *testing.T) {
 		{"header height mismatch", func(e *Evidence) { e.Header.Height++ }},
 		{"header hash does not match committed block ID", func(e *Evidence) { e.Header.AppHash = tmhash.Sum([]byte("substituted app hash")) }},
 		{"header validator hash mismatch", func(e *Evidence) { e.Header.ValidatorsHash = tmhash.Sum([]byte("substituted validators")) }},
-		{"independently expected app hash mismatch", func(e *Evidence) { e.ExpectedAppHash = tmhash.Sum([]byte("wrong state root")) }},
+		{"independently expected app hash mismatch", func(e *Evidence) { e.ExpectedPostBlockAppHash = tmhash.Sum([]byte("wrong post-block state root")) }},
 		{"validator set digest mismatch", func(e *Evidence) { e.ValidatorSetHash[0] ^= 0xff }},
 		{"altered transaction bytes", func(e *Evidence) { e.Transactions[0][0] ^= 0xff }},
 		{"omitted transaction", func(e *Evidence) { e.Transactions = e.Transactions[:2] }},
@@ -240,7 +243,8 @@ func TestVerifyProtoCommitEvidence(t *testing.T) {
 		Header:                evidence.Header.ToProto(),
 		ValidatorSet:          validatorProto,
 		ExpectedValidatorHash: append([]byte(nil), evidence.ValidatorSetHash...),
-		ExpectedAppHash:       append([]byte(nil), evidence.ExpectedAppHash...),
+		ExpectedPreBlockAppHash:  append([]byte(nil), evidence.ExpectedPreBlockAppHash...),
+		ExpectedPostBlockAppHash: append([]byte(nil), evidence.ExpectedPostBlockAppHash...),
 		Transactions:          cloneTransactions(evidence.Transactions),
 		Commit:                evidence.Commit.ToProto(),
 	}
@@ -311,8 +315,11 @@ func TestVerifyCommitEvidenceWithReplayBindsStateToSignedAppHash(t *testing.T) {
 	if replayed.Sequence() != 3 {
 		t.Fatalf("unexpected replay sequence: %d", replayed.Sequence())
 	}
-	if !bytes.Equal(replayed.AppHash(), evidence.Header.AppHash) {
-		t.Fatal("replayed state root differs from signed header app hash")
+	if !bytes.Equal(initial.AppHash(), evidence.Header.AppHash) {
+		t.Fatal("pre-block state root differs from signed header app hash")
+	}
+	if !bytes.Equal(replayed.AppHash(), evidence.ExpectedPostBlockAppHash) {
+		t.Fatal("replayed state root differs from independently expected post-block app hash")
 	}
 	if !bytes.Equal(initial.AppHash(), initialHash) || initial.Sequence() != 0 {
 		t.Fatal("verification mutated the caller's initial state")
@@ -322,7 +329,7 @@ func TestVerifyCommitEvidenceWithReplayBindsStateToSignedAppHash(t *testing.T) {
 func TestVerifyCommitEvidenceWithReplayRejectsWrongGenesisState(t *testing.T) {
 	evidence, validators := signedEvidence(t)
 	wrongGenesis := newTestState(t, "project-alpha", "different-genesis")
-	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, wrongGenesis); !errors.Is(err, ErrAppHashMismatch) {
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, wrongGenesis); !errors.Is(err, ErrPreBlockAppHashMismatch) {
 		t.Fatalf("expected replayed app hash mismatch, got %v", err)
 	}
 }
