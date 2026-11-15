@@ -253,3 +253,53 @@ A GO here authorizes only a disposable test harness proposal; it does not select
 ## 8. Explicit non-claims
 
 This specification is not an executed test, security review, production architecture approval, proof of independent operators, proof against Byzantine operators, proof of cloud-provider independence, or evidence that Zion's current runtime uses CometBFT. It does not implement a trust anchor, validator bootstrap/rotation, a global user-admission order, or the first-1,000 founder cohort.
+
+## 9. Runner class and initial resource envelope (2026-11-15)
+
+### 9.1 Repository and runner facts
+
+The GitHub repository metadata reports visibility `public`. The existing private-runner connectivity workflow already uses the explicit `ubuntu-24.04` label. GitHub's current hosted-runner documentation lists standard Linux runners for public repositories with that label as a new VM with 4 vCPUs, 16 GB RAM, and 14 GB SSD. This capacity is different for private repositories; do not copy these numbers if repository visibility or runner class changes.
+
+References:
+- https://docs.github.com/en/actions/reference/runners/github-hosted-runners
+- https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job
+
+The PoC should pin `runs-on: ubuntu-24.04` rather than `ubuntu-latest`, and must record the actual runner image, kernel, architecture, CPU count, memory, available disk, Docker version, and cgroup mode at job start. If observed capacity differs from this envelope, abort before starting validators and mark the run NOT RUN.
+
+### 9.2 Per-project runner budget
+
+Apply the following conservative starting envelope independently to each project runner. These are test guardrails, not claims about production node sizing:
+
+| Resource | Per validator (4 total) | Project-job ceiling / rule |
+|---|---:|---:|
+| CPU | 0.5 CPU quota | 2 CPU total for validators |
+| Memory | 768 MiB hard limit | 3 GiB total for validators |
+| PIDs | 128 | 512 total across validators |
+| Container log | 16 MiB, 2 rotated files | 128 MiB combined maximum |
+| Application process | n/a | 1 CPU, 1 GiB memory, 128 PIDs |
+| Test corpus/state | n/a | 512 MiB maximum per project |
+| Job wall time | n/a | 25 minutes hard timeout |
+| Host disk reserve | n/a | Keep at least 3 GiB free; abort safely below this |
+
+The job must leave capacity for the runner OS, Docker daemon, evidence collector, and fault controller. Measure actual usage rather than assuming container limits equal observed consumption. Use Docker CPU, memory, and PID limits plus bounded log rotation. The application must enforce the test-state/corpus byte ceiling before accepting more data.
+
+A 14 GB runner disk is shared by the OS image, checkout, Docker layers, writable layers, volumes, logs, and artifacts. Do not claim a per-container hard disk quota merely because a volume has a size label. The harness must verify the actual backing filesystem and enforcement mechanism. If a hard per-volume quota cannot be demonstrated, use strict application-level byte limits, bounded logs, continuous free-space monitoring, and a 3 GiB host reserve; mark host disk-full fault injection NOT RUN unless it can be safely contained in a disposable size-limited filesystem.
+
+### 9.3 Safe stress-test policy
+
+The resource-pressure scenarios must be sequential, never simultaneous across all resource classes:
+
+1. Capture a baseline with both projects healthy.
+2. Apply one beta-only limit/stressor at a time.
+3. Verify beta's own resource cap is enforced and its failure mode is recorded.
+4. Continue measuring alpha independently for the entire beta stress interval.
+5. Remove the stressor and verify beta recovers from its own state.
+6. Reset to fresh genesis before the next stress class.
+
+Do not run an unbounded fork bomb, host-wide disk fill, host memory exhaustion, or host CPU saturation. PID pressure is limited to the container's 128-PID cap. Disk-full testing must target a disposable capped filesystem or a deterministic application storage fault shim, never the runner root filesystem. If the mechanism cannot be isolated and proven, record NOT RUN rather than simulating it with a host-level destructive command.
+
+### 9.4 Interpretation
+
+These limits are a conservative harness envelope chosen for a public-repository standard Ubuntu runner, not performance acceptance thresholds for Zion. They do not establish that four validators per VM represent four independent operators. They also do not define production throughput, memory requirements, or a supported maximum number of projects per node.
+
+Before the first implementation run, the workflow must print and validate the observed capacity, and the test report must retain both configured limits and measured peak CPU, RSS, PIDs, disk usage, log bytes, and free-space minimum. Any threshold adjustment after observing a failure requires a new reviewed specification revision and a fresh full run.
