@@ -331,7 +331,7 @@ test('separate OS processes isolate two project journal recovery failures', () =
     '  process.stdout.write(JSON.stringify({ error: error.code ?? error.message }));',
     '  process.exitCode = 2;',
     '}',
-  ].join('\\n');
+  ].join('\n');
   const runChild = (path, mode, key = '', value = '') => spawnSync(
     process.execPath,
     ['--input-type=module', '-e', childScript, path, mode, key, value],
