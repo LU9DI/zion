@@ -83,6 +83,33 @@ func signedEvidence(t *testing.T) (Evidence, *types.ValidatorSet) {
 		BlockID:    blockID,
 		Signatures: signatures,
 	}
+
+	nextHeader := &types.Header{
+		Version: cmtversion.Consensus{Block: cmtversionpkg.BlockProtocol},
+		ChainID: testChainID, Height: height + 1,
+		Time: time.Unix(1_700_000_100, 0).UTC(), LastBlockID: blockID,
+		ValidatorsHash: append([]byte(nil), validators.Hash()...),
+		NextValidatorsHash: append([]byte(nil), validators.Hash()...),
+		ConsensusHash: tmhash.Sum([]byte("next consensus params")),
+		AppHash: append([]byte(nil), postBlockAppHash...),
+		LastResultsHash: tmhash.Sum([]byte("next last results")),
+		DataHash: (types.Txs{}).Hash(), EvidenceHash: tmhash.Sum([]byte("next evidence")),
+		ProposerAddress: append([]byte(nil), proposerAddress...),
+	}
+	nextBlockID := types.BlockID{Hash: nextHeader.Hash(), PartSetHeader: types.PartSetHeader{Total: 1, Hash: tmhash.Sum([]byte("next test parts"))}}
+	nextSignatures := make([]types.CommitSig, validators.Size())
+	for i := 0; i < validators.Size(); i++ {
+		address, _ := validators.GetByIndex(int32(i))
+		vote := &types.Vote{Type: cmtproto.PrecommitType, Height: height + 1, Round: 0,
+			BlockID: nextBlockID, Timestamp: time.Unix(1_700_000_110+int64(i), 0).UTC(),
+			ValidatorAddress: address, ValidatorIndex: int32(i)}
+		if _, err := types.SignAndCheckVote(vote, privateValidators[i], testChainID, false); err != nil {
+			t.Fatalf("sign next-height vote %d: %v", i, err)
+		}
+		nextSignatures[i] = vote.CommitSig()
+	}
+	nextCommit := &types.Commit{Height: height + 1, Round: 0, BlockID: nextBlockID, Signatures: nextSignatures}
+	anchor := &PostBlockAnchor{Header: nextHeader, BlockID: nextBlockID, Commit: nextCommit, Validators: validators}
 	return Evidence{
 		ChainID:          testChainID,
 		Height:           height,
@@ -93,6 +120,7 @@ func signedEvidence(t *testing.T) (Evidence, *types.ValidatorSet) {
 		Transactions:     cloneTransactions(transactions),
 		Header:           header,
 		Commit:           commit,
+		PostBlockAnchor:  anchor,
 	}, validators
 }
 
@@ -308,7 +336,7 @@ func TestVerifyCommitEvidenceWithReplayBindsPreAndPostBlockStateHashes(t *testin
 	evidence, validators := signedEvidence(t)
 	initial := newTestState(t, "project-alpha", "genesis-alpha")
 	initialHash := append([]byte(nil), initial.AppHash()...)
-	replayed, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial)
+	replayed, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial, evidence.PostBlockAnchor)
 	if err != nil {
 		t.Fatalf("valid commit with deterministic replay rejected: %v", err)
 	}
@@ -357,7 +385,7 @@ func TestVerifyCommitEvidenceWithReplayRejectsMissingHeader(t *testing.T) {
 func TestVerifyCommitEvidenceWithReplayRejectsWrongGenesisState(t *testing.T) {
 	evidence, validators := signedEvidence(t)
 	wrongGenesis := newTestState(t, "project-alpha", "different-genesis")
-	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, wrongGenesis); !errors.Is(err, ErrPreBlockAppHashMismatch) {
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, wrongGenesis, evidence.PostBlockAnchor); !errors.Is(err, ErrPreBlockAppHashMismatch) {
 		t.Fatalf("expected replayed app hash mismatch, got %v", err)
 	}
 }
