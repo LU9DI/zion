@@ -1,6 +1,6 @@
 # Durable State Storage and Recovery Protocol (PoC Specification)
 
-**Status:** design specification; D1 pure codec has been added to the isolated PoC but has not yet been validated by CI. No filesystem persistence is implemented.  
+**Status:** design specification; D1 pure codec has been added to the isolated PoC and its validation CI on PR head b6c83192a2cbe9d07722647bae7b65be9b303c82 completed successfully. Review identified a block-completeness gap; D1 remains codec-only and no filesystem persistence is implemented.  
 **Scope:** isolated CometBFT verifier/replay PoC under `poc/cometbft-verifier/`.  
 **Non-goal:** this document does not authorize production Zion integration, invitation admission, validator operation, or a deployment.
 
@@ -75,6 +75,34 @@ A future versioned WAL record should include:
 All integers use a single specified byte order. The decoder must reject unknown versions, non-canonical encodings, integer overflow, truncated fields, oversized lengths, trailing bytes, invalid digest links, wrong project/genesis, and non-monotonic record numbers.
 
 A checksum/hash chain detects accidental damage and some local edits; it does **not** authenticate a writer or prevent an attacker from rewriting the entire chain. Authentication comes from independently verified consensus evidence, not from the local WAL hash chain.\n\n### D1 codec wire format\n\nThe current isolated codec in `wal_codec.go` defines `ZWL1` version 1 as the following exact sequence: magic (4 bytes), version (u16), total frame length including checksum (u32), record number (u64), project ID length (u16), UTF-8 project ID bytes, genesis digest (32), height (u64), block ID hash (32), block part-set total (u32), block part-set hash (32), transaction index (u32), transaction length (u32), exact transaction bytes, previous-record digest (32), resulting app hash (32), and SHA-256 checksum (32) over every preceding byte. All integers are big-endian. The current limits are 2 MiB per encoded frame, 128 project-ID bytes, `MaxTransactionBytes` per transaction, and transaction index below `MaxTransactionsPerBlock`. Record number and height must be nonzero; genesis, block-ID, and app hashes must be nonzero; record 1 must have a zero predecessor digest, while later records must have a nonzero predecessor digest. The decoder requires exact total length and rejects trailing bytes, unsupported versions, invalid UTF-8/NUL project IDs, malformed lengths, and checksum mismatch. `WALRecordDigest` validates before hashing the complete frame; `VerifyWALRecordLink` checks adjacent record number, project/genesis continuity, nondecreasing height, and previous-record digest. These helpers validate encoding and local chain continuity only; they do not verify commit evidence or authenticate the record source.
+
+
+
+## 5.1 D2 format gate: block-atomic WAL records
+
+Review of D1 identified a semantic mismatch that must be resolved before filesystem persistence:
+
+- ZWL1 v1 stores one transaction per record and includes an application hash.
+- A CometBFT commit identifies a complete block, not an independently committed transaction. The block's application result is meaningful only after the complete ordered transaction list (including the empty-block case) has been processed under the application's block lifecycle.
+- Consequently, the v1 per-transaction AppHash field is ambiguous: it could be mistaken for an intermediate per-transaction state hash or for the final block application hash. Neither interpretation currently proves that the record contains the complete committed block.
+- TransactionIndex alone does not prove completeness. The format does not bind the total transaction count or the block's canonical DataHash, and it has no explicit block-complete/commit boundary.
+
+**Decision for D2:** do not append ZWL1 records to a durable store and do not use ZWL1 as a recovery authority. Preserve D1 as a pure codec/golden-vector exercise. D2 must introduce a new versioned, block-atomic WAL envelope (provisionally ZWB1) or an equivalently explicit block container. One logical WAL commit must bind:
+
+1. project ID and authenticated genesis digest;
+2. monotonically increasing local WAL record number and previous-record digest;
+3. CometBFT height and the complete BlockID (block hash plus part-set total and hash);
+4. canonical block transaction count, canonical DataHash, and every exact transaction byte string in original order, with aggregate and per-item size/count bounds;
+5. the expected post-block application hash;
+6. a digest/reference to independently verified commit evidence, plus enough canonical block/header identity to prevent substituting evidence for another block.
+
+The codec must reject a transaction count/list mismatch, DataHash mismatch, reordered or substituted transactions, duplicate/trailing bytes, invalid BlockID fields, overflow, and resource-limit violations. The verifier must independently recompute the canonical block DataHash using the exact pinned CometBFT version's rules; it must not trust a caller-supplied DataHash merely because it is included in a checksummed record.
+
+D2 replay must be block-atomic: clone the last accepted state, apply the entire ordered block transaction list to the disposable copy, execute any explicitly modeled end-of-block transition, compare the resulting app hash with the verified expected post-block hash, and only then make the candidate state eligible for durable publication. A failed transaction or failed hash/evidence check discards the entire candidate state. Replaying an identical already-committed block is idempotent; a different BlockID or transaction payload at the same committed height is a hard conflict.
+
+The commit-evidence digest is only a lookup/binding aid. The actual evidence must be retained or retrievable from a separately trusted source and re-verified during recovery against the authenticated validator-set history. A hash, local WAL checksum, or locally stored proof blob is not by itself a trust anchor.
+
+No D2 filesystem implementation may begin until the exact pinned CometBFT version's block encoding, DataHash calculation, BlockID construction, commit verification, and application lifecycle are inspected and captured in executable golden tests. If a safe canonical full-block representation cannot be established, stop at the pure codec stage rather than approximating it.
 
 ## 6. Commit and fsync ordering
 
@@ -184,7 +212,7 @@ Tests must use subprocesses for process-level crashes and lock contention. In-pr
 Implement in separate, reviewable increments:
 
 - **D1 — format and pure codec:** versioned WAL records, strict decoder, canonical test vectors, bounded parsing.
-- **D2 — single-process durable store:** append, sync, atomic snapshot generation, reopen/replay, typed errors.
+- **D2 — block-atomic format and single-process durable store:** first implement and validate a complete-block WAL envelope as specified in §5.1; only then append, sync, publish atomic snapshot generations, reopen/replay, and expose typed errors.
 - **D3 — process exclusion:** platform-specific lock implementations and subprocess tests on Linux, macOS and Windows.
 - **D4 — crash/fault injection:** deterministic crash points, short writes, disk-full and sync failures.
 - **D5 — CometBFT reconciliation:** pinned-version integration tests for both persistence crash windows and authenticated replay.
@@ -194,4 +222,4 @@ Passing D1-D4 would establish only local storage behavior. It would not prove BF
 
 ## 14. Current decision
 
-No filesystem storage implementation is approved by this specification. D1's pure codec and canonical golden-vector/adversarial tests have been added in `wal_codec.go` and `wal_codec_test.go`; their CI status must be checked on the exact PR head before treating them as passing. The next safe step is to review the wire format and then consider D2 separately. No filesystem mutation, fsync, WAL append, or runtime integration is implemented. The existing in-memory state machine and snapshot codec remain unchanged.
+No filesystem storage implementation is approved by this specification. D1's pure ZWL1 codec and canonical golden-vector/adversarial tests have been added in wal_codec.go and wal_codec_test.go; validation, CodeQL, cross-platform Rust lock tests, ClamAV integration, and private-runner smoke checks completed successfully on PR head b6c83192a2cbe9d07722647bae7b65be9b303c82. Review then identified that one-transaction-per-record does not establish complete-block persistence. Therefore ZWL1 remains a codec-only experiment and must not be used by D2 as a durable commit record. The next gate is to inspect the pinned CometBFT block encoding/DataHash and implement a new block-atomic WAL format with exact full-block binding. No filesystem mutation, fsync, WAL append, or runtime integration is implemented. The existing in-memory state machine and snapshot codec remain unchanged.
