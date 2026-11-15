@@ -110,7 +110,7 @@ No D2 implementation may begin until both gates in §5.1 are satisfied: the veri
 
 A second, more fundamental issue was found by inspecting the pinned verifier's evidence model against CometBFT's Header semantics. In CometBFT v0.38.26, Header.AppHash is the application hash returned after executing and committing the **previous** block. The current block's DataHash commits its ordered transactions, but Header.AppHash is not the result of executing those transactions.
 
-Before the corrective commit, the PoC verifier and its signed-evidence fixture incorrectly set Header.AppHash equal to the state hash obtained after replaying the transactions in that same block. The verifier and fixtures have now been changed to carry distinct ExpectedPreBlockAppHash and ExpectedPostBlockAppHash values, check the initial state against Header.AppHash, and check replay against the separate post-block expectation. The corrective tests are awaiting CI; do not treat the correction as validated until the exact latest PR head has terminal successful results.
+Before the corrective commit, the PoC verifier and its signed-evidence fixture incorrectly set Header.AppHash equal to the state hash obtained after replaying the transactions in that same block. The verifier and fixtures first changed to carry distinct ExpectedPreBlockAppHash and ExpectedPostBlockAppHash values. A subsequent hardening change now also requires a PostBlockAnchor: the signed H+1 header must point back to the H BlockID, carry the replayed H post-state as its AppHash, be signed by the validator set committed in Header(H).NextValidatorsHash, and pass full CometBFT commit verification at H+1. Tests cover missing anchor, wrong next height, validator-transition mismatch, and wrong post-state. This newest anchor implementation is awaiting CI; do not treat it as validated until the exact latest PR head has terminal successful results.
 
 Before any D2 implementation, split the verifier's state bindings explicitly:
 
@@ -121,11 +121,11 @@ Before any D2 implementation, split the verifier's state bindings explicitly:
 The test-only StateMachine currently models only ordered transaction mutations; it does not model the full ABCI++ FinalizeBlock/Commit lifecycle, block evidence processing, validator/consensus parameter updates, or end-block hooks. Until those omissions are explicitly bounded or modeled, its post-block hash is only the result of this simplified application model, not a complete CometBFT application state transition.
 
 Required corrective gate:
-1. The Evidence/replay code now checks the pre-block app hash against Header(H).AppHash and carries the post-block app hash as a distinct field. CI must confirm this change.
-2. Signed fixtures now use a distinct initial-state hash in Header(H).AppHash and post-block hash only in the separate post-block expectation.
-3. Add tests proving wrong pre-state, wrong post-state, missing next-height anchor, and height/validator-transition mismatch are rejected.
-4. Document exactly how the initial height is anchored by InitChain/genesis and how subsequent post-block hashes are authenticated.
-5. Only after those tests pass may the block-atomic WAL format proceed. A D1 checksum, block DataHash, or commit certificate alone does not authenticate the resulting application state.
+1. The verifier checks the pre-block app hash against Header(H).AppHash and uses a distinct post-block hash.
+2. Signed fixtures now bind the post-block hash to a fully signed H+1 header whose LastBlockID points to H, whose AppHash equals the replay result, and whose validator set is committed by Header(H).NextValidatorsHash.
+3. Tests now cover wrong pre-state, wrong post-state, missing next-height anchor, wrong next height, and validator-transition mismatch. CI must confirm this implementation.
+4. The remaining trust-bootstrap requirement is to define the authenticated genesis/InitChain app hash and the validator-set history at the initial height. The next-header chain can extend a trusted checkpoint but cannot create the initial trust anchor itself.
+5. Only after those tests pass and the genesis trust bootstrap is specified may the block-atomic WAL format proceed. A D1 checksum, block DataHash, or commit certificate alone does not authenticate the resulting application state.
 
 This gate supersedes any wording above that could be read as allowing the current Header(H).AppHash to serve as the expected post-block state hash.
 
