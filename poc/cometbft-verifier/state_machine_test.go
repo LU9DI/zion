@@ -99,3 +99,16 @@ func TestStateMachineEmptyStateHashIsStableAndNonEmpty(t *testing.T) {
 	if len(a.AppHash()) != sha256.Size { t.Fatalf("unexpected app hash size: %d", len(a.AppHash())) }
 	if !bytes.Equal(a.AppHash(), b.AppHash()) { t.Fatal("empty state hash is not stable") }
 }
+
+func TestStateMachineRejectsSequenceOverflow(t *testing.T) {
+	s := newTestState(t, "project-alpha", "genesis-alpha")
+	s.sequence = ^uint64(0)
+	before := append([]byte(nil), s.AppHash()...)
+	tx := testStateTx(t, "project-alpha", 1, statePut, ^uint64(0), "k", "v")
+	if _, err := s.Apply(tx); !errors.Is(err, ErrSequenceExhausted) {
+		t.Fatalf("expected sequence exhaustion, got %v", err)
+	}
+	if s.Sequence() != ^uint64(0) || !bytes.Equal(before, s.AppHash()) {
+		t.Fatal("sequence overflow mutated state")
+	}
+}
