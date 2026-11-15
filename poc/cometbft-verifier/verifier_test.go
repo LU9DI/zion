@@ -19,12 +19,17 @@ func signedEvidence(t *testing.T) (Evidence, *types.ValidatorSet) {
 	t.Helper()
 	validators, privateValidators := types.RandValidatorSet(4, 1)
 	const height int64 = 7
-	appHash := tmhash.Sum([]byte("independently replayed application state"))
+	initialState := newTestState(t, "project-alpha", "genesis-alpha")
 	transactions := [][]byte{
-		[]byte("project-alpha|op-0001|PUT|account/1|alice"),
-		[]byte("project-alpha|op-0002|PUT|account/2|bob"),
-		[]byte("project-alpha|op-0003|DELETE|account/9"),
+		testStateTx(t, "project-alpha", 1, statePut, 0, "account/1", "alice"),
+		testStateTx(t, "project-alpha", 2, statePut, 1, "account/2", "bob"),
+		testStateTx(t, "project-alpha", 3, stateDelete, 2, "account/1", ""),
 	}
+	finalState := initialState.Clone()
+	if err := finalState.Replay(transactions); err != nil {
+		t.Fatalf("replay signed test transactions: %v", err)
+	}
+	appHash := finalState.AppHash()
 	cometTxs := make(types.Txs, len(transactions))
 	for i := range transactions {
 		cometTxs[i] = append(types.Tx(nil), transactions[i]...)
