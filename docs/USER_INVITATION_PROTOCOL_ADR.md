@@ -104,3 +104,23 @@ This is unresolved and blocks implementation of `REDEEM_USER_INVITATION` and fou
 3. a fully specified alternative protocol that proves globally unique, contiguous ordinals without a global serialization authority. No such protocol is currently specified.
 
 Until resolved, invitation redemption and global founder assignment remain unavailable. Project-scoped BFT evaluation may continue independently. See `docs/PROJECT_COMMITTED_STATE_MACHINE_CONTRACT.md`, section 2.
+
+
+## Follow-up architecture analysis (2026-11-15)
+
+The global-ordering conflict has been analyzed in
+`docs/ZION_WIDE_ADMISSION_CONSENSUS_OPTIONS.md`. Under the current product
+semantics (one network-wide first-1,000 cohort with unique contiguous
+first-come-first-served ordinals), a dedicated Zion-wide admission BFT domain
+is the only evaluated option that directly preserves the invariant. It is
+still a global admission consensus domain and therefore requires an explicit
+clarification of the existing no-global-committee constraint.
+
+Project-scoped cohorts and distributed non-sequential founder slots change
+the product semantics and require explicit approval. Asynchronous
+reconciliation does not preserve irreversible real-time first-come-first-served
+founder status.
+
+No option is approved for implementation by this analysis. Invitation
+redemption and global founder assignment remain blocked pending an explicit
+architecture/product decision and the design gates in the analysis document.
