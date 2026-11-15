@@ -60,7 +60,7 @@ func TestWALRecordRejectsMalformedFrames(t *testing.T) {
 		{"trailing byte", func(b []byte) []byte { return append(b, 0) }},
 		{"truncated checksum", func(b []byte) []byte { return b[:len(b)-1] }},
 		{"checksum mismatch", func(b []byte) []byte { b[20] ^= 0x80; return b }},
-		{"invalid UTF-8 project", func(b []byte) []byte { b[18] = 0xff; sum := sha256.Sum256(b[:len(b)-32]); copy(b[len(b)-32:], sum[:]); return b }},
+		{"invalid UTF-8 project", func(b []byte) []byte { b[20] = 0xff; sum := sha256.Sum256(b[:len(b)-32]); copy(b[len(b)-32:], sum[:]); return b }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
