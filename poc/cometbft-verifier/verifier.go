@@ -135,9 +135,9 @@ func VerifyCommitEvidenceWithReplay(e Evidence, validators *types.ValidatorSet, 
 	if len(e.ExpectedPreBlockAppHash) == 0 || !bytes.Equal(initial.AppHash(), e.ExpectedPreBlockAppHash) || !bytes.Equal(initial.AppHash(), e.Header.AppHash) {
 		return nil, ErrPreBlockAppHashMismatch
 	}
-	// Bound and authenticate the complete ordered transaction vector before
-	// replay allocates state or performs per-transaction work on untrusted input.
-	if err := verifyTransactionData(e.Transactions, e.Header.DataHash); err != nil {
+	// Authenticate the signed header, ordered transaction vector, and full
+	// commit certificate before replay performs application work on the input.
+	if err := VerifyCommitEvidence(e, validators); err != nil {
 		return nil, err
 	}
 	replayed := initial.Clone()
@@ -148,9 +148,6 @@ func VerifyCommitEvidenceWithReplay(e Evidence, validators *types.ValidatorSet, 
 		return nil, ErrMissingPostBlockAnchor
 	}
 	if err := verifyPostBlockAnchor(e, anchor, replayed.AppHash()); err != nil {
-		return nil, err
-	}
-	if err := VerifyCommitEvidence(e, validators); err != nil {
 		return nil, err
 	}
 	return replayed, nil
