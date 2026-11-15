@@ -174,6 +174,25 @@ On restart, the adapter must reconcile against authenticated CometBFT history an
 
 Before choosing a concrete integration point, inspect the exact pinned CometBFT version's ABCI++ lifecycle, application DB transaction semantics, block-store persistence order, replay behavior, and recovery guarantees. Prefer a storage transaction boundary explicitly supported by that version where possible; do not assume a filesystem rename can atomically commit two independent stores.
 
+
+
+### ABCI 2.0 lifecycle constraint (CometBFT v0.38.26)
+
+The pinned dependency is exactly github.com/cometbft/cometbft v0.38.26. Its ABCI 2.0 lifecycle must not be reduced to applying transaction bytes to the PoC StateMachine:
+
+- InitChain establishes the initial application state. The first block header's AppHash is the app_hash returned by InitChain; it is not a value inferred from an arbitrary local snapshot.
+- FinalizeBlock executes the decided block and returns the candidate application hash and transaction results. Application state changes from proposal/pre-execution must not become committed state merely because PrepareProposal or ProcessProposal ran.
+- Commit is the application persistence boundary: the application must durably persist its state before returning from Commit. The app's Info response after restart must describe the last successfully committed height.
+- CometBFT's own block store and state store are distinct from the application's storage. The block-store decision, CometBFT state persistence, and application Commit are separate ordered events with crash windows; no local WAL rename makes them one atomic transaction.
+- The post-state of block H is exposed as Header(H+1).AppHash. This is why the next-height anchor verifies both the H+1 commit and the validator-set transition, while checking Header(H+1).LastBlockID == BlockID(H).
+
+The D2 adapter must model the exact ABCI request/response and crash sequence for the pinned release, including the case where FinalizeBlock succeeded but Commit did not, and the case where CometBFT has persisted the decision but application Commit failed. The simplified transaction-only StateMachine is not a substitute for this lifecycle.
+
+Reference specifications to pin during implementation review:
+- https://github.com/cometbft/cometbft/blob/v0.38.26/spec/abci/abci++_app_requirements.md
+- https://github.com/cometbft/cometbft/blob/v0.38.26/spec/core/data_structures.md
+- https://github.com/cometbft/cometbft/blob/v0.38.26/spec/abci/abci++_basic_concepts.md
+
 ## 9. Locking and platform contract
 
 The lock must provide inter-process exclusion, not merely a Go mutex. The implementation must:
