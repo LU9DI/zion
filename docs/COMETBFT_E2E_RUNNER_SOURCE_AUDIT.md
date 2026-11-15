@@ -110,3 +110,27 @@ The next experiment must either:
 - run each project in a separate isolated Docker daemon/VM and add an independent cross-project supervisor/test controller.
 
 Do not claim two-project isolation from sequential runs. Do not modify CometBFT upstream, add a Zion consensus dependency, alter the official launcher, or change production runtime paths as part of this source audit.
+
+
+## 6. Zion CI network-smoke scope check
+
+A separate read-only inspection of Zion's current `.github/workflows/cometbft-private-network-smoke.yml` found that the workflow is **not a CometBFT consensus smoke test** despite its display name.
+
+Its executed network step:
+- obtains the runner's Tailscale IPv4 address;
+- starts Python's standard-library `HTTPServer` on TCP port 26656;
+- resolves the peer hostname and checks that the address is in the Tailscale CGNAT range;
+- performs an HTTP GET to `/health` and compares a fixed byte payload.
+
+The workflow does not:
+- install, build, or launch CometBFT;
+- start a validator, consensus reactor, ABCI application, or testnet;
+- exchange CometBFT P2P messages or consensus votes;
+- submit transactions, observe block heights, verify commit certificates, or compare app hashes;
+- partition a validator committee, stop a quorum, or test recovery.
+
+Therefore a successful run of this workflow proves only bidirectional private TCP/HTTP reachability between the two configured ephemeral runners (one direction per matrix job). It is useful infrastructure evidence, but it is **not evidence of CometBFT consensus, project isolation, BFT safety/liveness, or Zion runtime integration**.
+
+The workflow also has an explicit opt-in and isolated-tailnet readiness gate. When that gate is not configured, it records a skip and creates no tailnet node. A skipped run must not be reported as a successful network test.
+
+**Required reporting rule:** keep the existing workflow's result labeled as a private runner connectivity smoke. Do not cite it as a CometBFT network/consensus test. A future consensus smoke must separately provision disposable test-only validators and an ABCI test app, verify committed heights/app hashes and commit evidence, and clean up only resources it owns. It must remain opt-in and isolated from production keys and runtime.
