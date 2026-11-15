@@ -80,6 +80,37 @@ jobs:
           ZION_RUST_STORAGE_BIN: target/release/rea-storage-cli
         run: node --test test/rust-storage-integration.test.js
 
+
+  cometbft-commit-verifier:
+    name: CometBFT v0.38.26 commit verifier (test-only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up pinned Go toolchain
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.22.11
+          cache: true
+          cache-dependency-path: poc/cometbft-verifier/go.mod
+      - name: Verify exact CometBFT module pin
+        working-directory: poc/cometbft-verifier
+        run: |
+          grep -Fx 'require github.com/cometbft/cometbft v0.38.26' go.mod
+          go version
+      - name: Resolve pinned module and generate checksum file
+        working-directory: poc/cometbft-verifier
+        run: go mod tidy
+      - name: Test commit verifier
+        working-directory: poc/cometbft-verifier
+        run: go test -race -count=1 ./...
+      - name: Vet commit verifier
+        working-directory: poc/cometbft-verifier
+        run: go vet ./...
+
   rust-lock-platform:
     name: Rust storage lock (${{ matrix.os }})
     strategy:
