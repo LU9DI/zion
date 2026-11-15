@@ -149,7 +149,8 @@ func TestVerifyCommitEvidenceRejectsInvalidEvidence(t *testing.T) {
 		{"wrong block ID", func(e *Evidence) { e.BlockID.Hash = tmhash.Sum([]byte("substituted block")) }},
 		{"header chain ID mismatch", func(e *Evidence) { e.Header.ChainID = "other-chain" }},
 		{"header height mismatch", func(e *Evidence) { e.Header.Height++ }},
-		{"header hash does not match committed block ID", func(e *Evidence) { e.Header.AppHash = tmhash.Sum([]byte("substituted app hash")) }},
+		{"header pre-block app hash mismatch", func(e *Evidence) { e.Header.AppHash = tmhash.Sum([]byte("substituted pre-block app hash")) }},
+		{"expected pre-block app hash mismatch", func(e *Evidence) { e.ExpectedPreBlockAppHash = tmhash.Sum([]byte("wrong pre-block state root")) }},
 		{"header validator hash mismatch", func(e *Evidence) { e.Header.ValidatorsHash = tmhash.Sum([]byte("substituted validators")) }},
 		{"independently expected app hash mismatch", func(e *Evidence) { e.ExpectedPostBlockAppHash = tmhash.Sum([]byte("wrong post-block state root")) }},
 		{"validator set digest mismatch", func(e *Evidence) { e.ValidatorSetHash[0] ^= 0xff }},
@@ -304,7 +305,7 @@ func TestVerifyCommitEvidenceDoesNotMutateInputs(t *testing.T) {
 	}
 }
 
-func TestVerifyCommitEvidenceWithReplayBindsStateToSignedAppHash(t *testing.T) {
+func TestVerifyCommitEvidenceWithReplayBindsPreAndPostBlockStateHashes(t *testing.T) {
 	evidence, validators := signedEvidence(t)
 	initial := newTestState(t, "project-alpha", "genesis-alpha")
 	initialHash := append([]byte(nil), initial.AppHash()...)
@@ -323,6 +324,24 @@ func TestVerifyCommitEvidenceWithReplayBindsStateToSignedAppHash(t *testing.T) {
 	}
 	if !bytes.Equal(initial.AppHash(), initialHash) || initial.Sequence() != 0 {
 		t.Fatal("verification mutated the caller's initial state")
+	}
+}
+
+
+func TestVerifyCommitEvidenceRejectsMissingPostBlockHash(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	evidence.ExpectedPostBlockAppHash = nil
+	if err := VerifyCommitEvidence(evidence, validators); !errors.Is(err, ErrAppHashMismatch) {
+		t.Fatalf("expected missing post-block app hash error, got %v", err)
+	}
+}
+
+func TestVerifyCommitEvidenceWithReplayRejectsMissingHeader(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	evidence.Header = nil
+	initial := newTestState(t, "project-alpha", "genesis-alpha")
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial); !errors.Is(err, ErrMissingEvidence) {
+		t.Fatalf("expected missing evidence error, got %v", err)
 	}
 }
 
