@@ -84,6 +84,11 @@ func TestWALRecordRejectsInvalidFieldsAndBounds(t *testing.T) {
 		{"oversized project", func(r *WALRecord) { r.ProjectID = string(bytes.Repeat([]byte("x"), maxProjectIDBytes+1)) }},
 		{"invalid UTF-8 project", func(r *WALRecord) { r.ProjectID = string([]byte{0xff}) }},
 		{"NUL project", func(r *WALRecord) { r.ProjectID = "project\x00alpha" }},
+		{"zero genesis digest", func(r *WALRecord) { r.GenesisDigest = [walDigestSize]byte{} }},
+		{"zero block ID hash", func(r *WALRecord) { r.BlockIDHash = [walDigestSize]byte{} }},
+		{"zero application hash", func(r *WALRecord) { r.AppHash = [walDigestSize]byte{} }},
+		{"first record has predecessor", func(r *WALRecord) { r.PreviousDigest[0] = 1 }},
+		{"later record lacks predecessor", func(r *WALRecord) { r.RecordNumber = 2 }},
 		{"transaction index out of range", func(r *WALRecord) { r.TransactionIndex = MaxTransactionsPerBlock }},
 		{"oversized transaction", func(r *WALRecord) { r.Transaction = bytes.Repeat([]byte("x"), MaxTransactionBytes+1) }},
 	}
