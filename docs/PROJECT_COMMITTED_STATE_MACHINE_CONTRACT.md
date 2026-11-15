@@ -556,3 +556,17 @@ for this review. Existing CI results for commit `1ffc5074ba85d495c6ee1f7f56cedcc
 do not cover these newly identified cases. The Rust storage core remains a
 separate local storage component, not a distributed consensus or quorum
 commitment mechanism.
+
+
+## 14. Two-project durable-journal isolation test (2026-11-15)
+
+Added a narrowly scoped test-support case in `test/durable-committed-block-journal.test.js`:
+
+- Creates separate temporary journal paths for project-alpha and project-beta.
+- Commits different project state snapshots and verifies their application roots and stored values differ.
+- Corrupts only alpha's journal after closing both writers.
+- Requires alpha recovery to fail closed while beta independently reopens and recovers its exact committed height, application root, and snapshot.
+
+This is an initial storage-namespace regression test. It exercises two instances of the existing test-only JSONL journal on one host and in one Node test process. It does **not** establish separate OS-process, VM, Docker-daemon, network, validator-committee, consensus, CPU/memory/disk, or failure-domain isolation. It also does not establish that the journal is suitable as production committed storage; its existing cross-platform lock, power-loss, compaction, and operator-recovery limitations remain unchanged.
+
+The test was authored through the GitHub repository API; it was not executed in this session. Treat it as pending CI evidence until a workflow run tied to the exact commit completes successfully. Do not describe this case as a two-project BFT or CometBFT test.
