@@ -121,3 +121,20 @@ Unix and Windows source rather than assuming portability from its API name.
 
 This is still a design decision, not an implementation. No dependency,
 minimum Rust version, Rust source, or lockfile was changed in this commit.
+
+### CI toolchain compatibility evidence
+
+The successful validation job for commit
+`1ffc5074ba85d495c6ee1f7f56cedcc5df011ebf` logged
+`rustc 1.100.0 (0ef1bc386 2026-11-09)` and ran
+`cargo test --locked --manifest-path rust-core/Cargo.toml`. The workflow
+selects the moving `stable` channel rather than a pinned compiler. This
+confirms the currently observed CI toolchain is newer than the proposed 1.89
+minimum, but does not prove that developer environments or downstream users
+use a compatible compiler. If the native lock API is adopted, declare
+`rust-version = "1.89"` in `rust-core/Cargo.toml` and add an explicit MSRV
+check to CI; keep the main validation job on stable or a deliberately chosen
+newer toolchain.
+
+The CI evidence above belongs to the earlier validation commit and does not
+constitute a build or test of this proposed locking design.
