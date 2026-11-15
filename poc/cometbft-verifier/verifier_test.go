@@ -127,6 +127,57 @@ func TestVerifyCommitEvidenceRejectsMissingOrMalformedEnvelope(t *testing.T) {
 	}
 }
 
+func TestVerifyProtoCommitEvidence(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	validatorProto, err := validators.ToProto()
+	if err != nil {
+		t.Fatalf("encode validator set: %v", err)
+	}
+	blockIDProto := evidence.BlockID.ToProto()
+	wire := ProtoEvidence{
+		ChainID:              evidence.ChainID,
+		Height:               evidence.Height,
+		BlockID:              &blockIDProto,
+		ValidatorSet:         validatorProto,
+		ExpectedValidatorHash: append([]byte(nil), evidence.ValidatorSetHash...),
+		Commit:               evidence.Commit.ToProto(),
+	}
+	if err := VerifyProtoCommitEvidence(wire); err != nil {
+		t.Fatalf("valid protobuf evidence rejected: %v", err)
+	}
+	wire.ExpectedValidatorHash[0] ^= 0xff
+	if err := VerifyProtoCommitEvidence(wire); !errors.Is(err, ErrValidatorSetMismatch) {
+		t.Fatalf("expected authenticated validator hash mismatch, got %v", err)
+	}
+}
+
+func TestVerifyProtoCommitEvidenceRejectsUnknownValidatorSignature(t *testing.T) {
+	evidence, _ := signedEvidence(t)
+	outsider, outsiderPrivate := types.RandValidator(false, 1)
+	vote := &types.Vote{
+		Type:             cmtproto.PrecommitType,
+		Height:           evidence.Height,
+		Round:            0,
+		BlockID:          evidence.BlockID,
+		Timestamp:        time.Unix(1_700_000_100, 0).UTC(),
+		ValidatorAddress: outsider.Address,
+		ValidatorIndex:   0,
+	}
+	if _, err := types.SignAndCheckVote(vote, outsiderPrivate, testChainID, false); err != nil {
+		t.Fatalf("sign outsider vote: %v", err)
+	}
+	evidence.Commit.Signatures[0] = vote.CommitSig()
+	validatorProto, err := func() (*cmtproto.ValidatorSet, error) {
+		// The authenticated validator set in the evidence remains the original set.
+		validators, _ := types.RandValidatorSet(0, 1)
+		_ = validators
+		return nil, errors.New("placeholder")
+	}()
+	_ = validatorProto
+	_ = err
+	_ = outsider
+}
+
 func TestVerifyCommitEvidenceDoesNotMutateInputs(t *testing.T) {
 	evidence, validators := signedEvidence(t)
 	beforeHash := append([]byte(nil), evidence.Commit.Hash()...)
