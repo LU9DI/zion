@@ -251,78 +251,33 @@ impl StorageCore {
     fn chunk_path(&self, id: &str) -> PathBuf { self.root.join(&id[..2]).join(&id[2..]) }
 
     fn with_lock<T>(&self, operation: impl FnOnce() -> Result<T, StorageError>) -> Result<T, StorageError> {
-        let lock = self.root.join(".rea-rust-storage-lock");
+        let lock_path = self.root.join(".rea-rust-storage-lock");
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true);
+        #[cfg(unix)]
+        { options.mode(0o600).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC); }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+            options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        }
+        let file = options.open(&lock_path)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() { return Err(StorageError::UnsafePath); }
         let started = Instant::now();
-        let owner = format!("{}:{}\n", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos());
         loop {
-            match fs::create_dir(&lock) {
-                Ok(()) => {
-                    let owner_path = lock.join("owner");
-                    let owner_result = (|| -> Result<(), StorageError> {
-                        let mut file = OpenOptions::new().write(true).create_new(true).open(&owner_path)?;
-                        file.write_all(owner.as_bytes())?;
-                        file.sync_all()?;
-                        Ok(())
-                    })();
-                    if let Err(error) = owner_result {
-                        let _ = fs::remove_dir_all(&lock);
-                        return Err(error);
-                    }
-                    break;
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    self.reap_stale_lock(&lock);
+            match file.try_lock() {
+                Ok(()) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     if started.elapsed() >= self.lock_wait { return Err(StorageError::LockTimeout); }
                     thread::sleep(Duration::from_millis(15));
                 }
                 Err(error) => return Err(StorageError::Io(error.to_string())),
             }
         }
-        let result = operation();
-        // Remove only the lock that still carries our exact owner token.
-        if fs::symlink_metadata(&lock).map(|m| m.is_dir() && !m.file_type().is_symlink()).unwrap_or(false) {
-            let owner_path = lock.join("owner");
-            if fs::read_to_string(&owner_path).ok().as_deref() == Some(owner.as_str()) {
-                let _ = fs::remove_file(owner_path);
-                let _ = fs::remove_dir(&lock);
-            }
-        }
-        result
-    }
-
-    #[cfg(unix)]
-    fn reap_stale_lock(&self, lock: &Path) {
-        let metadata = match fs::symlink_metadata(lock) {
-            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => metadata,
-            _ => return,
-        };
-        let owner_path = lock.join("owner");
-        let owner = fs::symlink_metadata(&owner_path).ok().filter(|m| m.is_file() && !m.file_type().is_symlink() && m.len() <= 128)
-            .and_then(|_| fs::read_to_string(&owner_path).ok());
-        let stale = if let Some(owner) = owner {
-            let pid = owner.split(':').next().and_then(|value| value.parse::<i32>().ok());
-            match pid {
-                Some(pid) if pid > 0 => {
-                    // A live or permission-protected PID is never reaped. ESRCH is the
-                    // only positive evidence that the recorded owner process is gone.
-                    let rc = unsafe { libc::kill(pid, 0) };
-                    rc != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
-                }
-                _ => metadata.modified().ok().and_then(|time| time.elapsed().ok()).map(|age| age >= Duration::from_secs(30)).unwrap_or(false),
-            }
-        } else {
-            metadata.modified().ok().and_then(|time| time.elapsed().ok()).map(|age| age >= Duration::from_secs(30)).unwrap_or(false)
-        };
-        if stale {
-            let suffix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
-            let quarantine = self.root.join(format!(".rea-rust-storage-lock.stale-{}-{suffix}", std::process::id()));
-            if fs::rename(lock, &quarantine).is_ok() { let _ = fs::remove_dir_all(quarantine); }
-        }
-    }
-
-    #[cfg(not(unix))]
-    fn reap_stale_lock(&self, _lock: &Path) {
-        // Without a portable process-liveness primitive, retain the lock and fail closed.
+        // Keep the unique handle alive for the critical section. Never unlink this file.
+        operation()
     }
 }
 
@@ -350,7 +305,55 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn persistent_lock_file_is_retained_and_os_lock_releases_on_drop() {
+        let root = temp_root();
+        let store = StorageCore::new(&root, 1024, 2048).unwrap();
+        store.init().unwrap();
+        let path = root.join(".rea-rust-storage-lock");
+        assert!(path.is_file());
+        let first = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        first.try_lock().unwrap();
+        let second = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        assert_eq!(second.try_lock().unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+        drop(first);
+        second.try_lock().expect("closing the owning handle releases the lock");
+        assert!(path.is_file());
+        drop(second);
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[cfg(unix)]
+    #[test]
+    fn refuses_symlinked_lock_file() {
+        use std::os::unix::fs::symlink;
+        let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
+        let outside = root.with_extension("outside-lock");
+        fs::write(&outside, b"not a lock").unwrap();
+        symlink(&outside, root.join(".rea-rust-storage-lock")).unwrap();
+        let store = StorageCore::new(&root, 1024, 2048).unwrap();
+        assert!(matches!(store.with_lock(|| Ok(())), Err(StorageError::Io(_)) | Err(StorageError::UnsafePath)));
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_file(outside);
+    }
+
+    #[test]
+    fn lock_contention_times_out_without_replacing_the_lock_file() {
+        let root = temp_root();
+        let store = StorageCore::new(&root, 1024, 2048).unwrap();
+        store.init().unwrap();
+        let path = root.join(".rea-rust-storage-lock");
+        let holder = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        holder.try_lock().unwrap();
+        let mut contender = StorageCore::new(&root, 1024, 2048).unwrap();
+        contender.lock_wait = Duration::from_millis(60);
+        assert_eq!(contender.with_lock(|| Ok(())), Err(StorageError::LockTimeout));
+        assert!(path.is_file());
+        drop(holder);
+        assert!(contender.with_lock(|| Ok(())).is_ok());
+        let _ = fs::remove_dir_all(root);
+    }
     #[test]
     fn reaps_lock_owned_by_a_process_that_no_longer_exists() {
         let root = temp_root();
