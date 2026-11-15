@@ -24,6 +24,7 @@ var (
 	ErrSequenceConflict   = errors.New("transaction expected sequence does not match state")
 	ErrOperationConflict  = errors.New("operation ID was reused with different transaction bytes")
 	ErrMissingStateKey    = errors.New("delete target does not exist")
+	ErrSequenceExhausted  = errors.New("application sequence is exhausted")
 	ErrInvalidGenesis     = errors.New("invalid state genesis")
 )
 
@@ -152,6 +153,7 @@ func (s *StateMachine) Apply(raw []byte) (byte, error) {
 		return prior.result, nil
 	}
 	if tx.ExpectedSequence != s.sequence { return 0, ErrSequenceConflict }
+	if s.sequence == ^uint64(0) { return 0, ErrSequenceExhausted }
 	key := string(tx.Key)
 	switch tx.Kind {
 	case statePut:
