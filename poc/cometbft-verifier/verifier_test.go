@@ -7,8 +7,10 @@ import (
 	"time"
 
 	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
+	cmtversion "github.com/cometbft/cometbft/proto/tendermint/version"
 	"github.com/cometbft/cometbft/crypto/tmhash"
 	"github.com/cometbft/cometbft/types"
+	cmtversionpkg "github.com/cometbft/cometbft/version"
 )
 
 const testChainID = "zion-verifier-test-1"
@@ -17,8 +19,25 @@ func signedEvidence(t *testing.T) (Evidence, *types.ValidatorSet) {
 	t.Helper()
 	validators, privateValidators := types.RandValidatorSet(4, 1)
 	const height int64 = 7
+	appHash := tmhash.Sum([]byte("independently replayed application state"))
+	proposerAddress, _ := validators.GetByIndex(0)
+	header := &types.Header{
+		Version:            cmtversion.Consensus{Block: cmtversionpkg.BlockProtocol},
+		ChainID:             testChainID,
+		Height:              height,
+		Time:                time.Unix(1_700_000_000, 0).UTC(),
+		ValidatorsHash:      append([]byte(nil), validators.Hash()...),
+		NextValidatorsHash:  append([]byte(nil), validators.Hash()...),
+		ConsensusHash:       tmhash.Sum([]byte("consensus params")),
+		AppHash:             append([]byte(nil), appHash...),
+		LastResultsHash:     tmhash.Sum([]byte("last results")),
+		LastCommitHash:      tmhash.Sum([]byte("last commit")),
+		DataHash:            tmhash.Sum([]byte("block data")),
+		EvidenceHash:        tmhash.Sum([]byte("evidence")),
+		ProposerAddress:     append([]byte(nil), proposerAddress...),
+	}
 	blockID := types.BlockID{
-		Hash: tmhash.Sum([]byte("test block")),
+		Hash: header.Hash(),
 		PartSetHeader: types.PartSetHeader{
 			Total: 1,
 			Hash:  tmhash.Sum([]byte("test parts")),
@@ -31,9 +50,9 @@ func signedEvidence(t *testing.T) (Evidence, *types.ValidatorSet) {
 		vote := &types.Vote{
 			Type:             cmtproto.PrecommitType,
 			Height:           height,
-			Round:             0,
+			Round:            0,
 			BlockID:          blockID,
-			Timestamp:        time.Unix(1_700_000_000+int64(i), 0).UTC(),
+			Timestamp:        time.Unix(1_700_000_010+int64(i), 0).UTC(),
 			ValidatorAddress: address,
 			ValidatorIndex:   int32(i),
 		}
@@ -54,6 +73,8 @@ func signedEvidence(t *testing.T) (Evidence, *types.ValidatorSet) {
 		Height:           height,
 		BlockID:          blockID,
 		ValidatorSetHash: append([]byte(nil), validators.Hash()...),
+		ExpectedAppHash:  append([]byte(nil), appHash...),
+		Header:           header,
 		Commit:           commit,
 	}, validators
 }
@@ -61,6 +82,18 @@ func signedEvidence(t *testing.T) (Evidence, *types.ValidatorSet) {
 func cloneEvidence(in Evidence) Evidence {
 	out := in
 	out.ValidatorSetHash = append([]byte(nil), in.ValidatorSetHash...)
+	out.ExpectedAppHash = append([]byte(nil), in.ExpectedAppHash...)
+	headerCopy := *in.Header
+	headerCopy.ValidatorsHash = append([]byte(nil), in.Header.ValidatorsHash...)
+	headerCopy.NextValidatorsHash = append([]byte(nil), in.Header.NextValidatorsHash...)
+	headerCopy.ConsensusHash = append([]byte(nil), in.Header.ConsensusHash...)
+	headerCopy.AppHash = append([]byte(nil), in.Header.AppHash...)
+	headerCopy.LastResultsHash = append([]byte(nil), in.Header.LastResultsHash...)
+	headerCopy.LastCommitHash = append([]byte(nil), in.Header.LastCommitHash...)
+	headerCopy.DataHash = append([]byte(nil), in.Header.DataHash...)
+	headerCopy.EvidenceHash = append([]byte(nil), in.Header.EvidenceHash...)
+	headerCopy.ProposerAddress = append([]byte(nil), in.Header.ProposerAddress...)
+	out.Header = &headerCopy
 	commitCopy := *in.Commit
 	out.Commit = &commitCopy
 	out.Commit.Signatures = append([]types.CommitSig(nil), in.Commit.Signatures...)
@@ -71,10 +104,10 @@ func cloneEvidence(in Evidence) Evidence {
 	return out
 }
 
-func TestVerifyCommitEvidenceAcceptsValidFourValidatorCommit(t *testing.T) {
+func TestVerifyCommitEvidenceAcceptsValidFourValidatorCommitAndHeader(t *testing.T) {
 	evidence, validators := signedEvidence(t)
 	if err := VerifyCommitEvidence(evidence, validators); err != nil {
-		t.Fatalf("valid commit rejected: %v", err)
+		t.Fatalf("valid commit/header rejected: %v", err)
 	}
 }
 
@@ -87,6 +120,11 @@ func TestVerifyCommitEvidenceRejectsInvalidEvidence(t *testing.T) {
 		{"wrong chain ID", func(e *Evidence) { e.ChainID = "other-chain" }},
 		{"wrong height", func(e *Evidence) { e.Height++ }},
 		{"wrong block ID", func(e *Evidence) { e.BlockID.Hash = tmhash.Sum([]byte("substituted block")) }},
+		{"header chain ID mismatch", func(e *Evidence) { e.Header.ChainID = "other-chain" }},
+		{"header height mismatch", func(e *Evidence) { e.Header.Height++ }},
+		{"header hash does not match committed block ID", func(e *Evidence) { e.Header.AppHash = tmhash.Sum([]byte("substituted app hash")) }},
+		{"header validator hash mismatch", func(e *Evidence) { e.Header.ValidatorsHash = tmhash.Sum([]byte("substituted validators")) }},
+		{"independently expected app hash mismatch", func(e *Evidence) { e.ExpectedAppHash = tmhash.Sum([]byte("wrong state root")) }},
 		{"validator set digest mismatch", func(e *Evidence) { e.ValidatorSetHash[0] ^= 0xff }},
 		{"altered signature", func(e *Evidence) { e.Commit.Signatures[0].Signature[0] ^= 0xff }},
 		{"signature copied into another validator slot", func(e *Evidence) {
@@ -116,6 +154,11 @@ func TestVerifyCommitEvidenceRejectsMissingOrMalformedEnvelope(t *testing.T) {
 	if err := VerifyCommitEvidence(Evidence{}, validators); !errors.Is(err, ErrMissingEvidence) {
 		t.Fatalf("expected missing evidence error, got %v", err)
 	}
+	evidence.Header = nil
+	if err := VerifyCommitEvidence(evidence, validators); !errors.Is(err, ErrMissingEvidence) {
+		t.Fatalf("expected missing header error, got %v", err)
+	}
+	evidence, _ = signedEvidence(t)
 	evidence.ChainID = ""
 	if err := VerifyCommitEvidence(evidence, validators); !errors.Is(err, ErrInvalidChainID) {
 		t.Fatalf("expected chain ID error, got %v", err)
@@ -135,12 +178,14 @@ func TestVerifyProtoCommitEvidence(t *testing.T) {
 	}
 	blockIDProto := evidence.BlockID.ToProto()
 	wire := ProtoEvidence{
-		ChainID:              evidence.ChainID,
-		Height:               evidence.Height,
-		BlockID:              &blockIDProto,
-		ValidatorSet:         validatorProto,
+		ChainID:               evidence.ChainID,
+		Height:                evidence.Height,
+		BlockID:               &blockIDProto,
+		Header:                evidence.Header.ToProto(),
+		ValidatorSet:          validatorProto,
 		ExpectedValidatorHash: append([]byte(nil), evidence.ValidatorSetHash...),
-		Commit:               evidence.Commit.ToProto(),
+		ExpectedAppHash:       append([]byte(nil), evidence.ExpectedAppHash...),
+		Commit:                evidence.Commit.ToProto(),
 	}
 	if err := VerifyProtoCommitEvidence(wire); err != nil {
 		t.Fatalf("valid protobuf evidence rejected: %v", err)
@@ -175,10 +220,14 @@ func TestVerifyCommitEvidenceRejectsUnknownValidatorSignature(t *testing.T) {
 func TestVerifyCommitEvidenceDoesNotMutateInputs(t *testing.T) {
 	evidence, validators := signedEvidence(t)
 	beforeHash := append([]byte(nil), evidence.Commit.Hash()...)
+	beforeHeaderHash := append([]byte(nil), evidence.Header.Hash()...)
 	if err := VerifyCommitEvidence(evidence, validators); err != nil {
 		t.Fatalf("valid commit rejected: %v", err)
 	}
 	if !bytes.Equal(beforeHash, evidence.Commit.Hash()) {
 		t.Fatal("verifier mutated the commit")
+	}
+	if !bytes.Equal(beforeHeaderHash, evidence.Header.Hash()) {
+		t.Fatal("verifier mutated the header")
 	}
 }
