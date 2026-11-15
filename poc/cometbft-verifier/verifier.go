@@ -94,9 +94,6 @@ func VerifyCommitEvidence(e Evidence, validators *types.ValidatorSet) error {
 	if len(e.ExpectedPreBlockAppHash) == 0 || !bytes.Equal(e.Header.AppHash, e.ExpectedPreBlockAppHash) {
 		return ErrPreBlockAppHashMismatch
 	}
-	if err := verifyTransactionData(e.Transactions, e.Header.DataHash); err != nil {
-		return err
-	}
 	if err := e.Header.ValidateBasic(); err != nil {
 		return fmt.Errorf("invalid signed header: %w", err)
 	}
@@ -121,6 +118,11 @@ func VerifyCommitEvidence(e Evidence, validators *types.ValidatorSet) error {
 	// skips full signature validation.
 	if err := validators.VerifyCommit(e.ChainID, e.BlockID, e.Height, e.Commit); err != nil {
 		return fmt.Errorf("CometBFT commit verification failed: %w", err)
+	}
+	// The header and full commit certificate are authenticated before hashing
+	// or copying the bounded transaction payload supplied by an untrusted peer.
+	if err := verifyTransactionData(e.Transactions, e.Header.DataHash); err != nil {
+		return err
 	}
 	return nil
 }
