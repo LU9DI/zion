@@ -102,7 +102,32 @@ D2 replay must be block-atomic: clone the last accepted state, apply the entire 
 
 The commit-evidence digest is only a lookup/binding aid. The actual evidence must be retained or retrievable from a separately trusted source and re-verified during recovery against the authenticated validator-set history. A hash, local WAL checksum, or locally stored proof blob is not by itself a trust anchor.
 
-No D2 filesystem implementation may begin until the exact pinned CometBFT version's block encoding, DataHash calculation, BlockID construction, commit verification, and application lifecycle are inspected and captured in executable golden tests. If a safe canonical full-block representation cannot be established, stop at the pure codec stage rather than approximating it.
+No D2 implementation may begin until both gates in §5.1 are satisfied: the verifier's pre-/post-block app-hash semantics are corrected and tested, and the exact pinned CometBFT version's block encoding, DataHash calculation, BlockID construction, commit verification, and application lifecycle are inspected and captured in executable golden tests. If a safe canonical full-block representation cannot be established, stop at the pure codec stage rather than approximating it.
+
+
+
+### Header AppHash is the pre-block application state
+
+A second, more fundamental issue was found by inspecting the pinned verifier's evidence model against CometBFT's Header semantics. In CometBFT v0.38.26, Header.AppHash is the application hash returned after executing and committing the **previous** block. The current block's DataHash commits its ordered transactions, but Header.AppHash is not the result of executing those transactions.
+
+The current PoC verifier and its signed-evidence test fixture incorrectly set Header.AppHash equal to the state hash obtained after replaying the transactions in that same block. This makes the fixture internally self-consistent but does not model the protocol's height relationship correctly. Do not treat the existing replay test as evidence that block-to-state binding is correct.
+
+Before any D2 implementation, split the verifier's state bindings explicitly:
+
+- **Pre-block state:** the trusted state at the start of height H. Its app hash must equal Header(H).AppHash.
+- **Block input:** the exact ordered transaction list for block H. Its canonical DataHash must equal Header(H).DataHash.
+- **Post-block state:** the result of executing block H under the pinned CometBFT/ABCI lifecycle. Its app hash must be compared with an independently authenticated post-block expectation, such as Header(H+1).AppHash after verifying the next header/commit and its validator-set transition, or a separately specified authenticated application-commit evidence path. Do not compare it to Header(H).AppHash.
+
+The test-only StateMachine currently models only ordered transaction mutations; it does not model the full ABCI++ FinalizeBlock/Commit lifecycle, block evidence processing, validator/consensus parameter updates, or end-block hooks. Until those omissions are explicitly bounded or modeled, its post-block hash is only the result of this simplified application model, not a complete CometBFT application state transition.
+
+Required corrective gate:
+1. Change Evidence and replay verification so the pre-block app hash is checked against Header(H).AppHash and the post-block app hash is a distinct field with a separately defined trust source.
+2. Update signed fixtures to use a distinct initial-state hash in Header(H).AppHash and post-block hash only in the authenticated post-block expectation.
+3. Add tests proving wrong pre-state, wrong post-state, missing next-height anchor, and height/validator-transition mismatch are rejected.
+4. Document exactly how the initial height is anchored by InitChain/genesis and how subsequent post-block hashes are authenticated.
+5. Only after those tests pass may the block-atomic WAL format proceed. A D1 checksum, block DataHash, or commit certificate alone does not authenticate the resulting application state.
+
+This gate supersedes any wording above that could be read as allowing the current Header(H).AppHash to serve as the expected post-block state hash.
 
 ## 6. Commit and fsync ordering
 
