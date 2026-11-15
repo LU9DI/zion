@@ -13,7 +13,7 @@ const (
 	walRecordVersion       = uint16(1)
 	walRecordMagic         = "ZWL1"
 	walDigestSize          = sha256.Size
-	walFixedRecordBytes    = 4 + 2 + 4 + 8 + 2 + 32 + 8 + 32 + 4 + 4 + 32 + 32 + 32
+	walFixedRecordBytes    = 4 + 2 + 4 + 8 + 2 + 32 + 8 + 32 + 4 + 32 + 4 + 4 + 32 + 32 + 32
 	MaxWALRecordBytes      = 2 << 20
 )
 
@@ -32,6 +32,8 @@ type WALRecord struct {
 	GenesisDigest  [walDigestSize]byte
 	Height         uint64
 	BlockIDHash    [walDigestSize]byte
+	BlockIDPartSetTotal uint32
+	BlockIDPartSetHash [walDigestSize]byte
 	TransactionIndex uint32
 	Transaction    []byte
 	PreviousDigest [walDigestSize]byte
@@ -70,6 +72,10 @@ func EncodeWALRecord(record WALRecord) ([]byte, error) {
 	binary.BigEndian.PutUint64(out[offset:], record.Height)
 	offset += 8
 	copy(out[offset:], record.BlockIDHash[:])
+	offset += walDigestSize
+	binary.BigEndian.PutUint32(out[offset:], record.BlockIDPartSetTotal)
+	offset += 4
+	copy(out[offset:], record.BlockIDPartSetHash[:])
 	offset += walDigestSize
 	binary.BigEndian.PutUint32(out[offset:], record.TransactionIndex)
 	offset += 4
@@ -130,7 +136,7 @@ func DecodeWALRecord(raw []byte) (WALRecord, error) {
 	record.ProjectID = string(projectBytes)
 	offset += projectLength
 
-	if checksumOffset-offset < walDigestSize+8+walDigestSize+4+4+walDigestSize+walDigestSize {
+	if checksumOffset-offset < walDigestSize+8+walDigestSize+4+walDigestSize+4+4+walDigestSize+walDigestSize {
 		return WALRecord{}, ErrInvalidWALRecord
 	}
 	copy(record.GenesisDigest[:], raw[offset:offset+walDigestSize])
@@ -138,6 +144,10 @@ func DecodeWALRecord(raw []byte) (WALRecord, error) {
 	record.Height = binary.BigEndian.Uint64(raw[offset:])
 	offset += 8
 	copy(record.BlockIDHash[:], raw[offset:offset+walDigestSize])
+	offset += walDigestSize
+	record.BlockIDPartSetTotal = binary.BigEndian.Uint32(raw[offset:])
+	offset += 4
+	copy(record.BlockIDPartSetHash[:], raw[offset:offset+walDigestSize])
 	offset += walDigestSize
 	record.TransactionIndex = binary.BigEndian.Uint32(raw[offset:])
 	offset += 4
@@ -170,6 +180,7 @@ func validateWALRecordFields(record WALRecord) error {
 		len(project) == 0 || len(project) > maxProjectIDBytes ||
 		!utf8.Valid(project) || bytes.IndexByte(project, 0) >= 0 ||
 		isZeroWALHash(record.GenesisDigest) || isZeroWALHash(record.BlockIDHash) ||
+		record.BlockIDPartSetTotal == 0 || isZeroWALHash(record.BlockIDPartSetHash) ||
 		isZeroWALHash(record.AppHash) {
 		return ErrInvalidWALRecord
 	}
