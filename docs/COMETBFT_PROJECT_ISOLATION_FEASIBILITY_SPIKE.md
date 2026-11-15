@@ -2398,3 +2398,66 @@ The contract identifies a cross-document architecture conflict that must not be 
 This does **not** block the two-project CometBFT isolation experiment itself. It does block integrating global user invitation redemption and founder assignment into project-scoped consensus until the product/architecture scope is explicitly resolved. The invitation ADR and committed-state contract now record this as an open hard blocker.
 
 The existing disposable-VM/network NO-GO gate remains unchanged. No infrastructure was provisioned and no consensus test was run as part of this documentation increment.
+
+## 56. Disposable two-project harness topology and execution gates (2026-11-15)
+
+The next experiment should use **one ephemeral GitHub-hosted runner VM per project**, rather than two CometBFT E2E runners sharing one Docker daemon. Each runner owns its own Docker daemon for the lifetime of one CI job. This gives project-alpha and project-beta separate VM, kernel, Docker-daemon, local-network, volume, and process failure domains for the first isolation stage.
+
+### 56.1 Runner and validator layout
+
+Run two independent jobs concurrently:
+
+| Job | Ephemeral runner | Local Docker daemon | Test network | Validators |
+|---|---|---|---|---|
+| project-alpha | runner VM A | daemon A only | alpha-private | alpha-1 through alpha-4 |
+| project-beta | runner VM B | daemon B only | beta-private | beta-1 through beta-4 |
+
+Each job must:
+- Pin the same exact CometBFT release and test ABCI application artifact by immutable digest.
+- Generate fresh, test-only genesis material and four distinct validator keys for that project. Never reuse keys, genesis, chain IDs, state roots, WALs, or snapshots across projects.
+- Keep all project data, WALs, application databases, logs, and artifacts inside that job's runner workspace/daemon.
+- Use project-specific network names, container names, labels, volumes, and non-overlapping internal ports even though the Docker daemons are separate. Do not publish validator ports to the public internet.
+- Run four validators to exercise a 3f+1 configuration with f=1, but explicitly report that four keys co-located inside one runner VM are **not four independent operator or host failure domains**. This stage tests project-level VM/daemon isolation, not real-world validator independence.
+- Apply CPU, memory, process, disk, and log-size limits to each validator and to the overall job. Resource-exhaustion tests must be bounded so they cannot starve the CI host or another job.
+
+No validator needs to connect to the other project's private network. The jobs may exchange only bounded test summaries/artifacts through the CI orchestration plane; no job artifact or CI output is a consensus input or authority.
+
+### 56.2 Required concurrent scenarios
+
+The orchestrator must start both jobs concurrently and require each project to demonstrate its own committed progress before fault injection. Record monotonically increasing committed heights, app hashes, and verifiable commit evidence for each project.
+
+1. **Baseline:** both projects commit independent transactions concurrently. Verify their genesis digests, validator sets, chain IDs, heights, and app hashes are distinct.
+2. **Cross-project substitution:** replay an alpha transaction, operation ID, genesis reference, or snapshot in beta and vice versa. The receiving application must reject it without changing its committed state.
+3. **Project-B outage:** stop or pause every beta validator and its local test network. Alpha must continue producing independently verified commits during the entire beta outage. Beta must stop critical commits when it has no quorum.
+4. **Project-B recovery:** restore beta from only beta's own preserved data. Verify its chain history and app hash; alpha must remain unchanged and continue committing throughout.
+5. **Project-A storage fault:** corrupt or truncate only alpha's disposable WAL/application state. Alpha must fail closed or follow the documented recovery path; beta must continue and recover from beta-only data.
+6. **Resource pressure:** exhaust beta's configured CPU, memory, disk, and message budgets one at a time, with strict cgroup/container limits. Alpha's commit progress and latency must remain within predeclared acceptance bounds.
+7. **Cleanup isolation:** force beta's test to fail and run beta cleanup. Verify alpha's containers, network, volumes, process, and artifacts remain present and its commits continue until its own job ends.
+
+For each scenario, retain timestamps, per-project height/app-hash series, commit certificates or independently verifiable commit proofs, validator-set digests, resource metrics, fault-injection commands, exit codes, and unmodified logs. A job's successful exit code alone is not proof of consensus or isolation.
+
+### 56.3 What this first stage can and cannot prove
+
+If all scenarios pass, the evidence supports only this bounded statement: two test-only project networks running in separate ephemeral runner VMs and separate Docker daemons maintained independent local consensus progress under the tested faults and limits.
+
+It does **not** prove:
+- independent real-world validator operators or tolerance of a Byzantine operator controlling multiple keys;
+- isolation from shared CI control-plane outages, cloud-region outages, or common upstream dependencies;
+- production performance, scale to many projects, or safe long-term operation;
+- correctness of a Zion ABCI application that has not yet been integrated and reviewed;
+- a production-safe consensus protocol, genesis ceremony, validator rotation, light client, or recovery policy.
+
+A later validator-independence stage must distribute validator identities across independently administered hosts/control domains, preserve the 3f+1 / 2f+1 fault assumptions, and test network partitions and Byzantine behavior without treating multiple keys on one host/account as independent operators.
+
+### 56.4 CI and security gates
+
+- This harness must be a new, explicitly named **disposable CometBFT two-project consensus/isolation test**, not a rename or reinterpretation of the existing private TCP/HTTP connectivity smoke.
+- Use ordinary ephemeral GitHub-hosted runners with separate job VMs and their own local Docker daemons. Do not use the stock upstream run-multiple.sh helper or its daemon-global cleanup.
+- Do not require Tailscale, a shared inbound network, a hosted coordinator, or a production credential for this first local-per-runner topology. If a later distributed-validator stage needs an overlay network, it must pass the separate child-tailnet identity/policy gates already recorded above; the current workflow readiness gate remains closed until independently verified.
+- Keep the workflow opt-in, apply a hard job timeout, bound all resources, upload evidence before cleanup, and scope cleanup to resources created by that job. A skipped job is NOT RUN, never PASS.
+- Do not add the workflow, dispatch it, provision infrastructure, or change secrets/variables as part of this specification-only step. Implementation requires a separate review of the exact test harness and workflow diff.
+
+### 56.5 Go/no-go decision
+
+Proceed to implementation of this disposable harness only after its test ABCI application, commit-proof verifier, fault-injection controls, resource limits, evidence schema, and acceptance thresholds are specified and reviewed. A passing harness is an evaluation result only. It does not authorize adding CometBFT to Zion's production dependency graph or official launcher.
+
