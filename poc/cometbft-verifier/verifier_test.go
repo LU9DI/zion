@@ -388,6 +388,18 @@ func TestVerifyCommitEvidenceDoesNotMutateInputs(t *testing.T) {
 	}
 }
 
+func TestVerifyCommitEvidenceWithReplayRejectsOversizedTransactionVectorBeforeReplay(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	initial := newTestState(t, "project-alpha", "genesis-alpha")
+	evidence.Transactions = make([][]byte, MaxTransactionsPerBlock+1)
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial, evidence.PostBlockAnchor); !errors.Is(err, ErrDataBounds) {
+		t.Fatalf("oversized transaction vector error = %v, want ErrDataBounds", err)
+	}
+	if initial.Sequence() != 0 {
+		t.Fatalf("pre-block state mutated on rejected oversized vector: sequence=%d", initial.Sequence())
+	}
+}
+
 func TestVerifyCommitEvidenceWithReplayBindsPreAndPostBlockStateHashes(t *testing.T) {
 	evidence, validators := signedEvidence(t)
 	initial := newTestState(t, "project-alpha", "genesis-alpha")
