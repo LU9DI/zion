@@ -88,6 +88,7 @@ func signedEvidence(t *testing.T) (Evidence, *types.ValidatorSet) {
 		Version: cmtversion.Consensus{Block: cmtversionpkg.BlockProtocol},
 		ChainID: testChainID, Height: height + 1,
 		Time: time.Unix(1_700_000_100, 0).UTC(), LastBlockID: blockID,
+		LastCommitHash: append([]byte(nil), commit.Hash()...),
 		ValidatorsHash: append([]byte(nil), validators.Hash()...),
 		NextValidatorsHash: append([]byte(nil), validators.Hash()...),
 		ConsensusHash: tmhash.Sum([]byte("next consensus params")),
@@ -389,6 +390,16 @@ func TestVerifyCommitEvidenceWithReplayRejectsMissingPostBlockAnchor(t *testing.
 	initial := newTestState(t, "project-alpha", "genesis-alpha")
 	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial, nil); !errors.Is(err, ErrMissingPostBlockAnchor) {
 		t.Fatalf("expected missing next-header anchor error, got %v", err)
+	}
+}
+
+
+func TestVerifyCommitEvidenceWithReplayRejectsWrongPriorCommitLink(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	evidence.PostBlockAnchor.Header.LastCommitHash = tmhash.Sum([]byte("wrong prior commit"))
+	initial := newTestState(t, "project-alpha", "genesis-alpha")
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial, evidence.PostBlockAnchor); !errors.Is(err, ErrPostBlockAnchorMismatch) {
+		t.Fatalf("expected prior-commit link mismatch, got %v", err)
 	}
 }
 
