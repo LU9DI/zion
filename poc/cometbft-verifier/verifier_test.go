@@ -299,3 +299,30 @@ func TestVerifyCommitEvidenceDoesNotMutateInputs(t *testing.T) {
 		}
 	}
 }
+
+func TestVerifyCommitEvidenceWithReplayBindsStateToSignedAppHash(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	initial := newTestState(t, "project-alpha", "genesis-alpha")
+	initialHash := append([]byte(nil), initial.AppHash()...)
+	replayed, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial)
+	if err != nil {
+		t.Fatalf("valid commit with deterministic replay rejected: %v", err)
+	}
+	if replayed.Sequence() != 3 {
+		t.Fatalf("unexpected replay sequence: %d", replayed.Sequence())
+	}
+	if !bytes.Equal(replayed.AppHash(), evidence.Header.AppHash) {
+		t.Fatal("replayed state root differs from signed header app hash")
+	}
+	if !bytes.Equal(initial.AppHash(), initialHash) || initial.Sequence() != 0 {
+		t.Fatal("verification mutated the caller's initial state")
+	}
+}
+
+func TestVerifyCommitEvidenceWithReplayRejectsWrongGenesisState(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	wrongGenesis := newTestState(t, "project-alpha", "different-genesis")
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, wrongGenesis); !errors.Is(err, ErrAppHashMismatch) {
+		t.Fatalf("expected replayed app hash mismatch, got %v", err)
+	}
+}
