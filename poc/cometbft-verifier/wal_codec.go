@@ -168,7 +168,15 @@ func validateWALRecordFields(record WALRecord) error {
 	project := []byte(record.ProjectID)
 	if record.RecordNumber == 0 || record.Height == 0 ||
 		len(project) == 0 || len(project) > maxProjectIDBytes ||
-		!utf8.Valid(project) || bytes.IndexByte(project, 0) >= 0 {
+		!utf8.Valid(project) || bytes.IndexByte(project, 0) >= 0 ||
+		isZeroWALHash(record.GenesisDigest) || isZeroWALHash(record.BlockIDHash) ||
+		isZeroWALHash(record.AppHash) {
+		return ErrInvalidWALRecord
+	}
+	if record.RecordNumber == 1 && !isZeroWALHash(record.PreviousDigest) {
+		return ErrInvalidWALRecord
+	}
+	if record.RecordNumber > 1 && isZeroWALHash(record.PreviousDigest) {
 		return ErrInvalidWALRecord
 	}
 	if record.TransactionIndex >= MaxTransactionsPerBlock ||
@@ -176,6 +184,15 @@ func validateWALRecordFields(record WALRecord) error {
 		return ErrWALRecordBounds
 	}
 	return nil
+}
+
+func isZeroWALHash(value [walDigestSize]byte) bool {
+	for _, b := range value {
+		if b != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // WALRecordDigest returns the SHA-256 digest of a fully validated encoded
