@@ -116,7 +116,10 @@ func verifyTransactionData(raw [][]byte, expectedDataHash []byte) error {
 		return ErrDataBounds
 	}
 	total := 0
-	txs := make(types.Txs, len(raw))
+	var txs types.Txs
+	if len(raw) > 0 {
+		txs = make(types.Txs, len(raw))
+	}
 	for i, tx := range raw {
 		if len(tx) > MaxTransactionBytes {
 			return ErrDataBounds
