@@ -135,6 +135,11 @@ func VerifyCommitEvidenceWithReplay(e Evidence, validators *types.ValidatorSet, 
 	if len(e.ExpectedPreBlockAppHash) == 0 || !bytes.Equal(initial.AppHash(), e.ExpectedPreBlockAppHash) || !bytes.Equal(initial.AppHash(), e.Header.AppHash) {
 		return nil, ErrPreBlockAppHashMismatch
 	}
+	// Bound and authenticate the complete ordered transaction vector before
+	// replay allocates state or performs per-transaction work on untrusted input.
+	if err := verifyTransactionData(e.Transactions, e.Header.DataHash); err != nil {
+		return nil, err
+	}
 	replayed := initial.Clone()
 	if err := replayed.Replay(e.Transactions); err != nil {
 		return nil, fmt.Errorf("deterministic application replay failed: %w", err)
