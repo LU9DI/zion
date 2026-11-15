@@ -154,7 +154,7 @@ func VerifyCommitEvidenceWithReplay(e Evidence, validators *types.ValidatorSet, 
 
 func verifyPostBlockAnchor(e Evidence, anchor *PostBlockAnchor, replayedAppHash []byte) error {
 	next := anchor.Header
-	if e.Header == nil || next == nil || anchor.Commit == nil || anchor.Validators == nil {
+	if e.Header == nil || e.Commit == nil || next == nil || anchor.Commit == nil || anchor.Validators == nil {
 		return ErrMissingPostBlockAnchor
 	}
 	if e.Height == int64(^uint64(0)>>1) || next.Height != e.Height+1 ||
