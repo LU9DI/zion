@@ -152,7 +152,7 @@ func TestVerifyProtoCommitEvidence(t *testing.T) {
 }
 
 func TestVerifyProtoCommitEvidenceRejectsUnknownValidatorSignature(t *testing.T) {
-	evidence, _ := signedEvidence(t)
+	evidence, validators := signedEvidence(t)
 	outsider, outsiderPrivate := types.RandValidator(false, 1)
 	vote := &types.Vote{
 		Type:             cmtproto.PrecommitType,
@@ -167,15 +167,9 @@ func TestVerifyProtoCommitEvidenceRejectsUnknownValidatorSignature(t *testing.T)
 		t.Fatalf("sign outsider vote: %v", err)
 	}
 	evidence.Commit.Signatures[0] = vote.CommitSig()
-	validatorProto, err := func() (*cmtproto.ValidatorSet, error) {
-		// The authenticated validator set in the evidence remains the original set.
-		validators, _ := types.RandValidatorSet(0, 1)
-		_ = validators
-		return nil, errors.New("placeholder")
-	}()
-	_ = validatorProto
-	_ = err
-	_ = outsider
+	if err := VerifyCommitEvidence(evidence, validators); err == nil {
+		t.Fatal("commit containing an unknown validator signature unexpectedly accepted")
+	}
 }
 
 func TestVerifyCommitEvidenceDoesNotMutateInputs(t *testing.T) {
