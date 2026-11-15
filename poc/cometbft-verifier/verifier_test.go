@@ -176,6 +176,12 @@ func TestVerifyCommitEvidenceRejectsInvalidEvidence(t *testing.T) {
 	}
 }
 
+func TestVerifyTransactionDataAcceptsCanonicalEmptyBlock(t *testing.T) {
+	if err := verifyTransactionData(nil, nil); err != nil {
+		t.Fatalf("canonical empty block data rejected: %v", err)
+	}
+}
+
 func TestVerifyTransactionDataRejectsOversizedEvidence(t *testing.T) {
 	oversized := bytes.Repeat([]byte("x"), MaxTransactionBytes+1)
 	if err := verifyTransactionData([][]byte{oversized}, []byte("irrelevant")); !errors.Is(err, ErrDataBounds) {
