@@ -558,15 +558,13 @@ separate local storage component, not a distributed consensus or quorum
 commitment mechanism.
 
 
-## 14. Two-project durable-journal isolation test (2026-11-15)
+## 14. Two-project durable-journal isolation tests (2026-11-15)
 
-Added a narrowly scoped test-support case in `test/durable-committed-block-journal.test.js`:
+Two narrowly scoped test-support cases now exercise project journal separation:
 
-- Creates separate temporary journal paths for project-alpha and project-beta.
-- Commits different project state snapshots and verifies their application roots and stored values differ.
-- Corrupts only alpha's journal after closing both writers.
-- Requires alpha recovery to fail closed while beta independently reopens and recovers its exact committed height, application root, and snapshot.
+- The in-process case creates separate temporary journal paths for project-alpha and project-beta, commits different snapshots, and verifies their application roots and stored values differ. It then corrupts only alpha and requires alpha recovery to fail closed while beta recovers its exact height, root, and snapshot.
+- The separate-process case launches independent Node OS processes to create and commit alpha and beta journals. It corrupts only alpha, launches a fresh process to verify alpha recovery fails closed with `ZION_JOURNAL_CORRUPT`, and launches another fresh process to recover beta's committed height, application root, and state.
 
-This is an initial storage-namespace regression test. It exercises two instances of the existing test-only JSONL journal on one host and in one Node test process. It does **not** establish separate OS-process, VM, Docker-daemon, network, validator-committee, consensus, CPU/memory/disk, or failure-domain isolation. It also does not establish that the journal is suitable as production committed storage; its existing cross-platform lock, power-loss, compaction, and operator-recovery limitations remain unchanged.
+The second case crosses an actual OS-process boundary and verifies that one project's on-disk corruption does not prevent another project's journal from recovering. Both journals still reside on the same host and filesystem; the test does **not** establish VM, Docker-daemon, network, validator-committee, consensus, CPU/memory/disk, or independent physical failure-domain isolation. It does not test simultaneous writers or concurrent consensus activity, and it does not establish that the prototype is suitable as production committed storage. Existing cross-platform lock, power-loss, compaction, path-race, and operator-recovery limitations remain unchanged.
 
-The test was authored through the GitHub repository API; it was not executed in this session. Treat it as pending CI evidence until a workflow run tied to the exact commit completes successfully. Do not describe this case as a two-project BFT or CometBFT test.
+Both tests were authored through the GitHub repository API and have not been executed in this session. Treat them as pending CI evidence until a workflow run tied to the exact commit completes successfully. Do not describe these cases as a two-project BFT or CometBFT test.
