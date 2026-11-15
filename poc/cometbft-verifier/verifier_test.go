@@ -20,6 +20,15 @@ func signedEvidence(t *testing.T) (Evidence, *types.ValidatorSet) {
 	validators, privateValidators := types.RandValidatorSet(4, 1)
 	const height int64 = 7
 	appHash := tmhash.Sum([]byte("independently replayed application state"))
+	transactions := [][]byte{
+		[]byte("project-alpha|op-0001|PUT|account/1|alice"),
+		[]byte("project-alpha|op-0002|PUT|account/2|bob"),
+		[]byte("project-alpha|op-0003|DELETE|account/9"),
+	}
+	cometTxs := make(types.Txs, len(transactions))
+	for i := range transactions {
+		cometTxs[i] = append(types.Tx(nil), transactions[i]...)
+	}
 	proposerAddress, _ := validators.GetByIndex(0)
 	header := &types.Header{
 		Version:            cmtversion.Consensus{Block: cmtversionpkg.BlockProtocol},
@@ -32,7 +41,7 @@ func signedEvidence(t *testing.T) (Evidence, *types.ValidatorSet) {
 		AppHash:             append([]byte(nil), appHash...),
 		LastResultsHash:     tmhash.Sum([]byte("last results")),
 		LastCommitHash:      tmhash.Sum([]byte("last commit")),
-		DataHash:            tmhash.Sum([]byte("block data")),
+		DataHash:            append([]byte(nil), cometTxs.Hash()...),
 		EvidenceHash:        tmhash.Sum([]byte("evidence")),
 		ProposerAddress:     append([]byte(nil), proposerAddress...),
 	}
@@ -74,15 +83,25 @@ func signedEvidence(t *testing.T) (Evidence, *types.ValidatorSet) {
 		BlockID:          blockID,
 		ValidatorSetHash: append([]byte(nil), validators.Hash()...),
 		ExpectedAppHash:  append([]byte(nil), appHash...),
+		Transactions:     cloneTransactions(transactions),
 		Header:           header,
 		Commit:           commit,
 	}, validators
+}
+
+func cloneTransactions(in [][]byte) [][]byte {
+	out := make([][]byte, len(in))
+	for i := range in {
+		out[i] = append([]byte(nil), in[i]...)
+	}
+	return out
 }
 
 func cloneEvidence(in Evidence) Evidence {
 	out := in
 	out.ValidatorSetHash = append([]byte(nil), in.ValidatorSetHash...)
 	out.ExpectedAppHash = append([]byte(nil), in.ExpectedAppHash...)
+	out.Transactions = cloneTransactions(in.Transactions)
 	headerCopy := *in.Header
 	headerCopy.ValidatorsHash = append([]byte(nil), in.Header.ValidatorsHash...)
 	headerCopy.NextValidatorsHash = append([]byte(nil), in.Header.NextValidatorsHash...)
@@ -104,10 +123,10 @@ func cloneEvidence(in Evidence) Evidence {
 	return out
 }
 
-func TestVerifyCommitEvidenceAcceptsValidFourValidatorCommitAndHeader(t *testing.T) {
+func TestVerifyCommitEvidenceAcceptsValidFourValidatorCommitHeaderAndOrderedTransactions(t *testing.T) {
 	evidence, validators := signedEvidence(t)
 	if err := VerifyCommitEvidence(evidence, validators); err != nil {
-		t.Fatalf("valid commit/header rejected: %v", err)
+		t.Fatalf("valid commit/header/transactions rejected: %v", err)
 	}
 }
 
@@ -126,6 +145,14 @@ func TestVerifyCommitEvidenceRejectsInvalidEvidence(t *testing.T) {
 		{"header validator hash mismatch", func(e *Evidence) { e.Header.ValidatorsHash = tmhash.Sum([]byte("substituted validators")) }},
 		{"independently expected app hash mismatch", func(e *Evidence) { e.ExpectedAppHash = tmhash.Sum([]byte("wrong state root")) }},
 		{"validator set digest mismatch", func(e *Evidence) { e.ValidatorSetHash[0] ^= 0xff }},
+		{"altered transaction bytes", func(e *Evidence) { e.Transactions[0][0] ^= 0xff }},
+		{"omitted transaction", func(e *Evidence) { e.Transactions = e.Transactions[:2] }},
+		{"reordered transactions", func(e *Evidence) {
+			e.Transactions[0], e.Transactions[1] = e.Transactions[1], e.Transactions[0]
+		}},
+		{"cross-project transaction replay", func(e *Evidence) {
+			e.Transactions[0] = []byte("project-beta|op-0001|PUT|account/1|mallory")
+		}},
 		{"altered signature", func(e *Evidence) { e.Commit.Signatures[0].Signature[0] ^= 0xff }},
 		{"signature copied into another validator slot", func(e *Evidence) {
 			e.Commit.Signatures[1].Signature = append([]byte(nil), e.Commit.Signatures[0].Signature...)
@@ -146,6 +173,17 @@ func TestVerifyCommitEvidenceRejectsInvalidEvidence(t *testing.T) {
 				t.Fatal("invalid evidence unexpectedly accepted")
 			}
 		})
+	}
+}
+
+func TestVerifyTransactionDataRejectsOversizedEvidence(t *testing.T) {
+	oversized := bytes.Repeat([]byte("x"), MaxTransactionBytes+1)
+	if err := verifyTransactionData([][]byte{oversized}, []byte("irrelevant")); !errors.Is(err, ErrDataBounds) {
+		t.Fatalf("expected transaction bound error, got %v", err)
+	}
+	tooMany := make([][]byte, MaxTransactionsPerBlock+1)
+	if err := verifyTransactionData(tooMany, []byte("irrelevant")); !errors.Is(err, ErrDataBounds) {
+		t.Fatalf("expected transaction count bound error, got %v", err)
 	}
 }
 
@@ -185,6 +223,7 @@ func TestVerifyProtoCommitEvidence(t *testing.T) {
 		ValidatorSet:          validatorProto,
 		ExpectedValidatorHash: append([]byte(nil), evidence.ValidatorSetHash...),
 		ExpectedAppHash:       append([]byte(nil), evidence.ExpectedAppHash...),
+		Transactions:          cloneTransactions(evidence.Transactions),
 		Commit:                evidence.Commit.ToProto(),
 	}
 	if err := VerifyProtoCommitEvidence(wire); err != nil {
@@ -193,6 +232,11 @@ func TestVerifyProtoCommitEvidence(t *testing.T) {
 	wire.ExpectedValidatorHash[0] ^= 0xff
 	if err := VerifyProtoCommitEvidence(wire); !errors.Is(err, ErrValidatorSetMismatch) {
 		t.Fatalf("expected authenticated validator hash mismatch, got %v", err)
+	}
+	wire.ExpectedValidatorHash = append([]byte(nil), evidence.ValidatorSetHash...)
+	wire.Transactions[1][0] ^= 0xff
+	if err := VerifyProtoCommitEvidence(wire); !errors.Is(err, ErrDataHashMismatch) {
+		t.Fatalf("expected protobuf transaction data mismatch, got %v", err)
 	}
 }
 
@@ -221,6 +265,7 @@ func TestVerifyCommitEvidenceDoesNotMutateInputs(t *testing.T) {
 	evidence, validators := signedEvidence(t)
 	beforeHash := append([]byte(nil), evidence.Commit.Hash()...)
 	beforeHeaderHash := append([]byte(nil), evidence.Header.Hash()...)
+	beforeTransactions := cloneTransactions(evidence.Transactions)
 	if err := VerifyCommitEvidence(evidence, validators); err != nil {
 		t.Fatalf("valid commit rejected: %v", err)
 	}
@@ -229,5 +274,10 @@ func TestVerifyCommitEvidenceDoesNotMutateInputs(t *testing.T) {
 	}
 	if !bytes.Equal(beforeHeaderHash, evidence.Header.Hash()) {
 		t.Fatal("verifier mutated the header")
+	}
+	for i := range beforeTransactions {
+		if !bytes.Equal(beforeTransactions[i], evidence.Transactions[i]) {
+			t.Fatalf("verifier mutated transaction %d", i)
+		}
 	}
 }
