@@ -127,7 +127,9 @@ func verifyTransactionData(raw [][]byte, expectedDataHash []byte) error {
 		}
 		txs[i] = append(types.Tx(nil), tx...)
 	}
-	if len(expectedDataHash) == 0 || !bytes.Equal(txs.Hash(), expectedDataHash) {
+	// CometBFT represents an empty transaction list with a nil data hash.
+	// Equality must therefore accept nil/nil for valid empty blocks.
+	if !bytes.Equal(txs.Hash(), expectedDataHash) {
 		return ErrDataHashMismatch
 	}
 	return nil
