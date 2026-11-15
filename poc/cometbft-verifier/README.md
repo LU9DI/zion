@@ -25,11 +25,11 @@ The app hash is SHA-256 over domain-separated canonical bytes, including schema 
 
 [`DURABLE_STATE_STORAGE_AND_RECOVERY_SPEC.md`](./DURABLE_STATE_STORAGE_AND_RECOVERY_SPEC.md) defines the proposed WAL/snapshot/commit-evidence separation, fsync and generation-publication ordering, crash-recovery states, CometBFT block-store reconciliation boundary, cross-platform locking requirements, rollback threat model, adversarial test matrix, and staged implementation gates.
 
-This is a specification only. The next safe implementation increment is a pure, bounded WAL codec and canonical test vectors; no filesystem persistence or runtime integration is claimed.
+The D1 WAL codec and canonical golden-vector/adversarial tests have been added, but must not be considered passing until CI completes successfully for the exact PR head. The codec is pure: no filesystem persistence, fsync, WAL append, crash recovery, or runtime integration is implemented or claimed.
 
 ## Explicit limitations
 
-- The snapshot codec is currently serialization/recovery logic only: no filesystem persistence, fsync, WAL, crash recovery protocol, or atomic coupling to CometBFT's block store. A checksum detects accidental corruption; it is not an authenticity proof or rollback protection.
+- The snapshot codec is serialization/recovery logic only. The WAL codec is serialization and local chain-validation logic only: neither provides filesystem persistence, fsync, crash recovery, or atomic coupling to CometBFT's block store. Checksums detect accidental corruption; they are not authenticity proofs or rollback protection.
 - This is a replay model, not an ABCI++ application and not a running consensus network.
 - The caller must supply an independently authenticated genesis digest and validator-set hash.
 - Replay verification requires the caller to supply the correct, independently authenticated initial project state/genesis. Snapshot decoding checks caller-supplied project/genesis expectations, but does not authenticate those expectations or protect against rollback to an older valid snapshot.
