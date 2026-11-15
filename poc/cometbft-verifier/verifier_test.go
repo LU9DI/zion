@@ -360,7 +360,7 @@ func TestVerifyCommitEvidenceWithReplayRejectsWrongPostBlockHash(t *testing.T) {
 	evidence, validators := signedEvidence(t)
 	evidence.ExpectedPostBlockAppHash = tmhash.Sum([]byte("wrong post-block state root"))
 	initial := newTestState(t, "project-alpha", "genesis-alpha")
-	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial); !errors.Is(err, ErrAppHashMismatch) {
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial, evidence.PostBlockAnchor); !errors.Is(err, ErrPostBlockAnchorMismatch) {
 		t.Fatalf("expected post-block app hash mismatch, got %v", err)
 	}
 }
@@ -368,8 +368,9 @@ func TestVerifyCommitEvidenceWithReplayRejectsWrongPostBlockHash(t *testing.T) {
 func TestVerifyCommitEvidenceRejectsMissingPostBlockHash(t *testing.T) {
 	evidence, validators := signedEvidence(t)
 	evidence.ExpectedPostBlockAppHash = nil
-	if err := VerifyCommitEvidence(evidence, validators); !errors.Is(err, ErrAppHashMismatch) {
-		t.Fatalf("expected missing post-block app hash error, got %v", err)
+	initial := newTestState(t, "project-alpha", "genesis-alpha")
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial, evidence.PostBlockAnchor); !errors.Is(err, ErrPostBlockAnchorMismatch) {
+		t.Fatalf("expected missing post-block anchor hash binding error, got %v", err)
 	}
 }
 
@@ -377,8 +378,36 @@ func TestVerifyCommitEvidenceWithReplayRejectsMissingHeader(t *testing.T) {
 	evidence, validators := signedEvidence(t)
 	evidence.Header = nil
 	initial := newTestState(t, "project-alpha", "genesis-alpha")
-	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial); !errors.Is(err, ErrMissingEvidence) {
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial, evidence.PostBlockAnchor); !errors.Is(err, ErrMissingEvidence) {
 		t.Fatalf("expected missing evidence error, got %v", err)
+	}
+}
+
+
+func TestVerifyCommitEvidenceWithReplayRejectsMissingPostBlockAnchor(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	initial := newTestState(t, "project-alpha", "genesis-alpha")
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial, nil); !errors.Is(err, ErrMissingPostBlockAnchor) {
+		t.Fatalf("expected missing next-header anchor error, got %v", err)
+	}
+}
+
+func TestVerifyCommitEvidenceWithReplayRejectsWrongNextHeight(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	evidence.PostBlockAnchor.Header.Height++
+	initial := newTestState(t, "project-alpha", "genesis-alpha")
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial, evidence.PostBlockAnchor); !errors.Is(err, ErrPostBlockAnchorMismatch) {
+		t.Fatalf("expected next-height anchor mismatch, got %v", err)
+	}
+}
+
+func TestVerifyCommitEvidenceWithReplayRejectsValidatorTransitionMismatch(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	wrongSet, _ := types.RandValidatorSet(4, 1)
+	evidence.PostBlockAnchor.Validators = wrongSet
+	initial := newTestState(t, "project-alpha", "genesis-alpha")
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial, evidence.PostBlockAnchor); !errors.Is(err, ErrPostBlockAnchorMismatch) {
+		t.Fatalf("expected validator transition mismatch, got %v", err)
 	}
 }
 
