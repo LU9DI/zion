@@ -308,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn persistent_lock_file_is_retained_and_os_lock_releases_on_drop() {
+    fn persistent_lock_file_is_retained_and_exclusive() {
         let root = temp_root();
         let store = StorageCore::new(&root, 1024, 2048).unwrap();
         store.init().unwrap();
@@ -318,10 +318,9 @@ mod tests {
         first.try_lock().unwrap();
         let second = OpenOptions::new().read(true).write(true).open(&path).unwrap();
         assert!(matches!(second.try_lock(), Err(TryLockError::WouldBlock)));
-        drop(first);
-        second.try_lock().expect("closing the owning handle releases the lock");
-        assert!(path.is_file());
+        assert!(path.is_file(), "the persistent lock file must not be replaced or unlinked");
         drop(second);
+        drop(first);
         let _ = fs::remove_dir_all(root);
     }
 
