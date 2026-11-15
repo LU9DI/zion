@@ -50,6 +50,7 @@ type Evidence struct {
 	Transactions     [][]byte
 	Header           *types.Header
 	Commit           *types.Commit
+	PostBlockAnchor  *PostBlockAnchor
 }
 
 
