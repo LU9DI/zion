@@ -63,7 +63,7 @@ The implementation must distinguish:
 4. **Durable commit/recovery:** application state, operation result, state root, and any committed outbox record become durable under a documented atomicity contract consistent with the consensus engine's application interface.
 5. **External effect delivery:** notifications, email, storage replication, UI updates, and other non-deterministic side effects are delivered after commit from a durable outbox. Delivery is at-least-once with idempotent effect IDs; delivery failure cannot roll back or alter committed state.
 
-The exact CometBFT v0.38.26 ABCI++ callback mapping, commit response semantics, application database contract, and crash-recovery ordering still require a separate API/source audit before code is written. This document intentionally does not guess those details.
+The exact CometBFT v0.38.26 ABCI++ callback mapping, commit response semantics, and engine/application crash-recovery ordering have now been source-audited in [`docs/COMETBFT_0_38_26_ABCI_COMMIT_CONTRACT_AUDIT.md`](COMETBFT_0_38_26_ABCI_COMMIT_CONTRACT_AUDIT.md). That audit does not select CometBFT for Zion or prove a runtime integration exists. The application database contract, authenticated client verification of signed headers/validator-set transitions, and fault-tested recovery implementation remain open gates before code is written.
 
 ### 3.3 Idempotency and result semantics
 
