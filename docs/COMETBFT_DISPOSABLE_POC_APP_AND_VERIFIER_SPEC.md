@@ -386,6 +386,19 @@ The current implementation is only Mode A's full commit-certificate check relati
 
 It also does not run CometBFT nodes, implement the test ABCI application, establish a genesis trust ceremony, or prove validator/operator independence, Byzantine fault tolerance, project isolation, or Zion-wide admission ordering. No Zion production runtime imports this package. No production keys, databases, peers, user accounts, or invitation state are involved.
 
-### 11.5 Next bounded implementation gate
+### 11.5 Signed-header binding increment
 
-The next code increment should bind the signed header to the committed block ID and expected project/height, and validate the header's validator-set hash against the authenticated set supplied to the verifier. App-hash verification must remain a separate comparison against a deterministic state root independently recomputed from canonical application history; it must not be described as proven by the commit certificate alone. Add positive and negative tests for each binding before proceeding to transaction inclusion or light-client verification.
+Implemented in the follow-up verifier increment:
+
+- decodes the signed header from CometBFT protobuf using the pinned v0.38.26 conversion routine;
+- validates header basic structure and binds its chain ID and height to the evidence envelope;
+- recomputes the header hash with CometBFT's upstream Header.Hash and requires it to equal the committed block ID hash;
+- requires the header validator-set hash to equal the independently expected validator-set digest and the supplied validator set's hash;
+- requires the header app hash to equal a separately supplied expected app hash;
+- adds positive and negative tests for header chain/height/hash, validator-set hash, expected app hash, malformed/missing header, protobuf conversion, and input non-mutation.
+
+The verifier does not itself recompute ExpectedAppHash. The caller must derive it by deterministic replay of canonical application history or validate it from a separately verified state snapshot. This comparison binds the signed header to an independently obtained state root; it does not prove correct application execution by itself.
+
+### 11.6 Next bounded implementation gate
+
+The next gate is transaction/block-data binding: retain the canonical block data bytes, verify the transaction list and ordering against the committed header's DataHash using CometBFT's upstream data-hash implementation, and add positive/negative inclusion, omission, reordering, and cross-project replay tests. Keep state-machine replay and light-client trust as separate subsequent gates.
