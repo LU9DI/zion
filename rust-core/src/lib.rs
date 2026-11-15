@@ -395,14 +395,35 @@ mod tests {
         let store = StorageCore::new(&root, 1024, 2048).unwrap();
         store.init().unwrap();
         let path = root.join(".rea-rust-storage-lock");
-        let holder = OpenOptions::new().read(true).write(true).open(&path).unwrap();
-        holder.try_lock().unwrap();
+        let ready_path = root.join("child.ready");
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("tests::child_process_holds_storage_lock_until_terminated")
+            .arg("--nocapture")
+            .env("REA_TEST_LOCK_PATH", &path)
+            .env("REA_TEST_LOCK_READY", &ready_path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+
+        let started = Instant::now();
+        while !ready_path.exists() && started.elapsed() < Duration::from_secs(5) {
+            if let Some(status) = child.try_wait().unwrap() {
+                panic!("lock-holder child exited before acquiring lock: {status}");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(ready_path.exists(), "lock-holder child did not become ready");
+
         let mut contender = StorageCore::new(&root, 1024, 2048).unwrap();
         contender.lock_wait = Duration::from_millis(60);
         assert_eq!(contender.with_lock(|| Ok(())), Err(StorageError::LockTimeout));
-        assert!(path.is_file());
-        drop(holder);
-        assert!(contender.with_lock(|| Ok(())).is_ok());
+        assert!(path.is_file(), "timeout must not replace the persistent lock file");
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(contender.with_lock(|| Ok(())).is_ok(), "lock must become available after child exit");
         let _ = fs::remove_dir_all(root);
     }
     #[test]
