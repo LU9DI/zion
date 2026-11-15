@@ -273,3 +273,35 @@ test('multiple committed heights recover the latest state through a verified has
     recovered.close();
   } finally { f.cleanup(); }
 });
+
+
+test('two project journals keep committed histories and corruption failures independent', () => {
+  const alpha = fixture();
+  const beta = fixture();
+  try {
+    const alphaJournal = new DurableCommittedBlockJournal(alpha.path);
+    const betaJournal = new DurableCommittedBlockJournal(beta.path);
+    const alphaBlock = finalized(1, 'alpha-operation-0001', 'project.name', 'alpha');
+    const betaBlock = finalized(1, 'beta-operation-0001', 'project.name', 'beta');
+
+    alphaJournal.commit(1, alphaBlock.state);
+    betaJournal.commit(1, betaBlock.state);
+    assert.notEqual(alphaJournal.info().appHash, betaJournal.info().appHash);
+    assert.equal(alphaJournal.read().data['project.name'], 'alpha');
+    assert.equal(betaJournal.read().data['project.name'], 'beta');
+    alphaJournal.close();
+    betaJournal.close();
+
+    writeFileSync(alpha.path, Buffer.concat([readFileSync(alpha.path), Buffer.from('{"corrupt":true}') ]));
+    assert.throws(() => new DurableCommittedBlockJournal(alpha.path), { code: 'ZION_JOURNAL_CORRUPT' });
+
+    const betaRecovered = new DurableCommittedBlockJournal(beta.path);
+    assert.equal(betaRecovered.info().lastBlockHeight, 1);
+    assert.equal(betaRecovered.info().appHash, betaBlock.appHash);
+    assert.deepEqual(betaRecovered.read(), betaBlock.state);
+    betaRecovered.close();
+  } finally {
+    alpha.cleanup();
+    beta.cleanup();
+  }
+});
