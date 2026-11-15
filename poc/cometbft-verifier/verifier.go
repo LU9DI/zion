@@ -17,28 +17,35 @@ var (
 	ErrInvalidHeight         = errors.New("invalid commit height")
 	ErrValidatorSetMismatch  = errors.New("validator set digest mismatch")
 	ErrCommitMismatch        = errors.New("commit does not match expected block")
+	ErrHeaderMismatch        = errors.New("signed header does not match expected block context")
+	ErrAppHashMismatch       = errors.New("header app hash does not match independently expected state hash")
 	ErrSignatureVectorLength = errors.New("commit signature vector length does not match validator set")
 )
 
 // Evidence carries the expected project-chain context alongside a CometBFT
-// commit. ValidatorSetHash must come from an independently authenticated
-// validator-set record; this function does not authenticate that trust anchor.
+// signed header and commit. ValidatorSetHash must come from an independently
+// authenticated validator-set record. ExpectedAppHash must come from
+// independently replayed application history or a separately verified state
+// snapshot; it must never be copied from the untrusted header being checked.
 type Evidence struct {
-	ChainID         string
-	Height          int64
-	BlockID         types.BlockID
+	ChainID          string
+	Height           int64
+	BlockID          types.BlockID
 	ValidatorSetHash []byte
-	Commit          *types.Commit
+	ExpectedAppHash  []byte
+	Header           *types.Header
+	Commit           *types.Commit
 }
 
-// VerifyCommitEvidence validates the evidence envelope and delegates all
-// voting-power and cryptographic signature checks to CometBFT v0.38.26.
+// VerifyCommitEvidence binds the signed header to the committed block ID,
+// chain/height, authenticated validator-set digest, and independently
+// expected application state hash, then delegates full certificate checks
+// to CometBFT v0.38.26.
 //
-// This proves a commit relative to the supplied validator set only. It does
-// not verify a signed header, application-state execution, validator-set
-// transitions, or the authenticity of the supplied validator set.
+// This still does not authenticate the validator set or recompute the app
+// hash. Those trust/replay operations belong to the caller.
 func VerifyCommitEvidence(e Evidence, validators *types.ValidatorSet) error {
-	if validators == nil || e.Commit == nil {
+	if validators == nil || e.Commit == nil || e.Header == nil {
 		return ErrMissingEvidence
 	}
 	if e.ChainID == "" {
@@ -59,6 +66,18 @@ func VerifyCommitEvidence(e Evidence, validators *types.ValidatorSet) error {
 	if len(e.ValidatorSetHash) == 0 || !bytes.Equal(validators.Hash(), e.ValidatorSetHash) {
 		return ErrValidatorSetMismatch
 	}
+	if len(e.ExpectedAppHash) == 0 || !bytes.Equal(e.Header.AppHash, e.ExpectedAppHash) {
+		return ErrAppHashMismatch
+	}
+	if err := e.Header.ValidateBasic(); err != nil {
+		return fmt.Errorf("invalid signed header: %w", err)
+	}
+	if e.Header.ChainID != e.ChainID ||
+		e.Header.Height != e.Height ||
+		!bytes.Equal(e.Header.Hash(), e.BlockID.Hash) ||
+		!bytes.Equal(e.Header.ValidatorsHash, e.ValidatorSetHash) {
+		return ErrHeaderMismatch
+	}
 	if err := e.Commit.ValidateBasic(); err != nil {
 		return fmt.Errorf("invalid commit structure: %w", err)
 	}
@@ -78,23 +97,25 @@ func VerifyCommitEvidence(e Evidence, validators *types.ValidatorSet) error {
 	return nil
 }
 
-
 // ProtoEvidence is the wire-format form exported by a CometBFT block store.
-// The validator set must still be authenticated by the caller's trust process.
+// The validator set and expected app hash must still be authenticated or
+// independently recomputed by the caller's trust/replay process.
 type ProtoEvidence struct {
-	ChainID          string
-	Height           int64
-	BlockID          *cmtproto.BlockID
-	ValidatorSet          *cmtproto.ValidatorSet
+	ChainID              string
+	Height               int64
+	BlockID              *cmtproto.BlockID
+	Header               *cmtproto.Header
+	ValidatorSet         *cmtproto.ValidatorSet
 	ExpectedValidatorHash []byte
-	Commit                *cmtproto.Commit
+	ExpectedAppHash      []byte
+	Commit               *cmtproto.Commit
 }
 
 // VerifyProtoCommitEvidence converts untrusted protobuf objects using
-// CometBFT's pinned v0.38.26 conversion routines, then performs full commit
-// verification against the converted validator set.
+// CometBFT's pinned v0.38.26 conversion routines, then verifies header binding
+// and the full commit certificate.
 func VerifyProtoCommitEvidence(e ProtoEvidence) error {
-	if e.BlockID == nil || e.ValidatorSet == nil || e.Commit == nil {
+	if e.BlockID == nil || e.Header == nil || e.ValidatorSet == nil || e.Commit == nil {
 		return ErrMissingEvidence
 	}
 	validators, err := types.ValidatorSetFromProto(e.ValidatorSet)
@@ -105,6 +126,10 @@ func VerifyProtoCommitEvidence(e ProtoEvidence) error {
 	if err != nil {
 		return fmt.Errorf("decode block ID: %w", err)
 	}
+	header, err := types.HeaderFromProto(e.Header)
+	if err != nil {
+		return fmt.Errorf("decode signed header: %w", err)
+	}
 	commit, err := types.CommitFromProto(e.Commit)
 	if err != nil {
 		return fmt.Errorf("decode commit: %w", err)
@@ -114,6 +139,8 @@ func VerifyProtoCommitEvidence(e ProtoEvidence) error {
 		Height:           e.Height,
 		BlockID:          *blockID,
 		ValidatorSetHash: e.ExpectedValidatorHash,
+		ExpectedAppHash:  e.ExpectedAppHash,
+		Header:           &header,
 		Commit:           commit,
 	}, validators)
 }
