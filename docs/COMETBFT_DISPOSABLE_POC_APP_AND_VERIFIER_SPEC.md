@@ -408,7 +408,7 @@ Implemented in the follow-up verifier increment:
 - it converts the byte strings to CometBFT v0.38.26 `types.Txs` and recomputes the Merkle data hash with the upstream `Txs.Hash()` implementation;
 - it requires the recomputed hash to equal the signed header's `DataHash`;
 - protobuf evidence carries the same transaction bytes and follows the same verification path;
-- tests cover valid ordered transactions, modified bytes, omission, reordering, a project-beta transaction replayed into project-alpha evidence, oversized transaction/count rejection, protobuf tampering, and input non-mutation.
+- tests cover valid ordered transactions, canonical empty blocks, modified bytes, omission, reordering, a project-beta transaction replayed into project-alpha evidence, oversized transaction/count rejection, protobuf tampering, and input non-mutation.
 
 This verifies that the supplied ordered transaction bytes match the transaction-data commitment in the signed header. It does not independently validate each transaction's business semantics, prove that the application executed them correctly, or recompute the post-block application state. CometBFT's block data hash commits to order; the application state transition remains a separate deterministic replay gate.
 
