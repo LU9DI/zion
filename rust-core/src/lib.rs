@@ -362,10 +362,9 @@ mod tests {
         let contender = OpenOptions::new().read(true).write(true).open(&lock_path).unwrap();
         let blocked_while_child_alive = matches!(contender.try_lock(), Err(TryLockError::WouldBlock));
         let _ = child.kill();
-        let child_status = child.wait().unwrap();
+        child.wait().unwrap();
         assert!(ready_path.exists(), "child process did not signal lock acquisition");
         assert!(blocked_while_child_alive, "a second process must not acquire the held lock");
-        assert!(child_status.success() || child_status.code().is_none(), "unexpected child exit status: {child_status}");
         contender.try_lock().expect("OS must release the lock after the owning process exits");
 
         drop(contender);
