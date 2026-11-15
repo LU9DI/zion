@@ -138,11 +138,11 @@ The verifier must reject at least:
 
 1. one altered signature byte;
 2. one removed signature causing voting power to fall to or below two-thirds;
-3. a signature from an unknown validator;
-4. a duplicated signature counted twice;
+3. a validator-set entry not present in the authenticated/checkpoint validator set;
+4. identical signature bytes copied into a different validator-index slot (must fail verification for that slot);
 5. a changed block ID or app hash;
 6. a wrong chain ID or height;
-7. a validator-set hash mismatch;
+7. a malformed commit signature vector (wrong slot count or invalid block-ID flag);
 8. an invalid validator-set transition;
 9. an expired trusting period;
 10. a stale or mismatched trusted checkpoint;
@@ -303,3 +303,52 @@ Do not run an unbounded fork bomb, host-wide disk fill, host memory exhaustion, 
 These limits are a conservative harness envelope chosen for a public-repository standard Ubuntu runner, not performance acceptance thresholds for Zion. They do not establish that four validators per VM represent four independent operators. They also do not define production throughput, memory requirements, or a supported maximum number of projects per node.
 
 Before the first implementation run, the workflow must print and validate the observed capacity, and the test report must retain both configured limits and measured peak CPU, RSS, PIDs, disk usage, log bytes, and free-space minimum. Any threshold adjustment after observing a failure requires a new reviewed specification revision and a fresh full run.
+
+
+## 10. Pinned-release API contract for the first verifier implementation
+
+This section narrows the implementation to upstream CometBFT APIs rather than a hand-written signature/quorum implementation. The first code change must compile against the exact module pin `github.com/cometbft/cometbft v0.38.26`; API names observed in newer package documentation are not a substitute for that pinned-release compile check.
+
+### 10.1 Full commit verification
+
+The verifier should decode the evidence bundle's generated CometBFT protobuf messages and convert them with the upstream `types` package:
+
+- `types.ValidatorSetFromProto` for the validator set;
+- `types.BlockIDFromProto` for the expected block ID;
+- `types.CommitFromProto` for the commit;
+- `types.HeaderFromProto` for the signed header.
+
+Reject missing fields, conversion errors, invalid basic structures, and mismatched validator-set digests before accepting any proof. Verify the header's chain ID and height against the evidence envelope; compute the header hash with the upstream header implementation and require it to match the block hash in the expected block ID. Require the commit's height and block ID to match that same expected height and block ID.
+
+For the full-certificate path, call `types.VerifyCommit(chainID, validatorSet, blockID, height, commit)`. The upstream API documents that this checks the +2/3 voting-power threshold and checks all signatures. Do not reimplement voting-power arithmetic or signature verification in Zion code. `VerifyCommitLight` is not interchangeable: it verifies the quorum but deliberately does not check all signatures. The `VerifyCommitLightAllSignatures` variant exists from v0.38.3, but the PoC's full-commit path should use `VerifyCommit` as the clearest contract.
+
+The commit signature vector is interpreted relative to the supplied validator-set ordering; it is not an arbitrary list of signer identities. Therefore, the negative tests must not pretend that a commit contains free-form signer IDs. An altered signature, a copied signature placed in another validator slot, a malformed signature vector, a mismatched validator set, or a wrong chain/block/height must fail through upstream validation.
+
+### 10.2 Header and application-state binding
+
+A valid commit certificate proves that the validator set committed the block ID. It does not by itself prove that the supplied application database was executed correctly. The verifier must separately:
+
+1. verify the header hash against the committed block ID;
+2. verify header chain ID and height against the expected project and height;
+3. compare the header's validator-set hash with the independently supplied validator-set digest for that height;
+4. compare the header's application hash with the deterministic application state hash recomputed by replaying the canonical transaction history or by validating an independently exported state snapshot against its committed state root;
+5. verify transaction inclusion/ordering against the block data and preserve the original block/transaction evidence bytes.
+
+An RPC response, ABCI `Commit` return, event notification, or locally reported app hash is not a substitute for this independent binding.
+
+### 10.3 Trusting mode remains a separate verifier
+
+Mode A is only a certificate check relative to the validator set supplied to it. It does not authenticate that set. Mode B must use the pinned CometBFT light-client implementation from an independently authenticated checkpoint, including its validator-set transition, trusting-period, trust-overlap, and witness rules. Do not build a second, simplified light client by composing `VerifyCommitLightTrusting` calls without reproducing the upstream light-client verification algorithm and its state transitions.
+
+### 10.4 Required first compile and test gate
+
+Before the PoC runner is created, add a minimal Go package pinned to v0.38.26 and a CI job that:
+
+- compiles the protobuf conversion and verification calls above;
+- creates a deterministic four-validator test set and a real signed commit using upstream test utilities;
+- accepts a valid +2/3 commit;
+- rejects an altered signature, copied signature in a different validator slot, insufficient voting power, wrong chain ID, wrong height, wrong block ID, and mismatched validator-set digest;
+- verifies that the full verifier rejects malformed evidence rather than panicking;
+- records `go version`, the exact module version, and `go.sum` in the evidence output.
+
+This gate validates only the verifier API and certificate contract. It does not execute the two-project topology, establish a trusted genesis/checkpoint, or authorize CometBFT adoption.
