@@ -124,3 +124,13 @@ founder status.
 No option is approved for implementation by this analysis. Invitation
 redemption and global founder assignment remain blocked pending an explicit
 architecture/product decision and the design gates in the analysis document.
+
+
+
+## Follow-up ABCI++ commit/finality source audit (2026-11-15)
+
+The exact CometBFT `v0.38.26` ABCI++ API, consensus finalization path, commit evidence, validator-set verification, and crash-recovery contract have been source-audited in [`docs/COMETBFT_0_38_26_ABCI_COMMIT_CONTRACT_AUDIT.md`](COMETBFT_0_38_26_ABCI_COMMIT_CONTRACT_AUDIT.md).
+
+The audit confirms that `FinalizeBlock` returns the deterministic application hash and execution results, while `Commit` persists application state and its response does not carry a quorum certificate. The current block's commit evidence is held by CometBFT, not passed to the application as the current `FinalizeBlock` request's `decided_last_commit` field (that field describes the previous commit). Independent clients therefore need a specified signed-header/commit and validator-set verification path; a local application callback or server response is not a portable finality proof.
+
+This is an upstream API/source audit only. It does not select CometBFT for Zion, establish a runtime integration, resolve the global-versus-project admission scope conflict, or authorize invitation redemption implementation. The database atomicity, authenticated light-client trust root, validator bootstrap, and fault-tested recovery gates remain open.
