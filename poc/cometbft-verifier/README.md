@@ -4,7 +4,7 @@ This directory contains a disposable verification/replay prototype pinned to Com
 
 ## Current components
 
-- `verifier.go`: verifies a supplied header, ordered transaction-data root, authenticated validator-set digest, expected app hash, and full CometBFT commit signatures.
+- `verifier.go`: verifies a supplied header, ordered transaction-data root, authenticated validator-set digest, expected app hash, and full CometBFT commit signatures. `VerifyCommitEvidenceWithReplay` replays the ordered transactions from a caller-supplied initial state and compares the computed app hash before accepting the commit evidence.
 - `state_machine.go`: decodes a bounded canonical binary transaction envelope and deterministically replays PUT/DELETE operations against an in-memory project-scoped state.
 - `*_test.go`: adversarial verifier and state-machine tests.
 
@@ -26,7 +26,7 @@ The app hash is SHA-256 over domain-separated canonical bytes, including schema 
 - In-memory only: no persistence, fsync, snapshot, WAL, crash recovery, or atomic coupling to CometBFT's block store.
 - This is a replay model, not an ABCI++ application and not a running consensus network.
 - The caller must supply an independently authenticated genesis digest and validator-set hash.
-- The verifier compares the header app hash to an expected value; it does not yet recompute that value by replaying the transactions itself. Callers must replay the exact ordered transaction sequence and compare `AppHash()` independently.
+- Replay verification requires the caller to supply the correct, independently authenticated initial project state/genesis. The helper verifies the replayed app hash against the signed header but does not authenticate the genesis or validator set on its own.
 - The operation-result index stores successful mutations only. The product/state-machine policy for idempotency of committed rejected commands remains open.
 - No user invitation, global founder ordinal, project governance, validator rotation, or production runtime behavior is implemented.
 
