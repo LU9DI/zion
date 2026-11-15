@@ -290,6 +290,7 @@ fn hex(bytes: &[u8]) -> String { const TABLE: &[u8; 16] = b"0123456789abcdef"; l
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::process::{Command, Stdio};
     static NEXT: AtomicU64 = AtomicU64::new(1);
 
     fn temp_root() -> PathBuf {
@@ -321,6 +322,54 @@ mod tests {
         second.try_lock().expect("closing the owning handle releases the lock");
         assert!(path.is_file());
         drop(second);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn child_process_holds_storage_lock_until_terminated() {
+        let Ok(lock_path) = std::env::var("REA_TEST_LOCK_PATH") else { return; };
+        let ready_path = std::env::var("REA_TEST_LOCK_READY").unwrap();
+        let file = OpenOptions::new().read(true).write(true).open(lock_path).unwrap();
+        file.try_lock().unwrap();
+        fs::write(ready_path, b"ready").unwrap();
+        thread::sleep(Duration::from_secs(30));
+    }
+
+    #[test]
+    fn lock_is_exclusive_across_processes_and_released_after_process_exit() {
+        let root = temp_root();
+        let store = StorageCore::new(&root, 1024, 2048).unwrap();
+        store.init().unwrap();
+        let lock_path = root.join(".rea-rust-storage-lock");
+        let ready_path = root.with_extension("lock-ready");
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::child_process_holds_storage_lock_until_terminated", "--nocapture"])
+            .env("REA_TEST_LOCK_PATH", &lock_path)
+            .env("REA_TEST_LOCK_READY", &ready_path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready_path.exists() && Instant::now() < deadline {
+            if let Some(status) = child.try_wait().unwrap() {
+                panic!("lock-holder child exited before acquiring the lock: {status}");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let contender = OpenOptions::new().read(true).write(true).open(&lock_path).unwrap();
+        let blocked_while_child_alive = matches!(contender.try_lock(), Err(TryLockError::WouldBlock));
+        let _ = child.kill();
+        let child_status = child.wait().unwrap();
+        assert!(ready_path.exists(), "child process did not signal lock acquisition");
+        assert!(blocked_while_child_alive, "a second process must not acquire the held lock");
+        assert!(child_status.success() || child_status.code().is_none(), "unexpected child exit status: {child_status}");
+        contender.try_lock().expect("OS must release the lock after the owning process exits");
+
+        drop(contender);
+        let _ = fs::remove_file(ready_path);
         let _ = fs::remove_dir_all(root);
     }
 
