@@ -485,3 +485,74 @@ journal test-only and do not wire it into ABCI `Commit`, production startup,
 invitation redemption, or network membership until a stronger, reviewed
 cross-platform lock/recovery design and the remaining durability gates are
 satisfied.
+
+## 13. Rust storage lock implementation review (2026-11-14)
+
+Inspected `rust-core/src/lib.rs` (`StorageCore::with_lock` and
+`reap_stale_lock`) and its existing Unix stale-lock test. This implementation
+is useful evidence of an existing cross-process coordination attempt, but it
+is **not** an approved lock primitive for the committed-state journal.
+
+### Observed behavior
+
+- Acquisition uses `create_dir(.rea-rust-storage-lock)` as an exclusive
+  directory-creation primitive, then writes and `sync_all`s an owner record
+  containing PID and wall-clock nanoseconds.
+- Unix recovery checks directory metadata, reads the owner record, and uses
+  `kill(pid, 0)`; only `ESRCH` is treated as positive evidence that the PID is
+  absent. A missing, malformed, or unreadable owner record falls back to
+  directory age, with a 30-second threshold.
+- Recovery renames the lock directory to a quarantine pathname and removes
+  the quarantine directory. Normal release checks the owner text before
+  removing the owner file and lock directory.
+- Non-Unix builds do not reap stale locks and eventually return a lock timeout.
+- The current Unix test covers one sequential case: a directory whose owner
+  PID is `i32::MAX` is reaped. It does not exercise concurrent replacement,
+  owner-file initialization stalls, PID reuse, or crash/recovery races.
+
+### Security and correctness findings
+
+1. **Unsafe age fallback during owner initialization.** The lock directory is
+   published before the owner file is completely written and synced. If the
+   creating process is paused or delayed for 30 seconds in that interval, a
+   contender can classify the directory as stale solely by age and rename it
+   while the original process is still alive and proceeding. The same fallback
+   applies when the owner file is missing, malformed, or unreadable. This can
+   admit two writers. An age threshold is not proof that a writer is dead.
+2. **Stale-check/rename race.** Recovery checks metadata and owner PID, then
+   later renames the lock by pathname. A different directory can replace that
+   pathname between the check and rename; the replacement can then be moved
+   into quarantine. There is no inode/file-identity revalidation tied
+   atomically to the rename.
+3. **Owner-file path race.** `symlink_metadata(owner)` is followed by
+   `read_to_string(owner)`, which reopens by pathname. A concurrent replacement
+   can change the object between those operations; the first check does not
+   bind the subsequent read to the checked file descriptor.
+4. **Release is also path-based.** Checking the owner text and then removing
+   `owner` and the directory are separate pathname operations. The owner
+   token reduces accidental deletion but does not make cleanup atomic against
+   concurrent directory replacement.
+5. **PID probing is conservative but incomplete.** A reused PID or a PID
+   namespace mismatch can make a dead owner's lock appear live, causing a
+   liveness failure (timeout) rather than safe recovery. Conversely, a single
+   `kill(pid, 0)` result is not a durable ownership proof across the subsequent
+   pathname operations.
+
+### Decision
+
+Do not reuse this directory/PID lock as the committed-state journal's lock or
+as evidence that the journal's path-based cleanup race is solved. In
+particular, remove the age-only stale-recovery fallback before treating this
+mechanism as safe for multi-process writers. A future replacement should use
+an OS-backed lock whose ownership is bound to an open handle and is released
+by the kernel on process exit, with an explicitly documented filesystem and
+platform support matrix; if pathname-based recovery remains necessary, it must
+fail closed when ownership/liveness cannot be established and must defend
+against replacement races. Any such replacement needs concurrent stress and
+process-kill tests, not only sequential stale-PID tests.
+
+This is a source audit only. No Rust code was changed and no new test was run
+for this review. Existing CI results for commit `1ffc5074ba85d495c6ee1f7f56cedcc5df011ebf`
+do not cover these newly identified cases. The Rust storage core remains a
+separate local storage component, not a distributed consensus or quorum
+commitment mechanism.
