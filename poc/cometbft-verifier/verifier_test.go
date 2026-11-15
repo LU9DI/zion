@@ -400,6 +400,33 @@ func TestVerifyCommitEvidenceWithReplayRejectsOversizedTransactionVectorBeforeRe
 	}
 }
 
+func TestVerifyCommitEvidenceWithReplayRejectsOversizedIndividualTransaction(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	initial := newTestState(t, "project-alpha", "genesis-alpha")
+	evidence.Transactions = [][]byte{make([]byte, MaxTransactionBytes+1)}
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial, evidence.PostBlockAnchor); !errors.Is(err, ErrDataBounds) {
+		t.Fatalf("oversized transaction error = %v, want ErrDataBounds", err)
+	}
+	if initial.Sequence() != 0 {
+		t.Fatalf("pre-block state mutated on rejected oversized transaction: sequence=%d", initial.Sequence())
+	}
+}
+
+func TestVerifyCommitEvidenceWithReplayRejectsOversizedAggregateData(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	initial := newTestState(t, "project-alpha", "genesis-alpha")
+	evidence.Transactions = make([][]byte, MaxBlockDataBytes/MaxTransactionBytes+1)
+	for i := range evidence.Transactions {
+		evidence.Transactions[i] = make([]byte, MaxTransactionBytes)
+	}
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial, evidence.PostBlockAnchor); !errors.Is(err, ErrDataBounds) {
+		t.Fatalf("oversized aggregate data error = %v, want ErrDataBounds", err)
+	}
+	if initial.Sequence() != 0 {
+		t.Fatalf("pre-block state mutated on rejected aggregate data: sequence=%d", initial.Sequence())
+	}
+}
+
 func TestVerifyCommitEvidenceWithReplayBindsPreAndPostBlockStateHashes(t *testing.T) {
 	evidence, validators := signedEvidence(t)
 	initial := newTestState(t, "project-alpha", "genesis-alpha")
