@@ -64,14 +64,11 @@ type PostBlockAnchor struct {
 }
 
 // VerifyCommitEvidence binds the signed header to the committed block ID,
-// chain/height, authenticated validator-set digest, independently expected
-// pre-block state hash, independently expected post-block state hash, and ordered
-// transaction bytes. It then delegates
-// full certificate checks to CometBFT v0.38.26.
-//
-// This does not authenticate the validator set, recompute the app hash, or
-// execute application transactions. Those trust/replay operations belong
-// to the caller.
+// chain/height, authenticated current validator-set digest, pre-block state hash,
+// and ordered transaction bytes. It verifies the current-height commit certificate
+// with CometBFT v0.38.26. It does not authenticate the validator-set history,
+// recompute application state, or authenticate the post-block hash; callers needing
+// a post-state result must use VerifyCommitEvidenceWithReplay and a PostBlockAnchor.
 func VerifyCommitEvidence(e Evidence, validators *types.ValidatorSet) error {
 	if validators == nil || e.Commit == nil || e.Header == nil {
 		return ErrMissingEvidence
@@ -222,8 +219,8 @@ func verifyTransactionData(raw [][]byte, expectedDataHash []byte) error {
 }
 
 // ProtoEvidence is the wire-format form exported by a CometBFT block store.
-// The validator set and expected app hash must still be authenticated or
-// independently recomputed by the caller's trust/replay process.
+// The validator set and pre-block state hash must still be authenticated by the
+// caller. This conversion-only verifier does not authenticate post-block state.
 type ProtoEvidence struct {
 	ChainID               string
 	Height                int64
