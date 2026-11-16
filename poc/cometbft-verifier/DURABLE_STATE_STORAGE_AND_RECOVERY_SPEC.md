@@ -264,6 +264,26 @@ Implement in separate, reviewable increments:
 
 Passing D1-D4 would establish only local storage behavior. It would not prove BFT safety, authenticated bootstrap, validator independence, or production readiness. D5-D6 remain mandatory before making any stronger recovery or trust claim.
 
+## 13.1 Implemented increment: ZWB1 and the D2 single-process store
+
+This section records what is implemented after D1 and must be read with the gates in §13 and the limits in §14. It does not close D5 or D6.
+
+**Verifier gate (satisfied).** `VerifyCommitEvidence` distinguishes the pre-block app hash (`Header(H).AppHash`) from the post-block app hash, and `VerifyCommitEvidenceWithReplay` authenticates the post-state through a signed, fully commit-verified `H+1` anchor whose `LastBlockID` is `BlockID(H)` and whose `LastCommitHash` is the H commit hash. Untrusted commit signature vectors and caller-supplied validator sets are bounded by the pinned release's `MaxVotesCount` before any per-entry validation, hashing or protobuf conversion, in both the current-height and next-height paths.
+
+**D2 format (implemented as a codec).** `block_wal_codec.go` defines `ZWB1` v1: one record is one complete committed block, carrying project ID, authenticated genesis digest, chain ID, height, the complete `BlockID`, the exact ordered transaction byte strings with count and aggregate bounds, the canonical data hash, the expected post-block app hash, a commit-evidence reference digest, the local record number and the previous-record digest. The data hash is *derived* from the transaction bytes through the same bounded code path the verifier uses, so a caller cannot record a hash that disagrees with its payload; a correctly checksummed frame with reordered or substituted transactions is rejected. Adjacent records must link by record number, previous digest, project, genesis, chain ID, and strictly consecutive heights. A canonical golden vector pins the encoding.
+
+**D2 store (implemented, PoC-only).** `store.go` plus `store_lock_*.go` implement: exclusive OS-backed process locking; `FORMAT` identity binding; length-framed WAL segments with rotation; replay-verified app hash before any durable write; `fsync` before a block becomes current; snapshot generation publication through synced temporary file, rename, manifest, then `CURRENT`; recovery that verifies the entire local record chain, checks the published generation against the WAL record digest it references, replays only records after the generation, discards a final frame that is shorter than its declared length, and fails closed on complete-frame checksum corruption, mid-log corruption, gaps, height regression, conflicting blocks, and a WAL that ends before its published generation.
+
+**Explicitly not implemented in this increment:**
+
+- No reconciliation with CometBFT's block store or state store (D5). The caller supplies an already verified block; the store checks state-root agreement only.
+- No rollback defense against a coordinated rewrite of every local file (D6). `CURRENT` is not a trust anchor.
+- No WAL compaction, so the whole record chain is retained and rescanned on every open; `MaxRecoveryBlocks` bounds that work.
+- No Windows ACL implementation and no directory `fsync` on Windows.
+- No subprocess tests for every durability phase or for cross-platform lock semantics; the process-kill tests cover the post-sync and pre-sync append windows only.
+
+**Limitation that must not be overstated.** A process crash without media loss can leave a complete but unsynced final frame visible to the next open. The store never reported that block as durable, but it cannot distinguish "written and lost" from "written and visible". Replaying it is safe because its post-block app hash was verified before the write, and CometBFT would redeliver a committed block anyway; it is not a claim that the append was acknowledged before the crash.
+
 ## 14. Current decision
 
 No filesystem storage implementation is approved by this specification. D1's pure ZWL1 codec and canonical golden-vector/adversarial tests remain codec-only. The verifier's pre-/post-block app-hash correction, H+1 anchor linkage (including LastCommitHash), and current verifier tests have passed CI on PR head `d3d0796c0150a0329172f17ef95db69f2105dc4a`; the complete Zion validation and CodeQL workflows also completed successfully on that same head. This does not close the remaining trust or storage gates. ZWL1 still stores one transaction per record and must not be used as a durable block commit record. Before D2, the project must finish the authenticated genesis/InitChain and validator-set bootstrap design, inspect and capture exact pinned-version block encoding/DataHash behavior in executable golden tests, and model the full ABCI++ FinalizeBlock/Commit and CometBFT block-store crash boundary. No filesystem mutation, fsync, WAL append, or runtime integration is implemented. The existing in-memory state machine and snapshot codec remain unchanged.

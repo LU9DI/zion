@@ -2,7 +2,10 @@ module github.com/LU9DI/zion/poc/cometbft-verifier
 
 go 1.22.11
 
-require github.com/cometbft/cometbft v0.38.26
+require (
+	github.com/cometbft/cometbft v0.38.26
+	golang.org/x/sys v0.30.0
+)
 
 require (
 	github.com/cloudflare/circl v1.6.3 // indirect
@@ -21,7 +24,6 @@ require (
 	github.com/stretchr/testify v1.10.0 // indirect
 	golang.org/x/crypto v0.33.0 // indirect
 	golang.org/x/net v0.35.0 // indirect
-	golang.org/x/sys v0.30.0 // indirect
 	golang.org/x/text v0.22.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20241202173237-19429a94021a // indirect
 	google.golang.org/grpc v1.70.0 // indirect
