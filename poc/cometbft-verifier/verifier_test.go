@@ -292,6 +292,20 @@ func TestVerifyTransactionDataRejectsOversizedEvidence(t *testing.T) {
 	}
 }
 
+func TestVerifyCommitEvidenceAuthenticatesCommitBeforeTransactionPayload(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	evidence.Commit.Signatures[0].Signature[0] ^= 0xff
+	evidence.Transactions = [][]byte{make([]byte, MaxTransactionBytes+1)}
+
+	err := VerifyCommitEvidence(evidence, validators)
+	if err == nil {
+		t.Fatal("invalid commit with oversized transaction payload unexpectedly accepted")
+	}
+	if errors.Is(err, ErrDataBounds) {
+		t.Fatalf("transaction payload was processed before commit authentication: %v", err)
+	}
+}
+
 func TestVerifyCommitEvidenceRejectsMissingOrMalformedEnvelope(t *testing.T) {
 	evidence, validators := signedEvidence(t)
 	if err := VerifyCommitEvidence(Evidence{}, validators); !errors.Is(err, ErrMissingEvidence) {
