@@ -259,7 +259,7 @@ Implement in separate, reviewable increments:
 - **D2 — block-atomic format and single-process durable store:** first implement and validate a complete-block WAL envelope as specified in §5.1; only then append, sync, publish atomic snapshot generations, reopen/replay, and expose typed errors.
 - **D3 — process exclusion:** platform-specific lock implementations and subprocess tests on Linux, macOS and Windows.
 - **D4 — crash/fault injection:** deterministic crash points, short writes, disk-full and sync failures.
-- **D5 — CometBFT reconciliation:** pinned-version integration tests for both persistence crash windows and authenticated replay.
+- **D5 — CometBFT reconciliation:** pinned-version integration tests for both persistence crash windows and authenticated replay. *Partially satisfied; see §13.2.*
 - **D6 — rollback defense:** separately protected checkpoint/freshness mechanism and adversarial rollback tests.
 
 Passing D1-D4 would establish only local storage behavior. It would not prove BFT safety, authenticated bootstrap, validator independence, or production readiness. D5-D6 remain mandatory before making any stronger recovery or trust claim.
@@ -283,6 +283,41 @@ This section records what is implemented after D1 and must be read with the gate
 - No subprocess tests for every durability phase or for cross-platform lock semantics; the process-kill tests cover the post-sync and pre-sync append windows only.
 
 **Limitation that must not be overstated.** A process crash without media loss can leave a complete but unsynced final frame visible to the next open. The store never reported that block as durable, but it cannot distinguish "written and lost" from "written and visible". Replaying it is safe because its post-block app hash was verified before the write, and CometBFT would redeliver a committed block anyway; it is not a claim that the append was acknowledged before the crash.
+
+## 13.2 Implemented increment: D5 CometBFT durability boundary
+
+This increment closes the *codec- and test-level* part of D5 against the pinned `v0.38.26` sources. It does not close D6, does not select a consensus engine, and is not wired into any runtime path.
+
+**Audit (source-derived, not assumed).** [`COMETBFT_DURABILITY_BOUNDARY.md`](./COMETBFT_DURABILITY_BOUNDARY.md) records the decided-block call sequence and the resulting order:
+
+1. `consensus/state.go finalizeCommit` → `blockStore.SaveBlock` → `store/store.go saveBlockToBatch`/`saveStateAndWriteDB` → **`WriteSync`** (parts, meta, hash index, last commit, seen commit, `BlockStoreState` in one batch).
+2. consensus WAL `WriteSync(EndHeightMessage{H})`.
+3. `state/execution.go applyBlock` → `FinalizeBlock` (the application must not persist) → `state/store.go SaveFinalizeBlockResponse` (per-height `Set`, last key `SetSync`) → `Commit` (the application must persist) → `state/store.go Save` → **`WriteSync`**.
+
+Consequences encoded as invariants: the block is durable *before* the application executes it; the application's persistence point is outside every CometBFT batch; only the last per-height `FinalizeBlock` response is durable.
+
+**Crash windows modelled with the real pinned components.** `cometbft_boundary_test.go` runs the real `store.BlockStore`, `state.Store`, local ABCI proxy and `consensus.Handshaker` over a database that distinguishes issued from synchronized writes and can be crashed back to its last synchronized contents:
+
+| Window | Pinned recovery branch | Test |
+|---|---|---|
+| block durable, application behind by one | real `ApplyBlock`; the application adopts the block only through its verified `ZWB1` record | `TestCaseA_BlockDurableApplicationBehind` |
+| block and state durable, application behind by two | `replayBlocks(mutateState=false)`; each block's `AppHash` cross-checked against the previous replay result, final hash must equal `State.AppHash` | `TestCaseA_ApplicationDidNotPersistInCommit` |
+| application committed, state not saved, durable last `FinalizeBlock` response | mock-app fast-forward from the durable response; the application is not re-executed | `TestCaseW2_ApplicationCommittedButStateNotSaved` |
+| application ahead of the block store | `sm.ErrAppBlockHeightTooHigh`; application store untouched | `TestCaseB_ApplicationAheadOfBlockStore` |
+| application ahead, empty block store | panic (`Did you reset CometBFT...`); application store untouched | `TestCaseB_EmptyBlockStorePanicsInsteadOfRollingBack` |
+
+Durability of each individual store boundary is asserted separately (`TestDurabilityBlockStoreSaveBlockIsAtomicAndSynchronized`, `TestDurabilityStateStoreSaveIsSynchronized`, `TestDurabilityFinalizeBlockResponseOnlyLastIsSynchronized`).
+
+**Reconciliation boundary (implemented as a library, not a runtime loop).** `consensus_reconciliation.go`: `ConsensusDurabilityView` carries only synced store reads; `NewVerifiedBlockSource` cannot be constructed without a verification callback and is re-run for every record immediately before adoption; `ReconcileApplicationState` advances only forwards through verified records and separates recoverable lag (`ErrMissingVerifiedBlock`) from irreconcilable local conflict (`ErrAppAheadOfConsensus`, `ErrReconciliationConflict`, `ErrConsensusStateAheadOfBlockStore`, `ErrConsensusHistoryGap`). It never rewinds, never deletes a generation, and never treats a snapshot or its own reported height as consensus evidence — the application's `Info` output is a CometBFT recovery input, so over-reporting it converts a recoverable lag into the pinned release's panic.
+
+**Still open in D5/D6:**
+
+- The pinned release's guarantee is only as strong as the chosen `dbm.DB`; `WriteSync` is a contract, not a proof about the underlying filesystem.
+- The mock-app branch trusts the state store's last `FinalizeBlock` response for the app hash; this package does not consume that branch and documents it rather than relying on it.
+- Pruning is modelled only as `BlockStoreBase`; no state sync, no block-store prune/prune-restore reconciliation.
+- No rollback defense (D6): a coordinated rewrite of block store, state store, application store and `CURRENT` is undetectable without an external authenticated monotonic reference.
+- No runtime wiring, supervisor, retry loop, metrics or operator runbook.
+- No consensus engine, validator policy, genesis ceremony, DKG or admission-ordering behavior is selected here. The three open product decisions in `../ZION_WIDE_ADMISSION_CONSENSUS_OPTIONS.md` §4.3 are unaffected by this increment, and no code here depends on their outcome.
 
 ## 14. Current decision
 

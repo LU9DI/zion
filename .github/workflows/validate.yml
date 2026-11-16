@@ -99,11 +99,22 @@ jobs:
       - name: Verify exact CometBFT module pin
         working-directory: poc/cometbft-verifier
         run: |
-          grep -Fx 'require github.com/cometbft/cometbft v0.38.26' go.mod
+          set -euo pipefail
           go version
+          # One module text entry, no redirect and no suppression. The single-line
+          # grep is kept so the pin stays visible to a reviewer; the module-graph
+          # checks are what actually constrain the selected version.
+          test "$(grep -Ec '^[[:space:]]*(require[[:space:]]+)?github\.com/cometbft/cometbft[[:space:]]' go.mod)" = "1"
+          grep -Eq '^[[:space:]]*(require[[:space:]]+)?github\.com/cometbft/cometbft[[:space:]]+v0\.38\.26$' go.mod
+          ! grep -Eq '^[[:space:]]*(replace|exclude)[[:space:]]' go.mod
+          test "$(go list -m -f '{{.Version}}' github.com/cometbft/cometbft)" = "v0.38.26"
+          test -z "$(go list -m -f '{{with .Replace}}{{.Path}}@{{.Version}}{{end}}' github.com/cometbft/cometbft)"
       - name: Resolve pinned module and generate checksum file
         working-directory: poc/cometbft-verifier
         run: go mod tidy
+      - name: Verify committed module metadata is already tidy
+        run: |
+          git diff --exit-code -- poc/cometbft-verifier/go.mod poc/cometbft-verifier/go.sum
       - name: Preserve generated Go module lock metadata for review
         uses: actions/upload-artifact@v4
         with:
