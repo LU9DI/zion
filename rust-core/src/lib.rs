@@ -5,7 +5,7 @@
 //! is an application-level payload quota, not an operating-system disk quota.
 
 use sha2::{Digest, Sha256};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{Read, Write};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -42,9 +42,10 @@ pub struct PutReceipt {
 
 /// Opaque encrypted block store with bounded payload quota.
 ///
-/// Separate processes sharing a root coordinate through an atomic lock directory.
-/// For strong protection against unrelated/malicious local processes, place this
-/// directory on a dedicated filesystem with an OS-enforced quota as well.
+/// Separate processes sharing a root coordinate through a persistent lock file
+/// and the operating system's exclusive file-lock primitive. For strong protection
+/// against unrelated/malicious local processes, place this directory on a dedicated
+/// filesystem with an OS-enforced quota as well.
 pub struct StorageCore {
     root: PathBuf,
     max_chunk_bytes: u64,
@@ -229,8 +230,8 @@ impl StorageCore {
         for shard in fs::read_dir(&self.root)? {
             let shard = shard?;
             let name = shard.file_name().to_string_lossy().into_owned();
-            // Only the active lock directory is metadata. Silently skipping every
-            // dotfile would let unexpected root entries evade quota accounting.
+            // The persistent OS lock file and quota config are metadata, not payload.
+            // Silently skipping every other dotfile would evade quota accounting.
             if name == ".rea-rust-storage-lock" || name == ".rea-rust-storage-config" { continue; }
             let meta = fs::symlink_metadata(shard.path())?;
             if !meta.is_dir() || meta.file_type().is_symlink() || name.len() != 2 || !name.bytes().all(is_hex) { return Err(StorageError::UnsafePath); }
@@ -251,78 +252,33 @@ impl StorageCore {
     fn chunk_path(&self, id: &str) -> PathBuf { self.root.join(&id[..2]).join(&id[2..]) }
 
     fn with_lock<T>(&self, operation: impl FnOnce() -> Result<T, StorageError>) -> Result<T, StorageError> {
-        let lock = self.root.join(".rea-rust-storage-lock");
+        let lock_path = self.root.join(".rea-rust-storage-lock");
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true);
+        #[cfg(unix)]
+        { options.mode(0o600).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC); }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+            options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        }
+        let file = options.open(&lock_path)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() { return Err(StorageError::UnsafePath); }
         let started = Instant::now();
-        let owner = format!("{}:{}\n", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos());
         loop {
-            match fs::create_dir(&lock) {
-                Ok(()) => {
-                    let owner_path = lock.join("owner");
-                    let owner_result = (|| -> Result<(), StorageError> {
-                        let mut file = OpenOptions::new().write(true).create_new(true).open(&owner_path)?;
-                        file.write_all(owner.as_bytes())?;
-                        file.sync_all()?;
-                        Ok(())
-                    })();
-                    if let Err(error) = owner_result {
-                        let _ = fs::remove_dir_all(&lock);
-                        return Err(error);
-                    }
-                    break;
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    self.reap_stale_lock(&lock);
+            match file.try_lock() {
+                Ok(()) => break,
+                Err(TryLockError::WouldBlock) => {
                     if started.elapsed() >= self.lock_wait { return Err(StorageError::LockTimeout); }
                     thread::sleep(Duration::from_millis(15));
                 }
-                Err(error) => return Err(StorageError::Io(error.to_string())),
+                Err(TryLockError::Error(error)) => return Err(StorageError::Io(error.to_string())),
             }
         }
-        let result = operation();
-        // Remove only the lock that still carries our exact owner token.
-        if fs::symlink_metadata(&lock).map(|m| m.is_dir() && !m.file_type().is_symlink()).unwrap_or(false) {
-            let owner_path = lock.join("owner");
-            if fs::read_to_string(&owner_path).ok().as_deref() == Some(owner.as_str()) {
-                let _ = fs::remove_file(owner_path);
-                let _ = fs::remove_dir(&lock);
-            }
-        }
-        result
-    }
-
-    #[cfg(unix)]
-    fn reap_stale_lock(&self, lock: &Path) {
-        let metadata = match fs::symlink_metadata(lock) {
-            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => metadata,
-            _ => return,
-        };
-        let owner_path = lock.join("owner");
-        let owner = fs::symlink_metadata(&owner_path).ok().filter(|m| m.is_file() && !m.file_type().is_symlink() && m.len() <= 128)
-            .and_then(|_| fs::read_to_string(&owner_path).ok());
-        let stale = if let Some(owner) = owner {
-            let pid = owner.split(':').next().and_then(|value| value.parse::<i32>().ok());
-            match pid {
-                Some(pid) if pid > 0 => {
-                    // A live or permission-protected PID is never reaped. ESRCH is the
-                    // only positive evidence that the recorded owner process is gone.
-                    let rc = unsafe { libc::kill(pid, 0) };
-                    rc != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
-                }
-                _ => metadata.modified().ok().and_then(|time| time.elapsed().ok()).map(|age| age >= Duration::from_secs(30)).unwrap_or(false),
-            }
-        } else {
-            metadata.modified().ok().and_then(|time| time.elapsed().ok()).map(|age| age >= Duration::from_secs(30)).unwrap_or(false)
-        };
-        if stale {
-            let suffix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
-            let quarantine = self.root.join(format!(".rea-rust-storage-lock.stale-{}-{suffix}", std::process::id()));
-            if fs::rename(lock, &quarantine).is_ok() { let _ = fs::remove_dir_all(quarantine); }
-        }
-    }
-
-    #[cfg(not(unix))]
-    fn reap_stale_lock(&self, _lock: &Path) {
-        // Without a portable process-liveness primitive, retain the lock and fail closed.
+        // Keep the unique handle alive for the critical section. Never unlink this file.
+        operation()
     }
 }
 
@@ -334,6 +290,7 @@ fn hex(bytes: &[u8]) -> String { const TABLE: &[u8; 16] = b"0123456789abcdef"; l
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::process::{Command, Stdio};
     static NEXT: AtomicU64 = AtomicU64::new(1);
 
     fn temp_root() -> PathBuf {
@@ -350,20 +307,125 @@ mod tests {
         ));
     }
 
-    #[cfg(unix)]
     #[test]
-    fn reaps_lock_owned_by_a_process_that_no_longer_exists() {
+    fn persistent_lock_file_is_retained_and_exclusive() {
         let root = temp_root();
-        fs::create_dir_all(&root).unwrap();
-        let lock = root.join(".rea-rust-storage-lock");
-        fs::create_dir(&lock).unwrap();
-        fs::write(lock.join("owner"), format!("{}:1\n", i32::MAX)).unwrap();
         let store = StorageCore::new(&root, 1024, 2048).unwrap();
-        store.reap_stale_lock(&lock);
-        assert!(!lock.exists(), "a lock owned by a definitively dead process should be recoverable");
+        store.init().unwrap();
+        let path = root.join(".rea-rust-storage-lock");
+        assert!(path.is_file());
+
+        // Exercise the production acquisition path, then verify a distinct handle
+        // cannot acquire the same advisory lock while the critical section is live.
+        store.with_lock(|| {
+            let second = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+            assert!(matches!(second.try_lock(), Err(TryLockError::WouldBlock)));
+            assert!(path.is_file(), "the persistent lock file must not be replaced or unlinked");
+            Ok(())
+        }).unwrap();
+
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn child_process_holds_storage_lock_until_terminated() {
+        let Ok(lock_path) = std::env::var("REA_TEST_LOCK_PATH") else { return; };
+        let ready_path = std::env::var("REA_TEST_LOCK_READY").unwrap();
+        let file = OpenOptions::new().read(true).write(true).open(lock_path).unwrap();
+        file.try_lock().unwrap();
+        fs::write(ready_path, b"ready").unwrap();
+        thread::sleep(Duration::from_secs(30));
+    }
+
+    #[test]
+    fn lock_is_exclusive_across_processes_and_released_after_process_exit() {
+        let root = temp_root();
+        let store = StorageCore::new(&root, 1024, 2048).unwrap();
+        store.init().unwrap();
+        let lock_path = root.join(".rea-rust-storage-lock");
+        let ready_path = root.with_extension("lock-ready");
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::child_process_holds_storage_lock_until_terminated", "--nocapture"])
+            .env("REA_TEST_LOCK_PATH", &lock_path)
+            .env("REA_TEST_LOCK_READY", &ready_path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready_path.exists() && Instant::now() < deadline {
+            if let Some(status) = child.try_wait().unwrap() {
+                panic!("lock-holder child exited before acquiring the lock: {status}");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let contender = OpenOptions::new().read(true).write(true).open(&lock_path).unwrap();
+        let blocked_while_child_alive = matches!(contender.try_lock(), Err(TryLockError::WouldBlock));
+        let _ = child.kill();
+        child.wait().unwrap();
+        assert!(ready_path.exists(), "child process did not signal lock acquisition");
+        assert!(blocked_while_child_alive, "a second process must not acquire the held lock");
+        contender.try_lock().expect("OS must release the lock after the owning process exits");
+
+        drop(contender);
+        let _ = fs::remove_file(ready_path);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_symlinked_lock_file() {
+        use std::os::unix::fs::symlink;
+        let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
+        let outside = root.with_extension("outside-lock");
+        fs::write(&outside, b"not a lock").unwrap();
+        symlink(&outside, root.join(".rea-rust-storage-lock")).unwrap();
+        let store = StorageCore::new(&root, 1024, 2048).unwrap();
+        assert!(matches!(store.with_lock(|| Ok(())), Err(StorageError::Io(_)) | Err(StorageError::UnsafePath)));
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_file(outside);
+    }
+
+    #[test]
+    fn lock_contention_times_out_without_replacing_the_lock_file() {
+        let root = temp_root();
+        let store = StorageCore::new(&root, 1024, 2048).unwrap();
+        store.init().unwrap();
+        let path = root.join(".rea-rust-storage-lock");
+        let ready_path = root.join("child.ready");
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("tests::child_process_holds_storage_lock_until_terminated")
+            .arg("--nocapture")
+            .env("REA_TEST_LOCK_PATH", &path)
+            .env("REA_TEST_LOCK_READY", &ready_path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+
+        let started = Instant::now();
+        while !ready_path.exists() && started.elapsed() < Duration::from_secs(5) {
+            if let Some(status) = child.try_wait().unwrap() {
+                panic!("lock-holder child exited before acquiring lock: {status}");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(ready_path.exists(), "lock-holder child did not become ready");
+
+        let mut contender = StorageCore::new(&root, 1024, 2048).unwrap();
+        contender.lock_wait = Duration::from_millis(60);
+        assert_eq!(contender.with_lock(|| Ok(())), Err(StorageError::LockTimeout));
+        assert!(path.is_file(), "timeout must not replace the persistent lock file");
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(contender.with_lock(|| Ok(())).is_ok(), "lock must become available after child exit");
+        let _ = fs::remove_dir_all(root);
+    }
     #[test]
     fn persists_quota_configuration_and_rejects_silent_changes() {
         let root = temp_root();

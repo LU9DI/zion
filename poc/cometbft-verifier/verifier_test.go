@@ -1,0 +1,643 @@
+package verifier
+
+import (
+	"bytes"
+	"errors"
+	"testing"
+	"time"
+
+	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
+	cmtversion "github.com/cometbft/cometbft/proto/tendermint/version"
+	"github.com/cometbft/cometbft/crypto/tmhash"
+	"github.com/cometbft/cometbft/types"
+	cmtversionpkg "github.com/cometbft/cometbft/version"
+)
+
+const testChainID = "zion-verifier-test-1"
+
+func signedEvidence(t *testing.T) (Evidence, *types.ValidatorSet) {
+	t.Helper()
+	validators, privateValidators := types.RandValidatorSet(4, 1)
+	const height int64 = 7
+	initialState := newTestState(t, "project-alpha", "genesis-alpha")
+	transactions := [][]byte{
+		testStateTx(t, "project-alpha", 1, statePut, 0, "account/1", "alice"),
+		testStateTx(t, "project-alpha", 2, statePut, 1, "account/2", "bob"),
+		testStateTx(t, "project-alpha", 3, stateDelete, 2, "account/1", ""),
+	}
+	finalState := initialState.Clone()
+	if err := finalState.Replay(transactions); err != nil {
+		t.Fatalf("replay signed test transactions: %v", err)
+	}
+	preBlockAppHash := initialState.AppHash()
+	postBlockAppHash := finalState.AppHash()
+	cometTxs := make(types.Txs, len(transactions))
+	for i := range transactions {
+		cometTxs[i] = append(types.Tx(nil), transactions[i]...)
+	}
+	proposerAddress, _ := validators.GetByIndex(0)
+	header := &types.Header{
+		Version:            cmtversion.Consensus{Block: cmtversionpkg.BlockProtocol},
+		ChainID:             testChainID,
+		Height:              height,
+		Time:                time.Unix(1_700_000_000, 0).UTC(),
+		ValidatorsHash:      append([]byte(nil), validators.Hash()...),
+		NextValidatorsHash:  append([]byte(nil), validators.Hash()...),
+		ConsensusHash:       tmhash.Sum([]byte("consensus params")),
+		AppHash:             append([]byte(nil), preBlockAppHash...),
+		LastResultsHash:     tmhash.Sum([]byte("last results")),
+		LastCommitHash:      tmhash.Sum([]byte("last commit")),
+		DataHash:            append([]byte(nil), cometTxs.Hash()...),
+		EvidenceHash:        tmhash.Sum([]byte("evidence")),
+		ProposerAddress:     append([]byte(nil), proposerAddress...),
+	}
+	blockID := types.BlockID{
+		Hash: header.Hash(),
+		PartSetHeader: types.PartSetHeader{
+			Total: 1,
+			Hash:  tmhash.Sum([]byte("test parts")),
+		},
+	}
+
+	signatures := make([]types.CommitSig, validators.Size())
+	for i := 0; i < validators.Size(); i++ {
+		address, _ := validators.GetByIndex(int32(i))
+		vote := &types.Vote{
+			Type:             cmtproto.PrecommitType,
+			Height:           height,
+			Round:            0,
+			BlockID:          blockID,
+			Timestamp:        time.Unix(1_700_000_010+int64(i), 0).UTC(),
+			ValidatorAddress: address,
+			ValidatorIndex:   int32(i),
+		}
+		if _, err := types.SignAndCheckVote(vote, privateValidators[i], testChainID, false); err != nil {
+			t.Fatalf("sign vote %d: %v", i, err)
+		}
+		signatures[i] = vote.CommitSig()
+	}
+
+	commit := &types.Commit{
+		Height:     height,
+		Round:      0,
+		BlockID:    blockID,
+		Signatures: signatures,
+	}
+
+	nextHeader := &types.Header{
+		Version: cmtversion.Consensus{Block: cmtversionpkg.BlockProtocol},
+		ChainID: testChainID, Height: height + 1,
+		Time: time.Unix(1_700_000_100, 0).UTC(), LastBlockID: blockID,
+		LastCommitHash: append([]byte(nil), commit.Hash()...),
+		ValidatorsHash: append([]byte(nil), validators.Hash()...),
+		NextValidatorsHash: append([]byte(nil), validators.Hash()...),
+		ConsensusHash: tmhash.Sum([]byte("next consensus params")),
+		AppHash: append([]byte(nil), postBlockAppHash...),
+		LastResultsHash: tmhash.Sum([]byte("next last results")),
+		DataHash: (types.Txs{}).Hash(), EvidenceHash: tmhash.Sum([]byte("next evidence")),
+		ProposerAddress: append([]byte(nil), proposerAddress...),
+	}
+	nextBlockID := types.BlockID{Hash: nextHeader.Hash(), PartSetHeader: types.PartSetHeader{Total: 1, Hash: tmhash.Sum([]byte("next test parts"))}}
+	nextSignatures := make([]types.CommitSig, validators.Size())
+	for i := 0; i < validators.Size(); i++ {
+		address, _ := validators.GetByIndex(int32(i))
+		vote := &types.Vote{Type: cmtproto.PrecommitType, Height: height + 1, Round: 0,
+			BlockID: nextBlockID, Timestamp: time.Unix(1_700_000_110+int64(i), 0).UTC(),
+			ValidatorAddress: address, ValidatorIndex: int32(i)}
+		if _, err := types.SignAndCheckVote(vote, privateValidators[i], testChainID, false); err != nil {
+			t.Fatalf("sign next-height vote %d: %v", i, err)
+		}
+		nextSignatures[i] = vote.CommitSig()
+	}
+	nextCommit := &types.Commit{Height: height + 1, Round: 0, BlockID: nextBlockID, Signatures: nextSignatures}
+	anchor := &PostBlockAnchor{Header: nextHeader, BlockID: nextBlockID, Commit: nextCommit, Validators: validators}
+	return Evidence{
+		ChainID:          testChainID,
+		Height:           height,
+		BlockID:          blockID,
+		ValidatorSetHash: append([]byte(nil), validators.Hash()...),
+		ExpectedPreBlockAppHash:  append([]byte(nil), preBlockAppHash...),
+		ExpectedPostBlockAppHash: append([]byte(nil), postBlockAppHash...),
+		Transactions:     cloneTransactions(transactions),
+		Header:           header,
+		Commit:           commit,
+		PostBlockAnchor:  anchor,
+	}, validators
+}
+
+func cloneTransactions(in [][]byte) [][]byte {
+	out := make([][]byte, len(in))
+	for i := range in {
+		out[i] = append([]byte(nil), in[i]...)
+	}
+	return out
+}
+
+func cloneBlockID(in types.BlockID) types.BlockID {
+	out := in
+	out.Hash = append([]byte(nil), in.Hash...)
+	out.PartSetHeader.Hash = append([]byte(nil), in.PartSetHeader.Hash...)
+	return out
+}
+
+func cloneEvidence(in Evidence) Evidence {
+	out := in
+	out.ValidatorSetHash = append([]byte(nil), in.ValidatorSetHash...)
+	out.ExpectedPreBlockAppHash = append([]byte(nil), in.ExpectedPreBlockAppHash...)
+	out.ExpectedPostBlockAppHash = append([]byte(nil), in.ExpectedPostBlockAppHash...)
+	out.Transactions = cloneTransactions(in.Transactions)
+	headerCopy := *in.Header
+	headerCopy.ValidatorsHash = append([]byte(nil), in.Header.ValidatorsHash...)
+	headerCopy.NextValidatorsHash = append([]byte(nil), in.Header.NextValidatorsHash...)
+	headerCopy.ConsensusHash = append([]byte(nil), in.Header.ConsensusHash...)
+	headerCopy.AppHash = append([]byte(nil), in.Header.AppHash...)
+	headerCopy.LastResultsHash = append([]byte(nil), in.Header.LastResultsHash...)
+	headerCopy.LastCommitHash = append([]byte(nil), in.Header.LastCommitHash...)
+	headerCopy.DataHash = append([]byte(nil), in.Header.DataHash...)
+	headerCopy.EvidenceHash = append([]byte(nil), in.Header.EvidenceHash...)
+	headerCopy.ProposerAddress = append([]byte(nil), in.Header.ProposerAddress...)
+	out.Header = &headerCopy
+	commitCopy := *in.Commit
+	commitCopy.BlockID = cloneBlockID(in.Commit.BlockID)
+	out.Commit = &commitCopy
+	out.Commit.Signatures = append([]types.CommitSig(nil), in.Commit.Signatures...)
+	for i := range out.Commit.Signatures {
+		out.Commit.Signatures[i].ValidatorAddress = append([]byte(nil), in.Commit.Signatures[i].ValidatorAddress...)
+		out.Commit.Signatures[i].Signature = append([]byte(nil), in.Commit.Signatures[i].Signature...)
+	}
+	if in.PostBlockAnchor != nil {
+		anchorCopy := *in.PostBlockAnchor
+		if in.PostBlockAnchor.Header != nil {
+			h := *in.PostBlockAnchor.Header
+			h.ValidatorsHash = append([]byte(nil), h.ValidatorsHash...)
+			h.NextValidatorsHash = append([]byte(nil), h.NextValidatorsHash...)
+			h.ConsensusHash = append([]byte(nil), h.ConsensusHash...)
+			h.AppHash = append([]byte(nil), h.AppHash...)
+			h.LastResultsHash = append([]byte(nil), h.LastResultsHash...)
+			h.LastCommitHash = append([]byte(nil), h.LastCommitHash...)
+			h.DataHash = append([]byte(nil), h.DataHash...)
+			h.EvidenceHash = append([]byte(nil), h.EvidenceHash...)
+			h.ProposerAddress = append([]byte(nil), h.ProposerAddress...)
+			anchorCopy.Header = &h
+		}
+		anchorCopy.BlockID = cloneBlockID(in.PostBlockAnchor.BlockID)
+		if in.PostBlockAnchor.Commit != nil {
+			c := *in.PostBlockAnchor.Commit
+			c.BlockID = cloneBlockID(in.PostBlockAnchor.Commit.BlockID)
+			c.Signatures = append([]types.CommitSig(nil), in.PostBlockAnchor.Commit.Signatures...)
+			for i := range c.Signatures {
+				c.Signatures[i].ValidatorAddress = append([]byte(nil), in.PostBlockAnchor.Commit.Signatures[i].ValidatorAddress...)
+				c.Signatures[i].Signature = append([]byte(nil), in.PostBlockAnchor.Commit.Signatures[i].Signature...)
+			}
+			anchorCopy.Commit = &c
+		}
+		out.PostBlockAnchor = &anchorCopy
+	}
+	return out
+}
+
+func TestCloneEvidenceDeepCopiesPostBlockAnchor(t *testing.T) {
+	base, _ := signedEvidence(t)
+	cloned := cloneEvidence(base)
+	cloned.PostBlockAnchor.Header.AppHash[0] ^= 0xff
+	cloned.PostBlockAnchor.Header.LastCommitHash[0] ^= 0xff
+	cloned.PostBlockAnchor.BlockID.Hash[0] ^= 0xff
+	cloned.PostBlockAnchor.BlockID.PartSetHeader.Hash[0] ^= 0xff
+	cloned.PostBlockAnchor.Commit.Signatures[0].Signature[0] ^= 0xff
+	cloned.PostBlockAnchor.Commit.Signatures[0].ValidatorAddress[0] ^= 0xff
+	if bytes.Equal(cloned.PostBlockAnchor.Header.AppHash, base.PostBlockAnchor.Header.AppHash) ||
+		bytes.Equal(cloned.PostBlockAnchor.Header.LastCommitHash, base.PostBlockAnchor.Header.LastCommitHash) ||
+		bytes.Equal(cloned.PostBlockAnchor.BlockID.Hash, base.PostBlockAnchor.BlockID.Hash) ||
+		bytes.Equal(cloned.PostBlockAnchor.BlockID.PartSetHeader.Hash, base.PostBlockAnchor.BlockID.PartSetHeader.Hash) ||
+		bytes.Equal(cloned.PostBlockAnchor.Commit.Signatures[0].Signature, base.PostBlockAnchor.Commit.Signatures[0].Signature) ||
+		bytes.Equal(cloned.PostBlockAnchor.Commit.Signatures[0].ValidatorAddress, base.PostBlockAnchor.Commit.Signatures[0].ValidatorAddress) {
+		t.Fatal("mutating cloned post-block anchor changed the original evidence")
+	}
+}
+
+func TestVerifyCommitEvidenceAcceptsValidFourValidatorCommitHeaderAndOrderedTransactions(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	if err := VerifyCommitEvidence(evidence, validators); err != nil {
+		t.Fatalf("valid commit/header/transactions rejected: %v", err)
+	}
+}
+
+func TestVerifyCommitEvidenceRejectsInvalidEvidence(t *testing.T) {
+	base, validators := signedEvidence(t)
+	tests := []struct {
+		name   string
+		mutate func(*Evidence)
+	}{
+		{"wrong chain ID", func(e *Evidence) { e.ChainID = "other-chain" }},
+		{"wrong height", func(e *Evidence) { e.Height++ }},
+		{"wrong block ID", func(e *Evidence) { e.BlockID.Hash = tmhash.Sum([]byte("substituted block")) }},
+		{"header chain ID mismatch", func(e *Evidence) { e.Header.ChainID = "other-chain" }},
+		{"header height mismatch", func(e *Evidence) { e.Header.Height++ }},
+		{"header pre-block app hash mismatch", func(e *Evidence) { e.Header.AppHash = tmhash.Sum([]byte("substituted pre-block app hash")) }},
+		{"expected pre-block app hash mismatch", func(e *Evidence) { e.ExpectedPreBlockAppHash = tmhash.Sum([]byte("wrong pre-block state root")) }},
+		{"header validator hash mismatch", func(e *Evidence) { e.Header.ValidatorsHash = tmhash.Sum([]byte("substituted validators")) }},
+		{"validator set digest mismatch", func(e *Evidence) { e.ValidatorSetHash[0] ^= 0xff }},
+		{"altered transaction bytes", func(e *Evidence) { e.Transactions[0][0] ^= 0xff }},
+		{"omitted transaction", func(e *Evidence) { e.Transactions = e.Transactions[:2] }},
+		{"reordered transactions", func(e *Evidence) {
+			e.Transactions[0], e.Transactions[1] = e.Transactions[1], e.Transactions[0]
+		}},
+		{"cross-project transaction replay", func(e *Evidence) {
+			e.Transactions[0] = []byte("project-beta|op-0001|PUT|account/1|mallory")
+		}},
+		{"altered signature", func(e *Evidence) { e.Commit.Signatures[0].Signature[0] ^= 0xff }},
+		{"signature copied into another validator slot", func(e *Evidence) {
+			e.Commit.Signatures[1].Signature = append([]byte(nil), e.Commit.Signatures[0].Signature...)
+		}},
+		{"short signature vector", func(e *Evidence) {
+			e.Commit.Signatures = e.Commit.Signatures[:len(e.Commit.Signatures)-1]
+		}},
+		{"insufficient voting power", func(e *Evidence) {
+			e.Commit.Signatures[2] = types.NewCommitSigAbsent()
+			e.Commit.Signatures[3] = types.NewCommitSigAbsent()
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			evidence := cloneEvidence(base)
+			tt.mutate(&evidence)
+			if err := VerifyCommitEvidence(evidence, validators); err == nil {
+				t.Fatal("invalid evidence unexpectedly accepted")
+			}
+		})
+	}
+}
+
+func TestVerifyTransactionDataAcceptsCanonicalEmptyBlock(t *testing.T) {
+	canonicalEmptyDataHash := (types.Txs{}).Hash()
+	if len(canonicalEmptyDataHash) == 0 {
+		t.Fatal("CometBFT canonical empty data hash unexpectedly empty")
+	}
+	if err := verifyTransactionData(nil, canonicalEmptyDataHash); err != nil {
+		t.Fatalf("canonical empty block data rejected: %v", err)
+	}
+	if err := verifyTransactionData(nil, nil); !errors.Is(err, ErrDataHashMismatch) {
+		t.Fatalf("nil data hash must not be accepted as canonical empty block hash, got %v", err)
+	}
+}
+
+func TestVerifyTransactionDataRejectsOversizedEvidence(t *testing.T) {
+	oversized := bytes.Repeat([]byte("x"), MaxTransactionBytes+1)
+	if err := verifyTransactionData([][]byte{oversized}, []byte("irrelevant")); !errors.Is(err, ErrDataBounds) {
+		t.Fatalf("expected transaction bound error, got %v", err)
+	}
+	tooMany := make([][]byte, MaxTransactionsPerBlock+1)
+	if err := verifyTransactionData(tooMany, []byte("irrelevant")); !errors.Is(err, ErrDataBounds) {
+		t.Fatalf("expected transaction count bound error, got %v", err)
+	}
+}
+
+func TestVerifyCommitEvidenceAuthenticatesCommitBeforeTransactionPayload(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	evidence.Commit.Signatures[0].Signature[0] ^= 0xff
+	evidence.Transactions = [][]byte{make([]byte, MaxTransactionBytes+1)}
+
+	err := VerifyCommitEvidence(evidence, validators)
+	if err == nil {
+		t.Fatal("invalid commit with oversized transaction payload unexpectedly accepted")
+	}
+	if errors.Is(err, ErrDataBounds) {
+		t.Fatalf("transaction payload was processed before commit authentication: %v", err)
+	}
+}
+
+func TestVerifyCommitEvidenceRejectsMissingOrMalformedEnvelope(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	if err := VerifyCommitEvidence(Evidence{}, validators); !errors.Is(err, ErrMissingEvidence) {
+		t.Fatalf("expected missing evidence error, got %v", err)
+	}
+	evidence.Header = nil
+	if err := VerifyCommitEvidence(evidence, validators); !errors.Is(err, ErrMissingEvidence) {
+		t.Fatalf("expected missing header error, got %v", err)
+	}
+	evidence, _ = signedEvidence(t)
+	evidence.ChainID = ""
+	if err := VerifyCommitEvidence(evidence, validators); !errors.Is(err, ErrInvalidChainID) {
+		t.Fatalf("expected chain ID error, got %v", err)
+	}
+	evidence.ChainID = testChainID
+	evidence.ValidatorSetHash = nil
+	if err := VerifyCommitEvidence(evidence, validators); !errors.Is(err, ErrValidatorSetMismatch) {
+		t.Fatalf("expected validator set mismatch, got %v", err)
+	}
+}
+
+func TestVerifyProtoCommitEvidence(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	validatorProto, err := validators.ToProto()
+	if err != nil {
+		t.Fatalf("encode validator set: %v", err)
+	}
+	blockIDProto := evidence.BlockID.ToProto()
+	wire := ProtoEvidence{
+		ChainID:               evidence.ChainID,
+		Height:                evidence.Height,
+		BlockID:               &blockIDProto,
+		Header:                evidence.Header.ToProto(),
+		ValidatorSet:          validatorProto,
+		ExpectedValidatorHash: append([]byte(nil), evidence.ValidatorSetHash...),
+		ExpectedPreBlockAppHash:  append([]byte(nil), evidence.ExpectedPreBlockAppHash...),
+		ExpectedPostBlockAppHash: append([]byte(nil), evidence.ExpectedPostBlockAppHash...),
+		Transactions:          cloneTransactions(evidence.Transactions),
+		Commit:                evidence.Commit.ToProto(),
+	}
+	if err := VerifyProtoCommitEvidence(wire); err != nil {
+		t.Fatalf("valid protobuf evidence rejected: %v", err)
+	}
+	wire.ExpectedValidatorHash[0] ^= 0xff
+	if err := VerifyProtoCommitEvidence(wire); !errors.Is(err, ErrValidatorSetMismatch) {
+		t.Fatalf("expected authenticated validator hash mismatch, got %v", err)
+	}
+	wire.ExpectedValidatorHash = append([]byte(nil), evidence.ValidatorSetHash...)
+	wire.Transactions[1][0] ^= 0xff
+	if err := VerifyProtoCommitEvidence(wire); !errors.Is(err, ErrDataHashMismatch) {
+		t.Fatalf("expected protobuf transaction data mismatch, got %v", err)
+	}
+}
+
+func TestVerifyCommitEvidenceRejectsUnknownValidatorSignature(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	outsider, outsiderPrivate := types.RandValidator(false, 1)
+	vote := &types.Vote{
+		Type:             cmtproto.PrecommitType,
+		Height:           evidence.Height,
+		Round:            0,
+		BlockID:          evidence.BlockID,
+		Timestamp:        time.Unix(1_700_000_100, 0).UTC(),
+		ValidatorAddress: outsider.Address,
+		ValidatorIndex:   0,
+	}
+	if _, err := types.SignAndCheckVote(vote, outsiderPrivate, testChainID, false); err != nil {
+		t.Fatalf("sign outsider vote: %v", err)
+	}
+	evidence.Commit.Signatures[0] = vote.CommitSig()
+	if err := VerifyCommitEvidence(evidence, validators); err == nil {
+		t.Fatal("commit containing an unknown validator signature unexpectedly accepted")
+	}
+}
+
+func TestVerifyCommitEvidenceDoesNotMutateInputs(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	beforeHash := append([]byte(nil), evidence.Commit.Hash()...)
+	beforeHeaderHash := append([]byte(nil), evidence.Header.Hash()...)
+	beforeTransactions := cloneTransactions(evidence.Transactions)
+	if err := VerifyCommitEvidence(evidence, validators); err != nil {
+		t.Fatalf("valid commit rejected: %v", err)
+	}
+	if !bytes.Equal(beforeHash, evidence.Commit.Hash()) {
+		t.Fatal("verifier mutated the commit")
+	}
+	if !bytes.Equal(beforeHeaderHash, evidence.Header.Hash()) {
+		t.Fatal("verifier mutated the header")
+	}
+	for i := range beforeTransactions {
+		if !bytes.Equal(beforeTransactions[i], evidence.Transactions[i]) {
+			t.Fatalf("verifier mutated transaction %d", i)
+		}
+	}
+}
+
+func TestVerifyCommitEvidenceWithReplayRejectsOversizedTransactionVectorBeforeReplay(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	initial := newTestState(t, "project-alpha", "genesis-alpha")
+	evidence.Transactions = make([][]byte, MaxTransactionsPerBlock+1)
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial, evidence.PostBlockAnchor); !errors.Is(err, ErrDataBounds) {
+		t.Fatalf("oversized transaction vector error = %v, want ErrDataBounds", err)
+	}
+	if initial.Sequence() != 0 {
+		t.Fatalf("pre-block state mutated on rejected oversized vector: sequence=%d", initial.Sequence())
+	}
+}
+
+func TestVerifyCommitEvidenceWithReplayRejectsOversizedIndividualTransaction(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	initial := newTestState(t, "project-alpha", "genesis-alpha")
+	evidence.Transactions = [][]byte{make([]byte, MaxTransactionBytes+1)}
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial, evidence.PostBlockAnchor); !errors.Is(err, ErrDataBounds) {
+		t.Fatalf("oversized transaction error = %v, want ErrDataBounds", err)
+	}
+	if initial.Sequence() != 0 {
+		t.Fatalf("pre-block state mutated on rejected oversized transaction: sequence=%d", initial.Sequence())
+	}
+}
+
+func TestVerifyCommitEvidenceWithReplayRejectsOversizedAggregateData(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	initial := newTestState(t, "project-alpha", "genesis-alpha")
+	evidence.Transactions = make([][]byte, MaxBlockDataBytes/MaxTransactionBytes+1)
+	for i := range evidence.Transactions {
+		evidence.Transactions[i] = make([]byte, MaxTransactionBytes)
+	}
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial, evidence.PostBlockAnchor); !errors.Is(err, ErrDataBounds) {
+		t.Fatalf("oversized aggregate data error = %v, want ErrDataBounds", err)
+	}
+	if initial.Sequence() != 0 {
+		t.Fatalf("pre-block state mutated on rejected aggregate data: sequence=%d", initial.Sequence())
+	}
+}
+
+func TestVerifyCommitEvidenceWithReplayBindsPreAndPostBlockStateHashes(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	initial := newTestState(t, "project-alpha", "genesis-alpha")
+	initialHash := append([]byte(nil), initial.AppHash()...)
+	replayed, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial, evidence.PostBlockAnchor)
+	if err != nil {
+		t.Fatalf("valid commit with deterministic replay rejected: %v", err)
+	}
+	if replayed.Sequence() != 3 {
+		t.Fatalf("unexpected replay sequence: %d", replayed.Sequence())
+	}
+	if !bytes.Equal(initial.AppHash(), evidence.Header.AppHash) {
+		t.Fatal("pre-block state root differs from signed header app hash")
+	}
+	if !bytes.Equal(replayed.AppHash(), evidence.ExpectedPostBlockAppHash) {
+		t.Fatal("replayed state root differs from independently expected post-block app hash")
+	}
+	if !bytes.Equal(initial.AppHash(), initialHash) || initial.Sequence() != 0 {
+		t.Fatal("verification mutated the caller's initial state")
+	}
+}
+
+
+
+func TestVerifyCommitEvidenceWithReplayRejectsWrongPostBlockHash(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	evidence.ExpectedPostBlockAppHash = tmhash.Sum([]byte("wrong post-block state root"))
+	initial := newTestState(t, "project-alpha", "genesis-alpha")
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial, evidence.PostBlockAnchor); !errors.Is(err, ErrPostBlockAnchorMismatch) {
+		t.Fatalf("expected post-block app hash mismatch, got %v", err)
+	}
+}
+
+func TestVerifyCommitEvidenceRejectsMissingPostBlockHash(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	evidence.ExpectedPostBlockAppHash = nil
+	initial := newTestState(t, "project-alpha", "genesis-alpha")
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial, evidence.PostBlockAnchor); !errors.Is(err, ErrPostBlockAnchorMismatch) {
+		t.Fatalf("expected missing post-block anchor hash binding error, got %v", err)
+	}
+}
+
+func TestVerifyCommitEvidenceWithReplayRejectsMissingHeader(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	evidence.Header = nil
+	initial := newTestState(t, "project-alpha", "genesis-alpha")
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial, evidence.PostBlockAnchor); !errors.Is(err, ErrMissingEvidence) {
+		t.Fatalf("expected missing evidence error, got %v", err)
+	}
+}
+
+
+func TestVerifyCommitEvidenceWithReplayRejectsMissingPostBlockAnchor(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	initial := newTestState(t, "project-alpha", "genesis-alpha")
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial, nil); !errors.Is(err, ErrMissingPostBlockAnchor) {
+		t.Fatalf("expected missing next-header anchor error, got %v", err)
+	}
+}
+
+
+func TestVerifyCommitEvidenceWithReplayRejectsWrongPriorCommitLink(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	evidence.PostBlockAnchor.Header.LastCommitHash = tmhash.Sum([]byte("wrong prior commit"))
+	initial := newTestState(t, "project-alpha", "genesis-alpha")
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial, evidence.PostBlockAnchor); !errors.Is(err, ErrPostBlockAnchorMismatch) {
+		t.Fatalf("expected prior-commit link mismatch, got %v", err)
+	}
+}
+
+func TestVerifyCommitEvidenceWithReplayRejectsWrongNextHeight(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	evidence.PostBlockAnchor.Header.Height++
+	initial := newTestState(t, "project-alpha", "genesis-alpha")
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial, evidence.PostBlockAnchor); !errors.Is(err, ErrPostBlockAnchorMismatch) {
+		t.Fatalf("expected next-height anchor mismatch, got %v", err)
+	}
+}
+
+func TestVerifyCommitEvidenceWithReplayRejectsValidatorTransitionMismatch(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	wrongSet, _ := types.RandValidatorSet(4, 1)
+	evidence.PostBlockAnchor.Validators = wrongSet
+	initial := newTestState(t, "project-alpha", "genesis-alpha")
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial, evidence.PostBlockAnchor); !errors.Is(err, ErrPostBlockAnchorMismatch) {
+		t.Fatalf("expected validator transition mismatch, got %v", err)
+	}
+}
+
+func TestVerifyCommitEvidenceWithReplayRejectsWrongGenesisState(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	wrongGenesis := newTestState(t, "project-alpha", "different-genesis")
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, wrongGenesis, evidence.PostBlockAnchor); !errors.Is(err, ErrPreBlockAppHashMismatch) {
+		t.Fatalf("expected replayed app hash mismatch, got %v", err)
+	}
+}
+
+// oversizedSignatures returns a commit signature vector that exceeds
+// MaxCommitSignatures and whose entries are individually invalid. If the
+// verifier validated entries before enforcing the bound, the test would observe
+// a structural error instead of ErrSignatureVectorLength.
+func oversizedSignatures() []types.CommitSig {
+	signatures := make([]types.CommitSig, MaxCommitSignatures+1)
+	for i := range signatures {
+		signatures[i] = types.CommitSig{BlockIDFlag: 0}
+	}
+	return signatures
+}
+
+func oversizedValidatorSet(t *testing.T) *types.ValidatorSet {
+	t.Helper()
+	validators := make([]*types.Validator, MaxValidatorSetSize+1)
+	for i := range validators {
+		// CometBFT requires unique validator addresses in a set.
+		validators[i] = types.NewValidator(types.NewMockPV().PrivKey.PubKey(), 1)
+	}
+	return types.NewValidatorSet(validators)
+}
+
+func TestVerifyCommitEvidenceBoundsSignatureVectorBeforeEntryValidation(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	evidence.Commit.Signatures = oversizedSignatures()
+	err := VerifyCommitEvidence(evidence, validators)
+	if !errors.Is(err, ErrSignatureVectorLength) {
+		t.Fatalf("oversized commit signature vector error = %v, want ErrSignatureVectorLength", err)
+	}
+}
+
+func TestVerifyCommitEvidenceBoundsValidatorSetBeforeEntryValidation(t *testing.T) {
+	evidence, _ := signedEvidence(t)
+	oversized := oversizedValidatorSet(t)
+	err := VerifyCommitEvidence(evidence, oversized)
+	if !errors.Is(err, ErrSignatureVectorLength) {
+		t.Fatalf("oversized validator set error = %v, want ErrSignatureVectorLength", err)
+	}
+}
+
+func TestVerifyCommitEvidenceWithReplayBoundsAnchorSignatureVector(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	initial := newTestState(t, "project-alpha", "genesis-alpha")
+	evidence.PostBlockAnchor.Commit.Signatures = oversizedSignatures()
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial, evidence.PostBlockAnchor); !errors.Is(err, ErrSignatureVectorLength) {
+		t.Fatalf("oversized anchor signature vector error = %v, want ErrSignatureVectorLength", err)
+	}
+	if initial.Sequence() != 0 {
+		t.Fatalf("pre-block state mutated on rejected anchor: sequence=%d", initial.Sequence())
+	}
+}
+
+func TestVerifyCommitEvidenceWithReplayRejectsShortAnchorSignatureVector(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	initial := newTestState(t, "project-alpha", "genesis-alpha")
+	evidence.PostBlockAnchor.Commit.Signatures = evidence.PostBlockAnchor.Commit.Signatures[:2]
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial, evidence.PostBlockAnchor); !errors.Is(err, ErrSignatureVectorLength) {
+		t.Fatalf("short anchor signature vector error = %v, want ErrSignatureVectorLength", err)
+	}
+}
+
+func TestVerifyProtoCommitEvidenceBoundsUntrustedWireVectors(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	validatorProto, err := validators.ToProto()
+	if err != nil {
+		t.Fatalf("encode validator set: %v", err)
+	}
+	blockIDProto := evidence.BlockID.ToProto()
+	base := ProtoEvidence{
+		ChainID:               evidence.ChainID,
+		Height:                evidence.Height,
+		BlockID:               &blockIDProto,
+		Header:                evidence.Header.ToProto(),
+		ValidatorSet:          validatorProto,
+		ExpectedValidatorHash: append([]byte(nil), evidence.ValidatorSetHash...),
+		ExpectedPreBlockAppHash:  append([]byte(nil), evidence.ExpectedPreBlockAppHash...),
+		ExpectedPostBlockAppHash: append([]byte(nil), evidence.ExpectedPostBlockAppHash...),
+		Transactions:          cloneTransactions(evidence.Transactions),
+		Commit:                evidence.Commit.ToProto(),
+	}
+
+	oversizedCommit := *base.Commit
+	oversizedCommit.Signatures = make([]cmtproto.CommitSig, MaxCommitSignatures+1)
+	wire := base
+	wire.Commit = &oversizedCommit
+	if err := VerifyProtoCommitEvidence(wire); !errors.Is(err, ErrSignatureVectorLength) {
+		t.Fatalf("oversized wire commit error = %v, want ErrSignatureVectorLength", err)
+	}
+
+	oversizedSet := *base.ValidatorSet
+	oversizedSet.Validators = make([]*cmtproto.Validator, MaxValidatorSetSize+1)
+	wire = base
+	wire.ValidatorSet = &oversizedSet
+	if err := VerifyProtoCommitEvidence(wire); !errors.Is(err, ErrValidatorSetBounds) {
+		t.Fatalf("oversized wire validator set error = %v, want ErrValidatorSetBounds", err)
+	}
+
+	wire = base
+	wire.Transactions = make([][]byte, MaxTransactionsPerBlock+1)
+	if err := VerifyProtoCommitEvidence(wire); !errors.Is(err, ErrDataBounds) {
+		t.Fatalf("oversized wire transaction vector error = %v, want ErrDataBounds", err)
+	}
+}

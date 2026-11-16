@@ -1,0 +1,551 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createNodeIdentity } from '../src/peer-security.js';
+import { SignedProjectEventLog, verifySignedProjectEventRecord } from '../src/signed-project-event-log.js';
+import { SignedProjectEventReplica } from '../src/signed-project-event-replica.js';
+
+const PROJECT = 'a'.repeat(64);
+function fixture(options = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'zion-event-log-'));
+  const path = join(dir, 'project.events');
+  const identity = createNodeIdentity();
+  const cleanup = () => rmSync(dir, { recursive: true, force: true });
+  return { dir, path, identity, cleanup, options };
+}
+
+test('signed event log appends ordered, hash-chained events and replays after restart', async () => {
+  const f = fixture();
+  try {
+    let now = 1_000;
+    let log = new SignedProjectEventLog(f.path, { identity: f.identity, now: () => now });
+    const first = await log.append({ projectId: PROJECT, eventType: 'FILE_CREATED', data: { objectId: 'obj-1' } });
+    now += 500;
+    const second = await log.append({ projectId: PROJECT, eventType: 'FILE_UPDATED', data: { objectId: 'obj-1', version: 2 } });
+    assert.equal(first.sequence, 1);
+    assert.equal(second.sequence, 2);
+    assert.equal(second.previousHash, first.recordHash);
+    assert.equal(log.snapshot().count, 2);
+    log.close();
+
+    now += 10_000_000_000;
+    log = new SignedProjectEventLog(f.path, { identity: f.identity, now: () => now });
+    const snapshot = log.snapshot();
+    assert.equal(snapshot.count, 2);
+    assert.equal(snapshot.events[0].eventType, 'FILE_CREATED');
+    assert.equal(snapshot.events[1].sequence, 2);
+    assert.equal(snapshot.lastHash, second.recordHash);
+    log.close();
+  } finally { f.cleanup(); }
+});
+
+test('event log rejects a second process opening the same journal', () => {
+  const f = fixture();
+  try {
+    const first = new SignedProjectEventLog(f.path, { identity: f.identity });
+    assert.throws(() => new SignedProjectEventLog(f.path, { identity: f.identity }), { code: 'ZION_EVENT_LOG_LOCKED' });
+    first.close();
+    const reopened = new SignedProjectEventLog(f.path, { identity: f.identity });
+    reopened.close();
+  } finally { f.cleanup(); }
+});
+
+test('event log fails closed on a stale-looking lock until explicit recovery', async () => {
+  const f = fixture();
+  try {
+    writeFileSync(f.path + '.lock', JSON.stringify({ pid: 2147483647, token: 'stale-lock-token' }) + '\n');
+    assert.throws(() => new SignedProjectEventLog(f.path, { identity: f.identity }), {
+      code: 'ZION_EVENT_LOG_LOCKED',
+      message: /automatic stale-lock removal is disabled/,
+    });
+    // Recovery is an explicit maintenance action after the operator verifies that
+    // no writer is active; startup never deletes the lock based on a PID probe.
+    rmSync(f.path + '.lock');
+    const log = new SignedProjectEventLog(f.path, { identity: f.identity });
+    await log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: { recovered: true } });
+    assert.equal(log.snapshot().count, 1);
+    log.close();
+    assert.throws(() => readFileSync(f.path + '.lock', 'utf8'), { code: 'ENOENT' });
+  } finally { f.cleanup(); }
+});
+
+test('replica fails closed on a stale-looking lock until explicit recovery', () => {
+  const f = fixture();
+  const replicaPath = join(f.dir, 'stale-lock-replica.events');
+  try {
+    writeFileSync(replicaPath + '.lock', JSON.stringify({ pid: 2147483647, token: 'stale-replica-token' }) + '\n');
+    assert.throws(() => new SignedProjectEventReplica(replicaPath, { authorizePeer: () => true }), {
+      code: 'ZION_REPLICA_LOCKED',
+      message: /automatic stale-lock removal is disabled/,
+    });
+    rmSync(replicaPath + '.lock');
+    const replica = new SignedProjectEventReplica(replicaPath, { authorizePeer: () => true });
+    replica.close();
+  } finally { f.cleanup(); }
+});
+
+test('event log fails closed on a truncated trailing record', async () => {
+  const f = fixture();
+  try {
+    const log = new SignedProjectEventLog(f.path, { identity: f.identity });
+    await log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: {} });
+    log.close();
+    writeFileSync(f.path, Buffer.concat([readFileSync(f.path), Buffer.from('{"partial":')]));
+    assert.throws(() => new SignedProjectEventLog(f.path, { identity: f.identity }), { code: 'ZION_EVENT_LOG_CORRUPT' });
+  } finally { f.cleanup(); }
+});
+
+test('event log detects record tampering and refuses to recover silently', async () => {
+  const f = fixture();
+  try {
+    const log = new SignedProjectEventLog(f.path, { identity: f.identity });
+    await log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: { name: 'alpha' } });
+    log.close();
+    const record = JSON.parse(readFileSync(f.path, 'utf8'));
+    record.recordHash = 'f'.repeat(64);
+    writeFileSync(f.path, JSON.stringify(record) + '\n');
+    assert.throws(() => new SignedProjectEventLog(f.path, { identity: f.identity }), { code: 'ZION_EVENT_LOG_CORRUPT' });
+  } finally { f.cleanup(); }
+});
+
+test('event log rejects a journal signed by a different node identity', async () => {
+  const f = fixture();
+  try {
+    const log = new SignedProjectEventLog(f.path, { identity: f.identity });
+    await log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: {} });
+    log.close();
+    assert.throws(() => new SignedProjectEventLog(f.path, { identity: createNodeIdentity() }), { code: 'ZION_EVENT_LOG_CORRUPT' });
+  } finally { f.cleanup(); }
+});
+
+test('event log validates input and enforces bounded capacity', async () => {
+  const f = fixture();
+  try {
+    const log = new SignedProjectEventLog(f.path, { identity: f.identity, maxRecords: 1 });
+    await assert.rejects(log.append({ projectId: 'bad', eventType: 'INVALID', data: {} }), TypeError);
+    await log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: {} });
+    await assert.rejects(log.append({ projectId: PROJECT, eventType: 'PROJECT_UPDATED', data: {} }), { code: 'ZION_EVENT_LOG_TOO_LARGE' });
+    assert.equal(log.snapshot().count, 1);
+    log.close();
+  } finally { f.cleanup(); }
+});
+
+test('event log exposes bounded signed records that remote peers can verify', async () => {
+  const f = fixture();
+  try {
+    let now = 1_800_000_000_000;
+    const log = new SignedProjectEventLog(f.path, { identity: f.identity, now: () => now });
+    await log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: { name: 'alpha' } });
+    now += 1;
+    await log.append({ projectId: PROJECT, eventType: 'PROJECT_UPDATED', data: { version: 2 } });
+    const page = log.snapshotRecords({ afterSequence: 0, limit: 1 });
+    assert.equal(page.fromSequence, 1);
+    assert.equal(page.nextSequence, 2);
+    assert.equal(page.lastSequence, 2);
+    assert.equal(page.records.length, 1);
+    const verified = verifySignedProjectEventRecord(page.records[0], { now, maxClockSkewMs: 120_000 });
+    assert.equal(verified.ok, true);
+    assert.equal(verified.nodeId, f.identity.nodeId);
+    assert.equal(verified.event.sequence, 1);
+    const tampered = JSON.parse(JSON.stringify(page.records[0]));
+    tampered.recordHash = 'f'.repeat(64);
+    assert.equal(verifySignedProjectEventRecord(tampered, { now, maxClockSkewMs: 120_000 }).ok, false);
+    assert.equal(log.snapshotRecords({ afterSequence: 1, limit: 256 }).records.length, 1);
+    assert.throws(() => log.snapshotRecords({ afterSequence: -1 }), /replication cursor/);
+    log.close();
+  } finally { f.cleanup(); }
+});
+
+
+test('event log isolates signed payloads from caller-owned nested objects', async () => {
+  const f = fixture();
+  try {
+    const log = new SignedProjectEventLog(f.path, { identity: f.identity });
+    const original = { metadata: { labels: ['trusted'] } };
+    const appended = await log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: original });
+    original.metadata.labels[0] = 'tampered';
+    original.metadata.labels.push('injected');
+
+    assert.deepEqual(log.snapshot().events[0].data, { metadata: { labels: ['trusted'] } });
+    assert.deepEqual(appended.data, { metadata: { labels: ['trusted'] } });
+    assert.throws(() => { appended.data.metadata.labels[0] = 'changed'; }, TypeError);
+
+    const record = log.snapshotRecords().records[0];
+    const verified = verifySignedProjectEventRecord(record);
+    assert.equal(verified.ok, true);
+    assert.deepEqual(verified.event.data, { metadata: { labels: ['trusted'] } });
+    log.close();
+  } finally { f.cleanup(); }
+});
+
+test('event log snapshots and replication pages cannot mutate internal records', async () => {
+  const f = fixture();
+  try {
+    const log = new SignedProjectEventLog(f.path, { identity: f.identity });
+    await log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: { nested: { value: 1 } } });
+
+    const snapshot = log.snapshot();
+    assert.throws(() => { snapshot.events[0].data.nested.value = 2; }, TypeError);
+    const page = log.snapshotRecords();
+    assert.throws(() => { page.records[0].envelope.payload.data.nested.value = 3; }, TypeError);
+
+    const fresh = log.snapshotRecords().records[0];
+    assert.equal(verifySignedProjectEventRecord(fresh).ok, true);
+    assert.equal(verifySignedProjectEventRecord(fresh).event.data.nested.value, 1);
+    log.close();
+  } finally { f.cleanup(); }
+});
+
+test('event log rejects non-JSON, accessor-backed, and cyclic payload values', async () => {
+  const f = fixture();
+  try {
+    const log = new SignedProjectEventLog(f.path, { identity: f.identity });
+    const cyclic = {};
+    cyclic.self = cyclic;
+    const accessor = {};
+    Object.defineProperty(accessor, 'secret', { enumerable: true, get() { return 'value'; } });
+    await assert.rejects(log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: { nested: undefined } }), TypeError);
+    await assert.rejects(log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: cyclic }), TypeError);
+    await assert.rejects(log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: accessor }), TypeError);
+    assert.equal(log.snapshot().count, 0);
+    log.close();
+  } finally { f.cleanup(); }
+});
+
+test('event log serializes concurrent appends into a single sequence', async () => {
+  const f = fixture();
+  try {
+    const log = new SignedProjectEventLog(f.path, { identity: f.identity });
+    const results = await Promise.all(Array.from({ length: 20 }, (_, i) =>
+      log.append({ projectId: PROJECT, eventType: 'ACTIVITY_RECORDED', data: { index: i } })));
+    assert.deepEqual(results.map(x => x.sequence), Array.from({ length: 20 }, (_, i) => i + 1));
+    assert.equal(log.snapshot().count, 20);
+    log.close();
+  } finally { f.cleanup(); }
+});
+
+
+test('replica durably accepts authorized contiguous records, deduplicates, and recovers after restart', async () => {
+  const f = fixture();
+  const replicaPath = join(f.dir, 'replica.events');
+  try {
+    let now = 1_800_000_000_000;
+    const source = new SignedProjectEventLog(f.path, { identity: f.identity, now: () => now });
+    await source.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: { name: 'replicated' } });
+    now += 1;
+    await source.append({ projectId: PROJECT, eventType: 'PROJECT_UPDATED', data: { version: 2 } });
+    const records = source.snapshotRecords({ limit: 2 }).records;
+    const replica = new SignedProjectEventReplica(replicaPath, {
+      authorizePeer: (nodeId, projectId) => nodeId === f.identity.nodeId && projectId === PROJECT,
+      now: () => now,
+    });
+    await assert.rejects(replica.ingest(records[1]), { code: 'ZION_REPLICA_GAP' });
+    const first = await replica.ingest(records[0]);
+    assert.equal(first.accepted, true);
+    const duplicate = await replica.ingest(records[0]);
+    assert.equal(duplicate.duplicate, true);
+    const second = await replica.ingest(records[1]);
+    assert.equal(second.sequence, 2);
+    assert.equal(replica.snapshot().records, 2);
+    replica.close();
+    source.close();
+
+    now += 10_000_000_000;
+    const recovered = new SignedProjectEventReplica(replicaPath, {
+      authorizePeer: () => true,
+      now: () => now,
+    });
+    assert.equal(recovered.snapshot().records, 2);
+    assert.equal(recovered.snapshot().peers[0].sequence, 2);
+    recovered.close();
+  } finally { f.cleanup(); }
+});
+
+test('replica rejects peers not authorized for the event project', async () => {
+  const f = fixture();
+  try {
+    let now = 1_800_000_000_000;
+    const source = new SignedProjectEventLog(f.path, { identity: f.identity, now: () => now });
+    await source.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: {} });
+    const record = source.snapshotRecords().records[0];
+    const replica = new SignedProjectEventReplica(join(f.dir, 'unauthorized.events'), {
+      authorizePeer: () => false,
+      now: () => now,
+    });
+    await assert.rejects(replica.ingest(record), { code: 'ZION_REPLICA_UNAUTHORIZED' });
+    assert.equal(replica.snapshot().records, 0);
+    replica.close();
+    source.close();
+  } finally { f.cleanup(); }
+});
+
+
+test('replica detects equivocation when one peer signs conflicting events at the same sequence', async () => {
+  const f = fixture();
+  const alternatePath = join(f.dir, 'alternate.events');
+  try {
+    let now = 1_800_000_000_000;
+    const firstLog = new SignedProjectEventLog(f.path, { identity: f.identity, now: () => now });
+    const alternateLog = new SignedProjectEventLog(alternatePath, { identity: f.identity, now: () => now });
+    await firstLog.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: { name: 'canonical' } });
+    await alternateLog.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: { name: 'conflicting' } });
+    const firstRecord = firstLog.snapshotRecords().records[0];
+    const conflictingRecord = alternateLog.snapshotRecords().records[0];
+    const replica = new SignedProjectEventReplica(join(f.dir, 'equivocation.events'), {
+      authorizePeer: () => true,
+      now: () => now,
+    });
+    await replica.ingest(firstRecord);
+    await assert.rejects(replica.ingest(conflictingRecord), { code: 'ZION_REPLICA_EQUIVOCATION' });
+    assert.equal(replica.snapshot().records, 1);
+    replica.close();
+    firstLog.close();
+    alternateLog.close();
+  } finally { f.cleanup(); }
+});
+
+
+test('replica fails closed on a truncated durable record after restart', async () => {
+  const f = fixture();
+  const replicaPath = join(f.dir, 'truncated-replica.events');
+  try {
+    let now = 1_800_000_000_000;
+    const source = new SignedProjectEventLog(f.path, { identity: f.identity, now: () => now });
+    await source.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: {} });
+    const record = source.snapshotRecords().records[0];
+    const replica = new SignedProjectEventReplica(replicaPath, {
+      authorizePeer: () => true,
+      now: () => now,
+    });
+    await replica.ingest(record);
+    replica.close();
+    source.close();
+
+    const persisted = readFileSync(replicaPath);
+    writeFileSync(replicaPath, persisted.subarray(0, persisted.length - 2));
+    assert.throws(() => new SignedProjectEventReplica(replicaPath, {
+      authorizePeer: () => true,
+      now: () => now,
+    }), { code: 'ZION_REPLICA_CORRUPT' });
+  } finally { f.cleanup(); }
+});
+
+test('replica enforces a global record limit before durable append', async () => {
+  const f = fixture();
+  try {
+    let now = 1_800_000_000_000;
+    const source = new SignedProjectEventLog(f.path, { identity: f.identity, now: () => now });
+    await source.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: { n: 1 } });
+    now += 1;
+    await source.append({ projectId: PROJECT, eventType: 'PROJECT_UPDATED', data: { n: 2 } });
+    const records = source.snapshotRecords({ limit: 2 }).records;
+    const replica = new SignedProjectEventReplica(join(f.dir, 'bounded-replica.events'), {
+      authorizePeer: () => true,
+      maxRecords: 1,
+      now: () => now,
+    });
+    await replica.ingest(records[0]);
+    await assert.rejects(replica.ingest(records[1]), { code: 'ZION_REPLICA_TOO_LARGE' });
+    assert.equal(replica.snapshot().records, 1);
+    replica.close();
+    source.close();
+  } finally { f.cleanup(); }
+});
+
+
+test('event log refuses to release its writer lock while appends are pending', async () => {
+  const f = fixture();
+  try {
+    const log = new SignedProjectEventLog(f.path, { identity: f.identity });
+    const pending = log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: {} });
+    assert.throws(() => log.close(), { code: 'ZION_EVENT_LOG_BUSY' });
+    await pending;
+    log.close();
+    const reopened = new SignedProjectEventLog(f.path, { identity: f.identity });
+    assert.equal(reopened.snapshot().count, 1);
+    reopened.close();
+  } finally { f.cleanup(); }
+});
+
+test('replica refuses to release its writer lock while ingests are pending', async () => {
+  const f = fixture();
+  try {
+    const source = new SignedProjectEventLog(f.path, { identity: f.identity });
+    await source.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: {} });
+    const record = source.snapshotRecords().records[0];
+    const replicaPath = join(f.dir, 'pending-close-replica.events');
+    const replica = new SignedProjectEventReplica(replicaPath, { authorizePeer: () => true });
+    const pending = replica.ingest(record);
+    assert.throws(() => replica.close(), { code: 'ZION_REPLICA_BUSY' });
+    await pending;
+    replica.close();
+    const reopened = new SignedProjectEventReplica(replicaPath, { authorizePeer: () => true });
+    assert.equal(reopened.snapshot().records, 1);
+    reopened.close();
+    source.close();
+  } finally { f.cleanup(); }
+});
+
+
+test('event log rolls back a deterministic partial write and remains poisoned until restart', async t => {
+  const f = fixture();
+  const log = new SignedProjectEventLog(f.path, { identity: f.identity });
+  const originalWrite = fs.writeSync.bind(fs);
+  let injected = false;
+  try {
+    t.mock.method(fs, 'writeSync', (...args) => {
+      if (!injected) {
+        injected = true;
+        originalWrite(args[0], args[1], args[2], Math.min(7, args[3]));
+        throw Object.assign(new Error('injected partial write failure'), { code: 'EIO' });
+      }
+      return originalWrite(...args);
+    });
+    syncBuiltinESMExports();
+    await assert.rejects(
+      log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: { value: 'must-roll-back' } }),
+      { code: 'EIO', rollbackSucceeded: true },
+    );
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+
+    assert.equal(readFileSync(f.path).length, 0);
+    assert.equal(log.snapshot().count, 0);
+    await assert.rejects(
+      log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: {} }),
+      { code: 'ZION_EVENT_LOG_UNAVAILABLE' },
+    );
+    log.close();
+
+    const recovered = new SignedProjectEventLog(f.path, { identity: f.identity });
+    assert.equal(recovered.snapshot().count, 0);
+    recovered.close();
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    try { log.close(); } catch { /* Preserve the test failure. */ }
+    f.cleanup();
+  }
+});
+
+test('replica rolls back a deterministic partial write and remains poisoned until restart', async t => {
+  const f = fixture();
+  const source = new SignedProjectEventLog(f.path, { identity: f.identity });
+  const replicaPath = join(f.dir, 'partial-write-replica.events');
+  let replica;
+  const originalWrite = fs.writeSync.bind(fs);
+  let injected = false;
+  try {
+    await source.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: { value: 'replicated' } });
+    const record = source.snapshotRecords().records[0];
+    replica = new SignedProjectEventReplica(replicaPath, { authorizePeer: () => true });
+
+    t.mock.method(fs, 'writeSync', (...args) => {
+      if (!injected) {
+        injected = true;
+        originalWrite(args[0], args[1], args[2], Math.min(7, args[3]));
+        throw Object.assign(new Error('injected partial write failure'), { code: 'EIO' });
+      }
+      return originalWrite(...args);
+    });
+    syncBuiltinESMExports();
+    await assert.rejects(replica.ingest(record), { code: 'EIO', rollbackSucceeded: true });
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+
+    assert.equal(readFileSync(replicaPath).length, 0);
+    assert.equal(replica.snapshot().records, 0);
+    await assert.rejects(replica.ingest(record), { code: 'ZION_REPLICA_UNAVAILABLE' });
+    replica.close();
+
+    const recovered = new SignedProjectEventReplica(replicaPath, { authorizePeer: () => true });
+    assert.equal(recovered.snapshot().records, 0);
+    recovered.close();
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    try { replica?.close(); } catch { /* Preserve the test failure. */ }
+    source.close();
+    f.cleanup();
+  }
+});
+
+
+test('event log rolls back when directory fsync fails after the record fsync', async t => {
+  const f = fixture();
+  const log = new SignedProjectEventLog(f.path, { identity: f.identity });
+  const originalFsync = fs.fsyncSync.bind(fs);
+  let calls = 0;
+  try {
+    t.mock.method(fs, 'fsyncSync', fd => {
+      calls++;
+      if (calls === 2) throw Object.assign(new Error('injected directory fsync failure'), { code: 'EIO' });
+      return originalFsync(fd);
+    });
+    syncBuiltinESMExports();
+    await assert.rejects(
+      log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: { value: 'rollback-after-dir-fsync' } }),
+      { code: 'EIO', rollbackSucceeded: true },
+    );
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+
+    assert.equal(calls, 3);
+    assert.equal(readFileSync(f.path).length, 0);
+    assert.equal(log.snapshot().count, 0);
+    await assert.rejects(log.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: {} }),
+      { code: 'ZION_EVENT_LOG_UNAVAILABLE' });
+    log.close();
+
+    const recovered = new SignedProjectEventLog(f.path, { identity: f.identity });
+    assert.equal(recovered.snapshot().count, 0);
+    recovered.close();
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    try { log.close(); } catch { /* Preserve the test failure. */ }
+    f.cleanup();
+  }
+});
+
+test('replica rolls back when directory fsync fails after the record fsync', async t => {
+  const f = fixture();
+  const source = new SignedProjectEventLog(f.path, { identity: f.identity });
+  const replicaPath = join(f.dir, 'directory-fsync-replica.events');
+  const replica = new SignedProjectEventReplica(replicaPath, { authorizePeer: () => true });
+  const originalFsync = fs.fsyncSync.bind(fs);
+  let calls = 0;
+  try {
+    await source.append({ projectId: PROJECT, eventType: 'PROJECT_CREATED', data: { value: 'replicated' } });
+    const record = source.snapshotRecords().records[0];
+    t.mock.method(fs, 'fsyncSync', fd => {
+      calls++;
+      if (calls === 2) throw Object.assign(new Error('injected directory fsync failure'), { code: 'EIO' });
+      return originalFsync(fd);
+    });
+    syncBuiltinESMExports();
+    await assert.rejects(replica.ingest(record), { code: 'EIO', rollbackSucceeded: true });
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+
+    assert.equal(calls, 3);
+    assert.equal(readFileSync(replicaPath).length, 0);
+    assert.equal(replica.snapshot().records, 0);
+    await assert.rejects(replica.ingest(record), { code: 'ZION_REPLICA_UNAVAILABLE' });
+    replica.close();
+
+    const recovered = new SignedProjectEventReplica(replicaPath, { authorizePeer: () => true });
+    assert.equal(recovered.snapshot().records, 0);
+    recovered.close();
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    try { replica.close(); } catch { /* Preserve the test failure. */ }
+    source.close();
+    f.cleanup();
+  }
+});

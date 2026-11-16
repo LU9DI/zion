@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f8fa">
+  <meta name="description" content="Join Zion with an invitation from a member.">
+  <title>Join Zion — Invitation access</title>
+  <style>
+    :root{color-scheme:light;--ink:#20283a;--muted:#788397;--line:#e5e9f0;--primary:#535fce;--surface:#fff}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;background:#f7f8fb;color:var(--ink);font:15px/1.55 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;display:grid;place-items:center;padding:24px}
+    main{width:min(100%,440px)}.brand{display:flex;align-items:center;gap:11px;margin-bottom:34px;font-size:19px;font-weight:800;letter-spacing:-.5px}.mark{width:38px;height:38px;border-radius:12px;background:var(--primary);color:white;display:grid;place-items:center;font-weight:800}
+    .card{background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:32px;box-shadow:0 18px 55px #20283a0b}
+    .eyebrow{color:var(--primary);font-size:11px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;margin:0 0 12px}h1{font-size:30px;line-height:1.15;letter-spacing:-1px;margin:0 0 12px}p{color:var(--muted);margin:0 0 24px}
+    label{display:block;font-size:12px;font-weight:700;margin-bottom:8px}input{width:100%;height:48px;border:1px solid #dce2ec;border-radius:10px;padding:0 13px;font:inherit;color:var(--ink);outline:none}input:focus{border-color:var(--primary);box-shadow:0 0 0 3px #535fce1c}button{width:100%;height:48px;margin-top:14px;border:0;border-radius:10px;background:var(--primary);color:white;font:700 14px inherit;cursor:pointer}button:disabled{opacity:.55;cursor:not-allowed}
+    .notice{margin-top:18px;padding:13px 14px;border-radius:10px;background:#f4f6fa;color:#667287;font-size:12px}.notice strong{display:block;color:var(--ink);margin-bottom:3px}.status{min-height:20px;margin:12px 0 0;font-size:12px;color:#9b5b24}.footer{text-align:center;margin-top:20px;font-size:11px;color:#9aa3b1}
+    @media(max-width:480px){body{padding:18px}.card{padding:25px 21px}h1{font-size:27px}}
+  </style>
+</head>
+<body>
+  <main>
+    <div class="brand"><span class="mark" aria-hidden="true">Z</span><span>zion</span></div>
+    <section class="card" aria-labelledby="title">
+      <p class="eyebrow">Invitation-only network</p>
+      <h1 id="title">Your network starts with an invitation.</h1>
+      <p>Enter an invitation code shared by a Zion member to begin joining the network.</p>
+      <form id="invite-form">
+        <label for="invite-code">Invitation code</label>
+        <input id="invite-code" name="code" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="256" placeholder="Paste your invitation code" required>
+        <button type="submit">Continue</button>
+        <p class="status" id="status" role="status" aria-live="polite"></p>
+      </form>
+      <div class="notice"><strong>Invitation access preview</strong>Invitation verification and account creation are not connected to the Zion network yet. This page does not redeem, consume, or transmit your code.</div>
+    </section>
+    <div class="footer">Zion · A member-powered, decentralized network</div>
+  </main>
+  <script>
+    const form = document.querySelector("#invite-form");
+    const code = document.querySelector("#invite-code");
+    const status = document.querySelector("#status");
+    form.addEventListener("submit", event => {
+      event.preventDefault();
+      if (!code.value.trim()) {
+        status.textContent = "Enter an invitation code to continue.";
+        return;
+      }
+      status.textContent = "Invitation verification is not available in this preview. Your code has not been sent or used.";
+    });
+  </script>
+</body>
+</html>

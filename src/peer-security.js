@@ -32,16 +32,20 @@ export function signPeerMessage(identity, payload, { now = Date.now(), nonce = r
 }
 
 /** Stateless signature/schema validation; freshness and replay checks are separate. */
-export function verifyPeerMessage(message, { now = Date.now(), maxClockSkewMs = 120_000, maxBytes = MAX_MESSAGE_BYTES } = {}) {
+export function verifyPeerMessage(message, { now = Date.now(), maxClockSkewMs = 120_000, maxAgeMs = maxClockSkewMs, maxFutureSkewMs = maxClockSkewMs, maxBytes = MAX_MESSAGE_BYTES } = {}) {
   try {
     if (!Number.isFinite(now)) return { ok: false, reason: 'invalid-clock' };
     // Invalid verification policy must not silently disable freshness or size checks.
     if (!Number.isFinite(maxClockSkewMs) || maxClockSkewMs < 0 ||
+        !Number.isSafeInteger(maxAgeMs) || maxAgeMs < 0 ||
+        !Number.isSafeInteger(maxFutureSkewMs) || maxFutureSkewMs < 0 ||
         !Number.isSafeInteger(maxBytes) || maxBytes < 1) {
       return { ok: false, reason: 'invalid-verification-options' };
     }
     if (!message || message.version !== 1 || typeof message.nodeId !== 'string' || !/^[a-f0-9]{64}$/.test(message.nodeId)) return { ok: false, reason: 'invalid-envelope' };
-    if (typeof message.timestamp !== 'number' || !Number.isSafeInteger(message.timestamp) || Math.abs(now - message.timestamp) > maxClockSkewMs) return { ok: false, reason: 'stale-timestamp' };
+    if (typeof message.timestamp !== 'number' || !Number.isSafeInteger(message.timestamp) ||
+        (message.timestamp > now && message.timestamp - now > maxFutureSkewMs) ||
+        (message.timestamp <= now && now - message.timestamp > maxAgeMs)) return { ok: false, reason: 'stale-timestamp' };
     if (typeof message.nonce !== 'string' || !/^[a-f0-9]{32,128}$/.test(message.nonce)) return { ok: false, reason: 'invalid-nonce' };
     if (typeof message.publicKeyPem !== 'string' || typeof message.signature !== 'string' || !message.payload || typeof message.payload !== 'object') return { ok: false, reason: 'invalid-envelope' };
     const body = { version: message.version, nodeId: message.nodeId, timestamp: message.timestamp, nonce: message.nonce, payload: message.payload };

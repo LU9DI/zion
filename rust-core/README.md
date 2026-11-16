@@ -14,7 +14,7 @@ The API never accepts quota changes from peer messages. The Rust code does not h
 
 ## Build and test
 
-Requires Rust/Cargo and access to the `sha2` crate on the first build:
+Requires Rust 1.89 or newer / Cargo and access to the `sha2` crate on the first build:
 
 ```sh
 cargo test --manifest-path rust-core/Cargo.toml
@@ -24,7 +24,7 @@ cargo test --manifest-path rust-core/Cargo.toml
 
 - The Rust crate is not yet wired into the Node.js `OpaqueReplicaStore`; the existing JavaScript path remains the active runtime path in this release.
 - This quota counts stored payload files, not filesystem metadata, unrelated files, logs, or all transient disk usage. It is not an OS-enforced disk boundary.
-- The directory lock coordinates cooperating instances but is not a security boundary against a malicious process running as the same OS user. Crash-stale lock recovery is deliberately conservative and currently requires operator intervention.
+- Cross-process coordination uses a persistent lock file and the operating system's advisory file-lock API. The lock file is never deleted during normal operation; the OS releases the lock when the owning handle closes or its process exits. All writers must cooperate with this protocol. Advisory locking is not a security boundary against malicious processes running as the same OS user, and filesystem-specific semantics still require validation.
 - A dedicated filesystem/volume or kernel-enforced quota, platform-specific enforcement, and adversarial multi-process tests are still required before describing the storage ceiling as hard.
 - The current implementation is an experimental foundation; do not expose the peer transport to the public internet.
 

@@ -36,26 +36,26 @@ test('cloud preview serves the UI and assets with defensive headers', async t =>
   assert.match(html.headers.get('content-type'), /text\/html/);
   assert.match(html.headers.get('content-security-policy'), /default-src 'self'/);
   const htmlBody = await html.text();
-  assert.match(htmlBody, /Meus arquivos/);
-  assert.match(htmlBody, /Social e mensagens/);
+  assert.match(htmlBody, /My files/);
+  assert.match(htmlBody, /Social & messages/);
   assert.match(htmlBody, /data-page="notificacoes"/);
-  assert.match(htmlBody, /Central de notificações/);
+  assert.match(htmlBody, /Notification center/);
   assert.match(htmlBody, /inactivity-notifications-api-client\.js/);
-  assert.match(htmlBody, /mensagens não são entregues a outros usuários/i);
+  assert.match(htmlBody, /Messages are not delivered to other users/i);
   const css = await fetch(`${base}/styles.css`);
   assert.equal(css.status, 200);
   assert.match(css.headers.get('content-type'), /text\/css/);
   const js = await fetch(`${base}/app.js`);
   assert.equal(js.status, 200);
   const jsBody = await js.text();
-  assert.match(jsBody, /Adicionado\(s\) à visualização local/);
+  assert.match(jsBody, /added to the local preview/);
   assert.match(jsBody, /function renderPeople/);
   assert.match(jsBody, /function renderNotifications/);
-  assert.match(jsBody, /Marcar como visualizada/);
+  assert.match(jsBody, /Mark as read/);
   const notificationsClient = await fetch(`${base}/inactivity-notifications-api-client.js`);
   assert.equal(notificationsClient.status, 200);
   assert.match(await notificationsClient.text(), /markViewed/);
-  assert.match(jsBody, /Mensagem registrada nesta prévia; não foi enviada pela rede/);
+  assert.match(jsBody, /Message saved in this preview; it was not sent over the network/);
 });
 
 test('cloud preview rejects unsupported methods and missing paths', async t => {

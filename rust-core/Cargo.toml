@@ -2,6 +2,7 @@
 name = "rea-storage-core"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.89"
 description = "Experimental Rust storage core for REA Cloud"
 
 [lib]

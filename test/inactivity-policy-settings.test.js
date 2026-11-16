@@ -26,7 +26,7 @@ test('rejects pause warning after the pause deadline', () => {
   const api = loadSettings();
   const result = api.validate({ ...api.defaults, pauseWarningAtDays: 14 });
   assert.equal(result.ok, false);
-  assert.match(result.error, /aviso da pausa/);
+  assert.match(result.error, /pause warning/);
 });
 
 test('rejects reduction deadlines that precede or equal their warning', () => {
@@ -60,7 +60,7 @@ test('falls back safely when storage is unavailable or contains invalid data', (
 
 test('cannot claim the settings are applied to a node', () => {
   const api = loadSettings();
-  assert.match(api.preview(api.defaults).note, /só serão aplicados a um nó quando houver backend conectado/);
+  assert.match(api.preview(api.defaults).note, /will only apply to a node when a backend is connected/);
 });
 
 test('cloud settings page exposes accessible controls and loads the settings model first', () => {
@@ -72,5 +72,5 @@ test('cloud settings page exposes accessible controls and loads the settings mod
   assert.match(html, /id="idle-reduction-percent"/);
   assert.match(html, /id="inactivity-preview-text"/);
   assert.ok(html.indexOf('inactivity-settings.js') < html.indexOf('app.js'));
-  assert.match(html, /não altera um nó real/);
+  assert.match(html, /does not change a real node/);
 });
