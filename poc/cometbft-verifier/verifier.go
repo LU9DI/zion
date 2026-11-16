@@ -16,6 +16,16 @@ const (
 	MaxTransactionsPerBlock = 10_000
 	MaxTransactionBytes     = 1 << 20
 	MaxBlockDataBytes       = 16 << 20
+	// MaxCommitSignatures bounds the untrusted commit signature vector before
+	// any per-entry validation or protobuf conversion allocates work for it.
+	// A commit signature vector must be exactly the validator-set size, so this
+	// is also an upper bound on an acceptable validator set. The value is the
+	// pinned CometBFT release's own vote-count limit, not a new parameter: a
+	// larger commit cannot pass that release's ValidateBasic in any case.
+	MaxCommitSignatures = types.MaxVotesCount
+	// MaxValidatorSetSize bounds a caller-supplied validator set for the same
+	// reason: every per-validator check below is linear in this value.
+	MaxValidatorSetSize = types.MaxVotesCount
 )
 
 var (
@@ -32,6 +42,7 @@ var (
 	ErrDataHashMismatch      = errors.New("header data hash does not match supplied ordered transactions")
 	ErrDataBounds            = errors.New("block transaction data exceeds verifier bounds")
 	ErrSignatureVectorLength = errors.New("commit signature vector length does not match validator set")
+	ErrValidatorSetBounds    = errors.New("validator set exceeds verifier bounds")
 )
 
 // Evidence carries the expected project-chain context alongside a CometBFT
@@ -88,6 +99,17 @@ func VerifyCommitEvidence(e Evidence, validators *types.ValidatorSet) error {
 	if !e.BlockID.IsComplete() {
 		return fmt.Errorf("expected block ID is incomplete")
 	}
+	// Bound the untrusted signature vector and the caller-supplied validator set
+	// before validating, hashing, or verifying anything that is linear in their
+	// size. Without this ordering an oversized commit is walked entry by entry
+	// (Commit.ValidateBasic and VerifyCommit) before the length agreement is
+	// ever established.
+	if validators.Size() > MaxValidatorSetSize || len(e.Commit.Signatures) > MaxCommitSignatures {
+		return ErrSignatureVectorLength
+	}
+	if len(e.Commit.Signatures) != validators.Size() {
+		return ErrSignatureVectorLength
+	}
 	if len(e.ValidatorSetHash) == 0 || !bytes.Equal(validators.Hash(), e.ValidatorSetHash) {
 		return ErrValidatorSetMismatch
 	}
@@ -108,9 +130,6 @@ func VerifyCommitEvidence(e Evidence, validators *types.ValidatorSet) error {
 	}
 	if e.Commit.Height != e.Height || !e.Commit.BlockID.Equals(e.BlockID) {
 		return ErrCommitMismatch
-	}
-	if len(e.Commit.Signatures) != validators.Size() {
-		return ErrSignatureVectorLength
 	}
 
 	// VerifyCommit checks the >2/3 voting-power threshold and all signatures.
@@ -160,6 +179,16 @@ func verifyPostBlockAnchor(e Evidence, anchor *PostBlockAnchor, replayedAppHash 
 	next := anchor.Header
 	if e.Header == nil || e.Commit == nil || next == nil || anchor.Commit == nil || anchor.Validators == nil {
 		return ErrMissingPostBlockAnchor
+	}
+	// The anchor commit is supplied alongside the anchor header rather than
+	// derived from it, so its size must be bounded and must match the anchor
+	// validator set before its entries are validated or verified.
+	if anchor.Validators.Size() > MaxValidatorSetSize ||
+		len(anchor.Commit.Signatures) > MaxCommitSignatures {
+		return ErrSignatureVectorLength
+	}
+	if len(anchor.Commit.Signatures) != anchor.Validators.Size() {
+		return ErrSignatureVectorLength
 	}
 	if e.Height == int64(^uint64(0)>>1) || next.Height != e.Height+1 ||
 		next.ChainID != e.ChainID || !next.LastBlockID.Equals(e.BlockID) ||
@@ -247,6 +276,18 @@ type ProtoEvidence struct {
 func VerifyProtoCommitEvidence(e ProtoEvidence) error {
 	if e.BlockID == nil || e.Header == nil || e.ValidatorSet == nil || e.Commit == nil {
 		return ErrMissingEvidence
+	}
+	// Bound the untrusted protobuf vectors before CometBFT's conversion helpers
+	// allocate one Go object per element. The conversions below are linear in
+	// these counts, so the bound must be enforced on the wire representation.
+	if len(e.Commit.Signatures) > MaxCommitSignatures {
+		return ErrSignatureVectorLength
+	}
+	if len(e.ValidatorSet.Validators) > MaxValidatorSetSize {
+		return ErrValidatorSetBounds
+	}
+	if len(e.Transactions) > MaxTransactionsPerBlock {
+		return ErrDataBounds
 	}
 	validators, err := types.ValidatorSetFromProto(e.ValidatorSet)
 	if err != nil {

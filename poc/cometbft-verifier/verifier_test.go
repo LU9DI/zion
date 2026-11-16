@@ -537,3 +537,107 @@ func TestVerifyCommitEvidenceWithReplayRejectsWrongGenesisState(t *testing.T) {
 		t.Fatalf("expected replayed app hash mismatch, got %v", err)
 	}
 }
+
+// oversizedSignatures returns a commit signature vector that exceeds
+// MaxCommitSignatures and whose entries are individually invalid. If the
+// verifier validated entries before enforcing the bound, the test would observe
+// a structural error instead of ErrSignatureVectorLength.
+func oversizedSignatures() []types.CommitSig {
+	signatures := make([]types.CommitSig, MaxCommitSignatures+1)
+	for i := range signatures {
+		signatures[i] = types.CommitSig{BlockIDFlag: 0}
+	}
+	return signatures
+}
+
+func oversizedValidatorSet(t *testing.T) *types.ValidatorSet {
+	t.Helper()
+	validators := make([]*types.Validator, MaxValidatorSetSize+1)
+	for i := range validators {
+		// CometBFT requires unique validator addresses in a set.
+		validators[i] = types.NewValidator(types.NewMockPV().PrivKey.PubKey(), 1)
+	}
+	return types.NewValidatorSet(validators)
+}
+
+func TestVerifyCommitEvidenceBoundsSignatureVectorBeforeEntryValidation(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	evidence.Commit.Signatures = oversizedSignatures()
+	err := VerifyCommitEvidence(evidence, validators)
+	if !errors.Is(err, ErrSignatureVectorLength) {
+		t.Fatalf("oversized commit signature vector error = %v, want ErrSignatureVectorLength", err)
+	}
+}
+
+func TestVerifyCommitEvidenceBoundsValidatorSetBeforeEntryValidation(t *testing.T) {
+	evidence, _ := signedEvidence(t)
+	oversized := oversizedValidatorSet(t)
+	err := VerifyCommitEvidence(evidence, oversized)
+	if !errors.Is(err, ErrSignatureVectorLength) {
+		t.Fatalf("oversized validator set error = %v, want ErrSignatureVectorLength", err)
+	}
+}
+
+func TestVerifyCommitEvidenceWithReplayBoundsAnchorSignatureVector(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	initial := newTestState(t, "project-alpha", "genesis-alpha")
+	evidence.PostBlockAnchor.Commit.Signatures = oversizedSignatures()
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial, evidence.PostBlockAnchor); !errors.Is(err, ErrSignatureVectorLength) {
+		t.Fatalf("oversized anchor signature vector error = %v, want ErrSignatureVectorLength", err)
+	}
+	if initial.Sequence() != 0 {
+		t.Fatalf("pre-block state mutated on rejected anchor: sequence=%d", initial.Sequence())
+	}
+}
+
+func TestVerifyCommitEvidenceWithReplayRejectsShortAnchorSignatureVector(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	initial := newTestState(t, "project-alpha", "genesis-alpha")
+	evidence.PostBlockAnchor.Commit.Signatures = evidence.PostBlockAnchor.Commit.Signatures[:2]
+	if _, err := VerifyCommitEvidenceWithReplay(evidence, validators, initial, evidence.PostBlockAnchor); !errors.Is(err, ErrSignatureVectorLength) {
+		t.Fatalf("short anchor signature vector error = %v, want ErrSignatureVectorLength", err)
+	}
+}
+
+func TestVerifyProtoCommitEvidenceBoundsUntrustedWireVectors(t *testing.T) {
+	evidence, validators := signedEvidence(t)
+	validatorProto, err := validators.ToProto()
+	if err != nil {
+		t.Fatalf("encode validator set: %v", err)
+	}
+	blockIDProto := evidence.BlockID.ToProto()
+	base := ProtoEvidence{
+		ChainID:               evidence.ChainID,
+		Height:                evidence.Height,
+		BlockID:               &blockIDProto,
+		Header:                evidence.Header.ToProto(),
+		ValidatorSet:          validatorProto,
+		ExpectedValidatorHash: append([]byte(nil), evidence.ValidatorSetHash...),
+		ExpectedPreBlockAppHash:  append([]byte(nil), evidence.ExpectedPreBlockAppHash...),
+		ExpectedPostBlockAppHash: append([]byte(nil), evidence.ExpectedPostBlockAppHash...),
+		Transactions:          cloneTransactions(evidence.Transactions),
+		Commit:                evidence.Commit.ToProto(),
+	}
+
+	oversizedCommit := *base.Commit
+	oversizedCommit.Signatures = make([]cmtproto.CommitSig, MaxCommitSignatures+1)
+	wire := base
+	wire.Commit = &oversizedCommit
+	if err := VerifyProtoCommitEvidence(wire); !errors.Is(err, ErrSignatureVectorLength) {
+		t.Fatalf("oversized wire commit error = %v, want ErrSignatureVectorLength", err)
+	}
+
+	oversizedSet := *base.ValidatorSet
+	oversizedSet.Validators = make([]*cmtproto.Validator, MaxValidatorSetSize+1)
+	wire = base
+	wire.ValidatorSet = &oversizedSet
+	if err := VerifyProtoCommitEvidence(wire); !errors.Is(err, ErrValidatorSetBounds) {
+		t.Fatalf("oversized wire validator set error = %v, want ErrValidatorSetBounds", err)
+	}
+
+	wire = base
+	wire.Transactions = make([][]byte, MaxTransactionsPerBlock+1)
+	if err := VerifyProtoCommitEvidence(wire); !errors.Is(err, ErrDataBounds) {
+		t.Fatalf("oversized wire transaction vector error = %v, want ErrDataBounds", err)
+	}
+}
