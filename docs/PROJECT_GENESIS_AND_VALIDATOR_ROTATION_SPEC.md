@@ -176,6 +176,17 @@ Implementation must not begin until all are satisfied:
 
 No implementation gate may be waived by documentation wording or a successful unit test of an isolated primitive.
 
+## 9.1 Implemented codec-only increment (no ceremony, no policy)
+
+Gate "canonical manifest encoding and cross-runtime test vectors are specified" is the only gate in §9 that can be advanced without any of the undecided inputs. `poc/cometbft-verifier/genesis_manifest.go` therefore implements exactly two things and stops:
+
+- **`ZGN1` v1 canonical genesis-manifest encoding.** The manifest binds schema and encoding versions, project ID, chain ID, a caller-supplied genesis nonce, initial height, the application genesis digest, an initial-height binding, and two opaque digests for the governor policy and the recovery policy, plus the governor list (Ed25519 public key and a required control-domain digest per governor) and a count-based threshold. Encoding is deterministic; the decoder rejects truncation, trailing bytes, unknown versions, checksum mismatch, duplicate governor keys, zero required fields, out-of-range thresholds, and governor counts above the implementation bound. A canonical golden vector pins the bytes and the domain-separated digest. Opaque policy digests are used deliberately: the manifest records that a policy exists and binds it, without selecting a policy here.
+- **Multi-governor acceptance verification.** `SignGenesisManifest`/`VerifyGenesisAcceptance` verify Ed25519 signatures over the domain-separated canonical manifest digest. Verification fails closed: an unstated required-signature count, a policy threshold below the manifest threshold, a threshold above the governor count, a duplicate signer, a signer that is not a manifest governor, a signer excluded by the caller's authorized-key list, and an invalid signature are all errors, never silently skipped. `CheckGenesisAnchor` refuses a manifest whose digest or context differs from the retained acceptance, so a competing genesis for the same project is a conflict rather than a replacement.
+
+What this does **not** implement, and must not be read as implementing: a ceremony, governor or threshold selection, proof-of-possession collection, operator-independence verification, validator eligibility or weights, a DKG or resharing construction, a validator committee, a consensus engine, a trust anchor for later checkpoints, freshness/expiry policy, or any runtime integration. The governor list, the manifest threshold and the acceptance policy are caller inputs. A verified signature set proves only that the listed keys signed the exact manifest bytes; it proves nothing about independence, coercion or collusion.
+
+Still blocked, and unchanged by this increment: every other gate in §9, §5 (validator rotation), §6 (resharing), §7 (recovery policy), and the whole of the companion checkpoint specification's trust-anchor package, which additionally requires deciding trusted height, header hash, validator-set data, freshness parameters and checkpoint authorization.
+
 ## 10. Research basis and limits
 
 - Das et al., *Practical Asynchronous High-threshold Distributed Key Generation and Distributed Polynomial Sampling*, USENIX Security 2023. Demonstrates an asynchronous DKG construction for a defined n=3t+1 model and its use in threshold cryptography; it does not solve validator eligibility or operator independence.

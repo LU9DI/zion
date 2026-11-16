@@ -89,6 +89,46 @@ Allow projects to admit independently, then merge their signed admission histori
 | Safe admission during partition | No; fail closed without quorum | Within each project | Only within preallocated slots | Provisional only |
 | Product-policy change | No, but acknowledges global admission domain | Yes | Yes | Yes |
 
+### 4.1 Dimension-by-dimension comparison
+
+The table in §4 answers "does each option preserve the stated semantics". The decision also has to be made on the dimensions that determine whether the mechanism is safe and operable. Nothing here selects an option.
+
+| Dimension | A: global admission BFT | B: project cohorts | C: distributed slots | D: later reconciliation |
+|---|---|---|---|---|
+| Safety of the founder set | One order; safe under its own quorum assumptions; safety depends entirely on the new domain's genesis bootstrap, validator governance and reconfiguration rules | Locally safe, globally inconsistent: the same identity can be founder in several projects and ordinals collide across projects | Safe slot uniqueness only if allocation is immutable and itself trusted; no contiguous order | No real-time safety: an ordinal can be displayed and then reordered. Needs explicit provisional semantics |
+| Decentralization | Introduces one narrow global trust domain. Its committee, genesis and recovery become the network's most valuable capture target | Preserves the current no-global-committee direction, at the cost of the product invariant | Allocation authority becomes the capture target unless the split is fixed before genesis | Preserves independence; reconciliation rule becomes the capture target |
+| Availability during partition | Fails closed: no quorum means no admissions at all, network-wide | Continues per project | Continues only inside preallocated slots | Continues, but with unresolved status |
+| Throughput and DoS surface | Every redemption is globally serialized: admission rate is bounded by one committee's commit rate, and invitation spam becomes global censorship/queue pressure on the most security-critical domain | No global bottleneck | Bounded by slot allocation | No bottleneck until reconciliation |
+| Sybil resistance | Reduces to "who was admitted first". Unlimited one-time invitations with no quotas mean identity growth is not rate-limited by consensus; the cost must come from anti-abuse policy outside the consensus domain (see `FAIR_USE_AND_ANTI_ABUSE.md`) | Same, per project, but a Sybil can farm founders in several projects | Same, plus slot concentration risk | Same, plus Sybil can exploit reordering races |
+| Founder condition as historical fact | Enforceable: ordinal is committed once and never reassigned | Enforceable per project only | A slot ID is not history | Ordinal is not final until reconciliation |
+| Product impact | Preserves the promise exactly; requires disclosing that admission is globally ordered | Changes the promise; requires explicit product approval | Changes the promise to "1,000 slots, not one cohort"; requires approval | Changes the promise to "provisional founder status"; requires approval |
+| Operational cost | New genesis ceremony, committee operations, monitoring, recovery, and independent security review | Lowest | Medium; allocation ceremony | Medium; reconciliation service or rule |
+
+Two properties of the current requirement deserve emphasis because they bound every option:
+
+1. **Founder status is historical, not a permanent privilege.** Once an ordinal at or below 1,000 is committed, later policy changes must not be able to revoke it or create new founders retroactively. That is a property of the committed state machine, not of the ordering mechanism, and it must be tested for options A, B and C alike.
+2. **Unlimited one-time invitations mean the consensus layer is not the Sybil boundary.** The protocol's Sybil resistance comes from the admission being attributable to an already admitted issuer plus whatever abuse controls operate outside the invitation quota. A global ordering domain adds a serialization point and a censorship surface; it does not add Sybil resistance.
+
+### 4.2 Option E — batched global ratification with explicit provisional status
+
+A fifth option is worth recording because it sits between A and D and is the only way to keep admission availability during partition without giving up eventual global uniqueness:
+
+- each project admits locally and shows the user a provisional "pending global ratification" status with no ordinal;
+- a narrow global domain later ratifies batches, assigning the single global ordinal sequence in ratification order;
+- an ordinal, once ratified, is final; a provisional admission that loses the race is admitted but not a founder.
+
+This preserves eventual uniqueness, availability and the historical-finality property for ratified ordinals. It does not preserve real-time first-come-first-served: a user admitted earlier in a partitioned project can lose the ordinal to a user admitted later in a better-connected project. That is a product-contract change (provisional status must be visible in the UI and in policy copy) and must be approved explicitly, exactly like Options B, C and D.
+
+### 4.3 What the analysis cannot decide
+
+Three inputs are product or governance decisions and must not be inferred by an implementation:
+
+1. Whether a single network-wide founder cohort is required at all (if not, Option B is the cheapest and needs no new trust domain).
+2. Whether provisional founder status is acceptable (if yes, Option E dominates D).
+3. If a global ordering domain is required, whether a *narrow* global admission domain is permitted by the "no global committee" constraint. That constraint currently does not distinguish "global chain for all project state" from "global consensus for the admission operation only".
+
+If input 1 or 2 is answered as "no change acceptable", Option A is the only analysed option that keeps the promise, and its genesis bootstrap can reuse the multi-governor canonical manifest codec described in `PROJECT_GENESIS_AND_VALIDATOR_ROTATION_SPEC.md` §9.1 — the admission domain needs its own authenticated genesis exactly like a project does. That codec verifies signatures and binds a manifest; it does not constitute the domain, the committee, or the admission state machine.
+
 ## 5. Recommendation under the current product requirement
 
 If “first 1,000 Zion users” and contiguous global ordinals are non-negotiable, Option A is the only option in this analysis that directly preserves the stated semantics. The architecture should explicitly acknowledge a dedicated Zion-wide admission BFT domain while keeping project state and project validator committees independent.
@@ -118,5 +158,7 @@ The current governance module, signed event replication, project committees, and
 ## 7. Current implementation boundary
 
 No user invitation redemption, global founder counter, global admission committee, or production membership mutation is implemented by this analysis. No runtime path is changed. Existing invitation redemption remains unavailable until the architecture decision and implementation gates are satisfied.
+
+The only admission-adjacent code merged on this branch is a codec: `poc/cometbft-verifier/genesis_manifest.go` encodes and verifies a canonical multi-governor genesis manifest. It cannot order admissions, consume invitations, assign ordinals, or operate a domain, and it is not wired into any runtime path.
 
 This document does not authorize merge, deployment, release, production database changes, or changes to the project's validator architecture.
