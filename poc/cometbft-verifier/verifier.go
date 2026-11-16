@@ -226,8 +226,26 @@ func verifyPostBlockAnchor(e Evidence, anchor *PostBlockAnchor, replayedAppHash 
 }
 
 func verifyTransactionData(raw [][]byte, expectedDataHash []byte) error {
+	computed, err := hashedTransactionData(raw)
+	if err != nil {
+		return err
+	}
+	// CometBFT represents an empty transaction list with the RFC-6962
+	// Merkle empty-root hash. Do not special-case nil: it is not that root.
+	if !bytes.Equal(computed, expectedDataHash) {
+		return ErrDataHashMismatch
+	}
+	return nil
+}
+
+// hashedTransactionData applies the verifier's count, per-item and aggregate
+// bounds to untrusted ordered transaction bytes and returns the canonical
+// CometBFT data hash computed from them. It is the single DataHash code path
+// shared by commit verification and the block-atomic WAL codec, so a caller
+// can never supply a data hash that disagrees with the bytes it covers.
+func hashedTransactionData(raw [][]byte) ([]byte, error) {
 	if len(raw) > MaxTransactionsPerBlock {
-		return ErrDataBounds
+		return nil, ErrDataBounds
 	}
 	total := 0
 	var txs types.Txs
@@ -236,22 +254,17 @@ func verifyTransactionData(raw [][]byte, expectedDataHash []byte) error {
 	}
 	for i, tx := range raw {
 		if len(tx) > MaxTransactionBytes {
-			return ErrDataBounds
+			return nil, ErrDataBounds
 		}
 		// Check by subtraction so the aggregate bound cannot be bypassed
 		// by integer overflow on narrower architectures.
 		if len(tx) > MaxBlockDataBytes-total {
-			return ErrDataBounds
+			return nil, ErrDataBounds
 		}
 		total += len(tx)
 		txs[i] = append(types.Tx(nil), tx...)
 	}
-	// CometBFT represents an empty transaction list with the RFC-6962
-	// Merkle empty-root hash. Do not special-case nil: it is not that root.
-	if !bytes.Equal(txs.Hash(), expectedDataHash) {
-		return ErrDataHashMismatch
-	}
-	return nil
+	return txs.Hash(), nil
 }
 
 // ProtoEvidence is the wire-format form exported by a CometBFT block store.
